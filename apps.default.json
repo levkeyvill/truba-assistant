@@ -1,0 +1,16 @@
+[
+  {
+    "id": "youtube",
+    "title": "YouTube",
+    "icon": "play",
+    "kind": "url",
+    "url": "https://youtube.com"
+  },
+  {
+    "id": "browser",
+    "title": "Браузер",
+    "icon": "browser",
+    "kind": "url",
+    "url": "https://www.google.com"
+  }
+]

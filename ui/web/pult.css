@@ -1,0 +1,1856 @@
+/* Пульт «Трубы». Тёмная тема, акцент янтарный, второй цвет синий.
+   Зелёный — только в индикаторах состояния, в оформлении запрещён. */
+
+/* Шрифт не раздаём файлом, в отличие от страницы телефона: Open Sans
+   стоит в системе хозяина, и окно на компе берёт его оттуда. Правило
+   «шрифт раздаёт сервер» касается телефона — в его браузере шрифта нет
+   и страница молча падает на системный. */
+
+:root {
+  --фон: #0e1319;
+  --панель: #151c25;
+  --панель-выше: #1b2430;
+  --линия: #26313e;
+  --текст: #e8edf3;
+  --приглушён: #a4b1bf;
+  --тусклый: #6d7a88;
+
+  --акцент: #e0922f;
+  --акцент-тень: rgba(224, 146, 47, .14);
+  --синий: #4c8fd4;
+  /* Зелёный живёт только здесь — в огоньках «работает». */
+  --живой: #4ea86a;
+  --тревога: #d4674c;
+
+  /* Оттенки, которые в тёмной теме были зашиты прямо в классы, а в
+     светлой свои: текст на заливке, дорожка полосы, наведение, полоса
+     прокрутки, подложка тревожного и свечение. Тема ставится в
+     `data-theme` на `<html>` — сервер вписывает его прямо в страницу
+     (core/phone.py), поэтому первая отрисовка уже нужного цвета. */
+  --на-акценте: #1a1208;
+  --на-синем: #0e1319;
+  --шкала: #111820;
+  --подъём: #222d3b;
+  --точка: #5f7086;
+  --полоса: #2b3542;
+  --полоса-нахождение: #3a4656;
+  --тревога-подложка: rgba(212, 103, 76, .10);
+  --свечение-акцент: rgba(224, 146, 47, .2);
+  --свечение-синий: rgba(76, 143, 212, .2);
+  --тень-телефон: rgba(0, 0, 0, .45);
+}
+
+/* ---------- Светлая тема ----------
+   Те же токены, другие значения. Контраст обычного текста к фону везде
+   не ниже 4.5:1 (проверено расчётом): на панели #ffffff — текст 16.0,
+   приглушённый 7.6, тусклый 5.5, акцент 5.4, синий 5.4, тревога 5.4;
+   на панели-выше #eceef2 — 13.8 / 6.5 / 4.7 / 4.6 / 4.6 / 4.6. */
+:root[data-theme="light"] {
+  --фон: #f3f4f6;
+  --панель: #ffffff;
+  --панель-выше: #eceef2;
+  --линия: #d9dde3;
+  --текст: #1b222b;
+  --приглушён: #4a5563;
+  --тусклый: #5f6a77;
+  /* Янтарь на белом не читается: #c2701a даёт 3.7:1, а акцент у пульта —
+     это и рамка выбранного пункта, и его подпись. Тёмнее. */
+  --акцент: #9e5a12;
+  --акцент-тень: rgba(194, 112, 26, .12);
+  --синий: #2c6cb3;
+  /* Зелёный по-прежнему только в индикаторах состояния. */
+  --живой: #2f8a4f;
+  --тревога: #b8452a;
+
+  --на-акценте: #ffffff;
+  --на-синем: #ffffff;
+  --шкала: #dcdfe4;
+  --подъём: #dfe3ea;
+  --точка: #6a7683;
+  --полоса: #c3c8d0;
+  --полоса-нахождение: #a9b1bd;
+  --тревога-подложка: rgba(184, 69, 42, .10);
+  /* Свечение на светлом мягче: тёмная тень на белом смотрится грязью. */
+  --свечение-акцент: rgba(158, 90, 18, .18);
+  --свечение-синий: rgba(44, 108, 179, .18);
+  --тень-телефон: rgba(30, 40, 60, .18);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--фон);
+  color: var(--текст);
+  font: 400 14px/1.5 'Open Sans', 'Segoe UI', sans-serif;
+  /* Окно таскают за рамку Windows, выделять текст мышью при этом незачем */
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Боковое меню ---------- */
+
+#меню {
+  width: 208px;
+  flex: none;
+  background: var(--панель);
+  border-right: 1px solid var(--линия);
+  padding: 18px 12px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.шапка {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 0 6px 20px;
+}
+
+.шапка b { display: block; font-weight: 600; font-size: 17px; letter-spacing: .2px; }
+.шапка span { display: block; font-size: 11px; color: var(--тусклый); }
+
+.значок {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  flex: none;
+  border: 2px solid var(--акцент);
+  box-shadow: 0 0 0 4px var(--акцент-тень);
+}
+
+.пункт {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  margin-bottom: 2px;
+  border-radius: 9px;
+  color: var(--приглушён);
+  cursor: default;
+  user-select: none;
+}
+
+.пункт svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.пункт:hover { background: var(--панель-выше); color: var(--текст); }
+
+.пункт.активный {
+  background: var(--акцент-тень);
+  color: var(--акцент);
+  font-weight: 600;
+}
+
+.подменю-настроек {
+  display: grid;
+  grid-template-rows: 0fr;
+  overflow: hidden;
+  padding-left: 20px;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height .22s ease, opacity .18s ease, padding-bottom .22s ease;
+}
+/* Восемь кнопок разделов настроек должны влезть целиком: по 31 px на строку
+   плюс нижний отступ. Прежних 270 px на пять кнопок уже не хватало. */
+.подменю-настроек.открыто { max-height: 360px; opacity: 1; padding-bottom: 7px; }
+.подменю-настроек button { display: block; width: 100%; border: 0; border-left: 1px solid var(--линия); padding: 6px 8px 6px 13px; background: transparent; color: var(--тусклый); text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+.подменю-настроек button:hover { color: var(--текст); }
+.подменю-настроек button.активный { border-left-color: var(--акцент); color: var(--акцент); }
+/* Точка «вышла новая версия» — у пункта «Настройки» и у раздела
+   «О программе». Янтарная, как акцент: обновление — это не авария, а
+   приглашение. Класс один на обоих, вешает его `обнПоказатьЗначок`
+   (именно `с-обновлением`, с «м» — иначе точка не появилась бы). */
+.пункт.с-обновлением::after, .подменю-настроек button.с-обновлением::after {
+  content: '';
+  width: 7px;
+  height: 7px;
+  flex: none;
+  margin-left: auto;
+  border-radius: 50%;
+  background: var(--акцент);
+  box-shadow: 0 0 0 3px var(--акцент-тень);
+}
+.подменю-настроек button.с-обновлением::after { float: right; margin: 6px 2px 0 0; }
+
+.низ { margin-top: auto; padding: 10px 6px 0; border-top: 1px solid var(--линия); }
+
+/* Пункты меню листаются в своей полосе, а шапка «Труба» и «Поддержать» стоят
+   на месте. Полоса скрывает собственную полосу прокрутки: листают колесом и
+   кнопками ▲/▼, которые видны, только когда за краем что-то есть (хозяин
+   28.09: «человек, не знающий, что они есть, может их не увидеть»). */
+.меню-список {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+.меню-список::-webkit-scrollbar { display: none; }
+.меню-листать {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 26px;
+  margin: 2px 0;
+  border: 1px solid var(--линия);
+  border-radius: 8px;
+  background: var(--панель-выше);
+  color: var(--приглушён);
+  cursor: pointer;
+}
+.меню-листать[hidden] { display: none; }
+.меню-листать:hover { color: var(--акцент); border-color: var(--акцент); }
+.меню-листать svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+.огонёк { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--тусклый); }
+/* «Поддержать» — тихо, не пункт меню, а ссылка на страницу автора. Строку
+   с подписью автора убрали: «внизу теперь хлам». Нижний отступ у него был
+   ради огонька связи — тот теперь в шапке, поэтому отступ тоже прочь. */
+.поддержать {
+  display: flex; align-items: center; gap: 8px;
+  margin: 0; padding: 6px 8px; border-radius: 8px;
+  font-size: 12px; color: var(--приглушён); cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.поддержать svg { width: 15px; height: 15px; flex: none; fill: none; stroke: var(--акцент); stroke-width: 2; stroke-linejoin: round; }
+.поддержать:hover, .поддержать.активный { background: var(--акцент-тень); color: var(--текст); }
+.поддержать.активный svg { fill: var(--акцент); }
+
+/* ---------- Страница «Поддержать» ---------- */
+.поддержка { max-width: 560px; }
+.поддержка-карта {
+  background: var(--панель); border: 1px solid var(--линия); border-radius: 14px;
+  padding: 22px 24px;
+}
+.поддержка-имя { font-size: 20px; font-weight: 600; color: var(--текст); margin-bottom: 10px; }
+.поддержка-текст { font-size: 14px; line-height: 1.55; color: var(--приглушён); margin-bottom: 18px; }
+/* Кнопки «Поддержать»: главная — текстом, Telegram и YouTube — голыми
+   логотипами. Рамок у логотипов нет: карточка уже в рамке, и рамка в рамке
+   хозяин назвал «колхозно» (27.09). Наведение — лёгкий подъём. */
+.поддержка-кнопки { display: flex; flex-wrap: wrap; align-items: center; gap: 18px; }
+.поддержка-кнопки .главная { background: var(--акцент); color: var(--на-акценте); border-color: transparent; }
+.поддержка-логотип {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  opacity: .85;
+  transition: opacity .15s, transform .15s;
+}
+.поддержка-логотип svg { width: 34px; height: 34px; }
+.поддержка-логотип:hover { opacity: 1; transform: translateY(-1px); }
+.поддержка-логотип:focus-visible { outline: 2px solid var(--акцент); outline-offset: 3px; border-radius: 50%; }
+/* Пустая строка статуса не держит место: иначе под кнопками дыра. */
+.поддержка-статус { margin-top: 12px; font-size: 12px; color: var(--тусклый); }
+.поддержка-статус:empty { display: none; }
+.огонёк i { width: 8px; height: 8px; border-radius: 50%; background: var(--тревога); flex: none; }
+.огонёк.есть i { background: var(--живой); }
+
+/* ---------- Правая часть ---------- */
+
+main { flex: 1; overflow: auto; padding: 22px 26px 26px; }
+
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+
+h1 { margin: 0 0 3px; font-size: 23px; font-weight: 600; letter-spacing: .2px; }
+header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; }
+
+.часы { color: var(--тусклый); font-size: 13px; white-space: nowrap; padding-top: 6px; }
+
+/* Справа в шапке одна строка: огонёк связи, затем часы. Раньше огонёк жил
+   внизу меню и тянул за собой отступы оттуда — здесь он с ними не нужен. */
+.шапка-справа {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding-top: 6px;
+}
+.шапка-справа .огонёк { white-space: nowrap; }
+/* Отступ сверху уже у обёртки: свой у часов опускал их ниже огонька. */
+.шапка-справа .часы { padding-top: 0; }
+
+/* ---------- Состояния: одна общая компактная лента ---------- */
+
+/* Один общий контейнер вместо пяти отдельных квадратных карточек.
+   Внутри ячейки с тонкими разделителями. На 1280 — 5 в ряд,
+   около 1000 — 3+2, но рамка всегда одна общая. */
+.карточки {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  background: var(--панель);
+  border: 1px solid var(--линия);
+  border-radius: 12px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.карточка {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--линия);
+  border-radius: 0;
+  padding: 9px 14px 8px;
+  min-width: 0;
+}
+
+.карточка:first-child { border-left: 0; }
+
+.карточка:hover { background: var(--панель-выше); }
+.карточка { cursor: pointer; position: relative; padding-right: 22px; }
+.карточка::after { content: '↗'; position: absolute; top: 7px; right: 8px; color: var(--тусклый); font-size: 11px; }
+.карточка:focus-visible { outline: 2px solid var(--синий); outline-offset: -2px; }
+
+.карточка .имя {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: var(--тусклый);
+  margin-bottom: 3px;
+}
+
+.карточка .главное {
+  font-weight: 600;
+  font-size: 14px;
+  line-height: 1.25;
+  margin-bottom: 3px;
+  /* Многоточие запрещено: сведение важнее сетки. Переносим, а не режем. */
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.карточка .внизу { display: flex; align-items: flex-start; gap: 7px; font-size: 12px; color: var(--приглушён); }
+.карточка .внизу i { width: 7px; height: 7px; border-radius: 50%; background: var(--живой); flex: none; margin-top: 5px; }
+.карточка .внизу span { min-width: 0; overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
+.карточка.плохо .внизу i { background: var(--тревога); }
+
+[hidden] { display: none !important; }
+
+/* Около 1000 px по окну: те же ячейки, раскладка 3+2 внутри общей рамки. */
+@media (max-width: 1080px) {
+  .карточки { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+  .карточка:nth-child(-n+3) { grid-column: span 2; }
+  .карточка:nth-child(n+4) { grid-column: span 3; }
+  .карточка:nth-child(4) { border-left: 0; }
+  .карточка:nth-child(n+4) { border-top: 1px solid var(--линия); }
+}
+
+@media (max-width: 620px) {
+  .карточки { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .карточка:nth-child(n) { grid-column: span 1; }
+  .карточка { border-top: 1px solid var(--линия); }
+  .карточка:nth-child(-n+2) { border-top: 0; }
+  .карточка:nth-child(odd) { border-left: 0; }
+  .карточка:nth-child(4) { border-left: 1px solid var(--линия); }
+}
+
+/* ---------- Панель: блоки «Компьютер», «Запись игры», «Разговор», «События» ---------- */
+
+/* Панель — ряд самостоятельных блоков в одной семье: у каждого своя
+   рамка, фон, скругление, отступы и заголовок, как у «Компьютера».
+   Внутри «Компьютера» остались только его показатели. Тексты переносятся —
+   резать многоточием запрещено. */
+.лист.компьютерный { padding: 0; min-height: 0; background: transparent; border: 0; border-radius: 0; }
+
+.панель-блок {
+  min-width: 0;
+  margin-bottom: 12px;
+  padding: 11px 18px 12px;
+  background: var(--панель);
+  border: 1px solid var(--линия);
+  border-radius: 12px;
+}
+.панель-блок:last-child { margin-bottom: 0; }
+
+.панель-блок-шапка {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px 18px;
+  margin-bottom: 6px;
+  min-width: 0;
+}
+
+/* Заголовок блока — всегда в одну строку: перенос «ПОСЛЕДНИЕ СОБЫТИЯ»
+   на две строки рядом с «Вся история →» ломал шапку. */
+.панель-блок-шапка h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--приглушён);
+  white-space: nowrap;
+}
+
+/* «Запись игры» — одна узкая строка: заголовок, точка, текст, галочка. */
+.панель-блок-узкий { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; }
+.панель-блок-узкий .панель-блок-шапка { margin-bottom: 0; flex: none; }
+.панель-блок-узкий .повтор-строка { flex: 1 1 320px; min-width: 0; margin-top: 0; }
+
+/* «Возможности» — две строки-переключателя одна под другой, тонкой чертой.
+   Слева точка, потом текст (сжимается и переносится), справа галочка с
+   подписью и «Настроить →». Галочка прижата вправо, переход — в угол. */
+.панель-возможности { display: block; }
+.панель-возможности .панель-блок-шапка { margin-bottom: 6px; }
+.панель-возможности .возможности-строка { margin-top: 0; }
+.панель-возможности .возможности-строка + .возможности-строка {
+  border-top: 1px solid var(--линия);
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.панель-возможности .повтор-следить { margin-left: auto; }
+.панель-возможности .возможности-переход { margin-left: 4px; }
+/* Подписи галочек разной длины («включён» / «включено»): одна ширина, чтобы
+   галочки и «Настроить →» стояли столбиком друг под другом. */
+.панель-возможности .повтор-следить { min-width: 104px; }
+
+/* Низ Панели — «Разговор» и «Последние события» рядом в две колонки.
+   «Расход» живёт строкой выше, во всю ширину: его три столбца с суммами
+   в половине окна ломали подписи и заголовки. */
+.панель-низ { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.панель-низ .панель-блок { margin-bottom: 0; }
+/* У окна 1000 px две колонки уже тесноваты: блоки встают в одну. */
+@media (max-width: 1080px) { .панель-низ { grid-template-columns: minmax(0, 1fr); } }
+
+.панель-голос { display: flex; align-items: center; justify-content: space-between; gap: 12px 20px; padding: 0 0 12px; margin-bottom: 10px; border-bottom: 1px solid var(--линия); }
+.панель-голос-подписи { display: flex; align-items: baseline; gap: 11px; min-width: 0; }
+.панель-голос-подписи strong { font-size: 14px; color: var(--текст); }
+.панель-голос-подписи strong::before { content: ''; display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--тусклый); vertical-align: 1px; }
+.панель-голос.работает .панель-голос-подписи strong::before { background: var(--живой); }
+.панель-голос-подписи span { font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.панель-голос-подписи span.ошибка { color: var(--тревога); }
+.панель-голос-действия { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.панель-голос-режим { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--тусклый); }
+.панель-голос .голос-кнопка, .панель-голос .голос-выбор { padding-block: 6px; }
+@media (max-width: 760px) { .панель-голос { align-items: flex-start; flex-direction: column; } }
+.панель-голос-подписи strong { white-space: nowrap; }
+/* У окна 1000 px «Настроить →» в строке голоса сталкивал кнопки на вторую
+   строку. Туда же ведёт карточка «Голос» наверху — на узком окне хватит её. */
+@media (max-width: 1080px) { .панель-голос .панель-активность-все { display: none; } }
+
+.компьютер { min-width: 0; }
+.повтор-строка {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--приглушён);
+}
+.повтор-точка { width: 8px; height: 8px; border-radius: 50%; background: var(--тусклый); flex: none; }
+.повтор-точка.вкл { background: var(--живой); }
+.повтор-точка.выкл { background: var(--тревога); }
+.повтор-текст { min-width: 0; overflow-wrap: anywhere; }
+.повтор-следить { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; cursor: pointer; }
+
+.компьютер-шапка {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 4px;
+}
+
+.компьютер-шапка h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--приглушён);
+}
+
+.компьютер-шапка span {
+  color: var(--тусклый);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.метрики {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.метрика {
+  background: transparent;
+  border: 0;
+  border-left: 1px solid var(--линия);
+  border-radius: 0;
+  padding: 2px 16px 2px;
+  min-width: 0;
+}
+
+.метрика:first-child { border-left: 0; padding-left: 0; }
+
+.метрика-имя {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--тусклый);
+  margin-bottom: 1px;
+}
+
+.метрика-значение {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: .2px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.метрика-подпись {
+  margin-top: 1px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--приглушён);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.метрика-шкала {
+  height: 4px;
+  max-width: 150px;
+  margin-top: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--шкала);
+}
+
+.метрика-шкала i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--акцент);
+  box-shadow: 0 0 12px var(--свечение-акцент);
+}
+
+.метрика.синяя .метрика-шкала i {
+  background: var(--синий);
+  box-shadow: 0 0 12px var(--свечение-синий);
+}
+
+@media (max-width: 620px) {
+  .метрики { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .метрика:nth-child(odd) { border-left: 0; padding-left: 0; }
+  .метрика:nth-child(n+3) { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--линия); }
+}
+
+/* ---------- Панель: «Разговор» и «Последние события» ---------- */
+
+/* Оба блока — в одной семье с «Компьютером»: своя рамка, свой заголовок.
+   Внутри показатели в ряд без квадратных карточек, у событий — тонкие
+   линии-разделители между строками. Тексты переносятся, резать запрещено. */
+.разговор-строки {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+/* Подпись показателя — короткая, в одну строку. `overflow-wrap: anywhere`
+   здесь ломал слова посередине: «ПРОПУЩЕН/О», «ПЕРЕБИВА/НИЯ». */
+.разговор-имя {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: var(--тусклый);
+  white-space: nowrap;
+}
+
+.разговор-значение {
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--приглушён);
+}
+.панель-активность-все { flex: none; border: 0; background: transparent; color: var(--синий); font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; }
+.панель-активность-все:hover { color: var(--текст); }
+.панель-активность-строка { display: flex; gap: 14px; padding: 5px 0; border-top: 1px solid var(--линия); font-size: 12px; }
+.панель-активность-строка span:first-child { color: var(--тусклый); flex: none; }
+.панель-активность-строка span:last-child { color: var(--приглушён); min-width: 0; overflow-wrap: break-word; }
+.панель-активность-пусто { color: var(--тусклый); padding: 5px 0 8px; font-size: 12px; }
+
+/* «Расход» — строкой во всю ширину, тремя столбцами: сеанс, сегодня,
+   неделя. В каждом деньги крупно, доллары мельче и токены одной строкой.
+   Ни одна строка блока не переносится посреди слова: деньги, токены и
+   сноска помещаются, а что не помещается — режется многоточием. */
+.расход-строки { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.расход-столбец { min-width: 0; padding: 2px 16px; border-left: 1px solid var(--линия); }
+.расход-столбец:first-child { border-left: 0; padding-left: 0; }
+.расход-период {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: var(--тусклый);
+  white-space: nowrap;
+}
+.расход-деньги {
+  margin-top: 2px;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: var(--приглушён);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.расход-без-цены { margin-left: 5px; font-size: 11px; font-weight: 400; color: var(--тусклый); }
+.расход-подытог { font-size: 12px; color: var(--тусклый); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.расход-токены {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--приглушён);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Модель и источник цен — одной мелкой строкой внизу блока. Здесь, в отличие
+   от прочих текстов Панели, режем: перенос второй строкой ломает блок. */
+.расход-сноска {
+  margin-top: 6px;
+  padding-top: 7px;
+  border-top: 1px solid var(--линия);
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--тусклый);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 620px) {
+  .расход-строки { grid-template-columns: minmax(0, 1fr); }
+  .расход-столбец { border-left: 0; padding: 4px 0; border-top: 1px solid var(--линия); }
+  .расход-столбец:first-child { border-top: 0; padding-top: 2px; }
+}
+
+/* Сноска «Разговора» — переносится по словам, но не посреди слова. */
+.разговор-подпись {
+  margin-top: 4px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--тусклый);
+  overflow-wrap: break-word;
+}
+
+.лист {
+  background: var(--панель);
+  border: 1px solid var(--линия);
+  border-radius: 12px;
+  padding: 26px;
+  min-height: 180px;
+}
+
+.пусто { color: var(--тусклый); font-size: 13px; }
+.пусто b { display: block; color: var(--приглушён); font-size: 14px; margin-bottom: 6px; font-weight: 600; }
+
+/* ---------- Чат: широкая лента и один аккуратный composer ---------- */
+
+/* Холодный тёмный чат как часть экрана: без вложенной карточки.
+   Лента — прямо на фоне main, реплики спокойными строками.
+   Единственный контур — поле ввода. Тексты переносятся, резать запрещено. */
+.лист.чатовый {
+  padding: 0;
+  display: flex;
+  min-height: 320px;
+  height: calc(100vh - 125px);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.чат {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.чат-лента {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 28px 20px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.чат-пусто {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.чат-пусто b {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--приглушён);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.чат-пусто span {
+  font-size: 13px;
+  color: var(--тусклый);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.чат-низ {
+  flex: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 12px 28px 4px;
+}
+
+.чат-ввод {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 4px 5px 4px 4px;
+  border: 1px solid var(--линия);
+  border-radius: 15px;
+  background: var(--панель);
+}
+.чат-ввод:focus-within { border-color: var(--синий); }
+
+.чат-ввод textarea {
+  flex: 1;
+  min-width: 0;
+  min-height: 38px;
+  max-height: 120px;
+  resize: none;
+  padding: 9px 12px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--текст);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+  box-shadow: none;
+}
+
+.чат-ввод textarea::placeholder { color: var(--тусклый); }
+
+.чат-ввод textarea:focus { border-color: transparent; }
+
+.чат-ввод button {
+  flex: none;
+  align-self: flex-end;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: var(--панель-выше);
+  color: var(--приглушён);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: not-allowed;
+  opacity: 1;
+  box-shadow: none;
+}
+.чат-ввод button svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+/* Кнопка оживает, только когда есть текст и не ждём ответ. */
+.чат-ввод button:not(:disabled) {
+  background: var(--синий);
+  border: 0;
+  color: var(--на-синем);
+  cursor: pointer;
+  opacity: 1;
+}
+
+/* Реплики: спокойные строки без аватаров и карточек. */
+.чат-строка {
+  width: 100%;
+  max-width: 800px;
+  margin: 0 auto 18px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.чат-строка.я { display: flex; justify-content: flex-end; }
+.чат-строка.я .чат-текст { width: fit-content; max-width: min(78%, 630px); padding: 10px 14px; border-radius: 15px 15px 4px 15px; background: var(--панель-выше); }
+.чат-строка.она .чат-текст, .чат-строка.думает .чат-текст { max-width: min(78%, 630px); }
+
+.чат-строка:last-child {
+  margin-bottom: 0;
+}
+
+.чат-кто {
+  margin-bottom: 2px;
+  font-size: 11px;
+  color: var(--тусклый);
+}
+
+.чат-кто:empty {
+  display: none;
+}
+
+.чат-текст {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--текст);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.чат-строка.я .чат-кто {
+  color: var(--синий);
+}
+
+.чат-строка.думает .чат-текст {
+  color: var(--тусклый);
+}
+
+.чат-строка.думает .чат-текст::after {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 6px;
+  border-radius: 50%;
+  background: var(--тусклый);
+  vertical-align: baseline;
+  animation: чат-точка 1s ease-in-out infinite;
+}
+
+@keyframes чат-точка {
+  0%, 100% { opacity: .25; }
+  50% { opacity: 1; }
+}
+
+.чат-строка.ошибка .чат-текст {
+  color: var(--приглушён);
+}
+
+.чат-подсказка {
+  width: 100%;
+  max-width: 800px;
+  margin: 6px auto 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--тусклый);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+.чат-новый { padding: 2px 0; border: 0; background: transparent; color: var(--тусклый); font: inherit; cursor: pointer; white-space: nowrap; }
+.чат-новый:hover { color: var(--текст); }
+.чат-новый:disabled { opacity: .45; cursor: default; }
+
+@media (max-width: 1080px) {
+  .чат-лента { padding: 8px 16px 16px; }
+  .чат-низ { padding: 10px 16px 4px; }
+  .голос-верх { gap: 10px; }
+  .голос-кнопка { padding-inline: 12px; }
+}
+
+/* ---------- Голос: чистая лента на фоне main ---------- */
+
+/* Экран голоса — часть фона main: без большой карточки и рамки.
+   Сверху одна компактная строка состояния без вложенных квадратов,
+   ниже тонкий разделитель и лента событий на всю доступную высоту. */
+.лист.голосовой {
+  padding: 0;
+  display: flex;
+  min-height: 320px;
+  height: calc(100vh - 125px);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.голос {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.голос-верх {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 2px 10px;
+  min-width: 0;
+}
+
+.голос-инфо {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.голос-точка {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--точка);
+  flex: none;
+}
+
+.голос-тексты {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.голос-заголовок {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--текст);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.голос-подпись {
+  font-size: 12px;
+  color: var(--тусклый);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.голос-кнопка {
+  padding: 7px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--панель-выше);
+  color: var(--приглушён);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  opacity: 1;
+  box-shadow: none;
+  flex: none;
+  white-space: nowrap;
+}
+
+.голос-кнопка:hover:not(:disabled) { color: var(--текст); background: var(--подъём); }
+
+.голос-кнопка.главная {
+  background: var(--акцент-тень);
+  color: var(--акцент);
+}
+
+.голос-кнопка:disabled { cursor: not-allowed; opacity: .45; }
+
+.голос-действия { display: flex; align-items: center; gap: 8px; flex: none; }
+
+.голос-выбор {
+  padding: 7px 10px;
+  border: 1px solid var(--линия);
+  border-radius: 9px;
+  background: var(--панель-выше);
+  color: var(--приглушён);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.голос-точка.живая { background: var(--живой); }
+
+/* Компактные строки событий: время приглушено, текст обычный.
+   Никаких вложенных рамок — только тонкие разделители. */
+.голос-событие {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 5px 2px;
+  border-bottom: 1px solid var(--линия);
+  font-size: 13px;
+}
+
+.голос-время { flex: none; color: var(--тусклый); font-size: 12px; }
+
+.голос-текст {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--текст);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.голос-событие.ошибка .голос-текст { color: var(--тревога); }
+.голос-событие.пропущено .голос-текст { color: var(--приглушён); }
+
+/* ---------- Логи: поиск + моноширинная прокручиваемая лента ---------- */
+
+.лист.логовой {
+  padding: 0;
+  display: flex;
+  min-height: 320px;
+  height: calc(100vh - 125px);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.логи { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+
+.логи-верх {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px 10px;
+}
+
+.логи-поиск {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 7px 12px;
+  border: 1px solid var(--линия);
+  border-radius: 9px;
+  background: var(--панель);
+  color: var(--текст);
+  font: inherit;
+  font-size: 13px;
+}
+
+.логи-поиск::placeholder { color: var(--тусклый); }
+.логи-тип { flex: none; width: 148px; padding: 7px 9px; border: 1px solid var(--линия); border-radius: 9px; background: var(--панель); color: var(--текст); font: inherit; font-size: 12px; cursor: pointer; }
+.логи-тип:focus { outline: none; border-color: var(--синий); }
+.логи-тип option { background: var(--панель-выше); }
+
+.логи-статус { flex: none; font-size: 12px; color: var(--тусклый); white-space: nowrap; }
+.логи-скачать { display: inline-flex; align-items: center; text-decoration: none; }
+
+.логи-лента {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-top: 1px solid var(--линия);
+  padding-top: 10px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.логи-строка {
+  display: flex;
+  gap: 12px;
+  padding: 4px 2px;
+  color: var(--приглушён);
+  border-bottom: 1px solid var(--линия);
+}
+.логи-время { flex: none; width: 62px; color: var(--тусклый); font-variant-numeric: tabular-nums; }
+.логи-текст { flex: 1; min-width: 0; overflow-wrap: anywhere; word-break: break-word; white-space: pre-wrap; }
+.логи-строка.логи-ошибки { color: var(--тревога); }
+.логи-строка.логи-телефон { color: var(--синий); }
+.логи-строка.логи-интернет { color: var(--синий); }
+.логи-строка.логи-он .логи-текст { color: var(--текст); }
+.логи-строка.логи-она .логи-текст { color: var(--акцент); }
+.логи-строка.логи-мимо { opacity: .6; }
+
+.логи-фильтры { flex: none; display: flex; flex-wrap: wrap; gap: 6px; padding: 0 2px 10px; }
+.логи-фильтры button {
+  padding: 5px 12px;
+  border: 1px solid var(--линия);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--приглушён);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.логи-фильтры button:hover { color: var(--текст); border-color: var(--синий); }
+.логи-фильтры button.активный { border-color: var(--акцент); color: var(--акцент); background: var(--акцент-тень); }
+
+@media (max-width: 850px) {
+  .логи-верх { flex-wrap: wrap; }
+  .логи-поиск { flex-basis: calc(100% - 160px); }
+}
+
+.логи-пусто { padding: 30px 10px; text-align: center; color: var(--тусклый); }
+
+/* Экстремальное сжатие: переносим строку целиком блоками,
+   буквы и слова внутри строк не рвём. */
+@media (max-width: 560px) {
+  .голос-верх { flex-wrap: wrap; }
+}
+
+.голос-лента {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-top: 1px solid var(--линия);
+  padding-top: 18px;
+  background: transparent;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.голос-лента[hidden], .голос-настройки[hidden] { display: none; }
+.голос-настройки {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border-top: 1px solid var(--линия);
+  padding: 16px 6px 20px 0;
+}
+
+.голос-пусто {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-align: center;
+}
+
+.голос-пусто b {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--приглушён);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+.голос-пусто span {
+  font-size: 13px;
+  color: var(--тусклый);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: normal;
+}
+
+/* Полоса прокрутки под тему: светлая системная режет глаз на тёмном. */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--полоса); border-radius: 6px; border: 3px solid var(--фон); }
+::-webkit-scrollbar-thumb:hover { background: var(--полоса-нахождение); }
+
+/* ---------- Настройки: компактный экран без карточек-в-карточках ---------- */
+.лист.настроечный { padding: 18px 22px 20px; }
+.настройки { max-width: 760px; container-type: inline-size; }
+/* Узкая форма (окно ~1000 px и меньше): поле не уже 180 px, а подсказка уходит
+   строкой под него — раньше длинная подсказка сжимала выбор «Образец голоса»
+   до одной стрелки. Отступ подсказки — ширина подписи 190 + зазор 12. */
+.настр-ряд .настр-выбор, .настр-ряд .настр-ввод:not(.настр-число) { min-width: 180px; }
+@container (max-width: 680px) {
+  .настр-ряд { flex-wrap: wrap; row-gap: 3px; }
+  .настр-ряд .настр-намёк { flex: 1 1 100%; max-width: none; padding-left: 202px; }
+}
+.настр-навигация { display: flex; align-items: end; gap: 14px; padding-bottom: 10px; border-bottom: 1px solid var(--линия); }
+.настр-навигация-подпись { display: flex; flex: none; flex-direction: column; gap: 5px; font-size: 11px; color: var(--тусклый); }
+.настр-раздел { width: 260px; }
+.настр-пояснение { padding-bottom: 8px; font-size: 12px; color: var(--тусклый); }
+.настр-секция { padding: 12px 0 14px; border-bottom: 1px solid var(--линия); }
+.настр-секция[hidden] { display: none; }
+.настр-секция:last-of-type { border-bottom: 0; }
+.настр-ряд { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
+.настр-ряд[hidden] { display: none; }
+.настр-ключ-поле { display: flex; flex: 1 1 auto; align-items: center; gap: 7px; min-width: 0; }
+.настр-ключ-поле .голос-кнопка { flex: none; }
+.настр-модель-поле { display: flex; flex: 1 1 auto; align-items: center; gap: 7px; min-width: 0; }
+.настр-модель-поле .настр-ввод { width: 100%; }
+.настр-модели-статус { margin: 2px 0 6px 202px; color: var(--тусклый); font-size: 11px; }
+.настр-иконка { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 34px; height: 34px; padding: 0; border: 1px solid var(--линия); border-radius: 9px; background: var(--панель-выше); color: var(--приглушён); font: inherit; font-size: 21px; cursor: pointer; }
+.настр-иконка:hover { color: var(--текст); border-color: var(--акцент); }
+.настр-иконка:disabled { opacity: .5; cursor: wait; }
+.настр-имя { flex: none; width: 190px; font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+/* Предупреждение о локальной модели. Цвет — предупреждающий (тревога),
+   а не зелёный: зелёный в пульте означает «работает как надо», а здесь
+   с Трубой ничего не проверено. */
+.настр-локальное-предупреждение {
+  margin: 2px 0 10px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--тревога);
+  border-radius: 0 9px 9px 0;
+  background: var(--тревога-подложка);
+  color: var(--приглушён);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.настр-локальное-предупреждение[hidden] { display: none; }
+/* Кнопки-подсказки адреса: шириной по слову, а не как иконка ↻. Адрес —
+   во всю строку, кнопки под ним: в одну строку они сжимали ввод до «http». */
+.настр-адрес-кнопка { width: auto; height: 28px; padding: 0 10px; font-size: 12px; }
+.настр-адрес-поле { flex-wrap: wrap; }
+.настр-адрес-поле .настр-ввод { flex: 1 1 100%; }
+.настр-ввод, .настр-выбор { flex: 1 1 auto; min-width: 0; padding: 7px 10px; border: 1px solid var(--линия); border-radius: 9px; background: var(--панель-выше); color: var(--текст); font: inherit; font-size: 13px; }
+.настр-ввод::placeholder { color: var(--тусклый); }
+.настр-ввод:focus, .настр-выбор:focus, .настр-текст:focus { outline: none; border-color: var(--синий); }
+.настр-число { max-width: 180px; }
+.настр-ряд.с-ползунком .настр-число { flex: 0 0 78px; width: 78px; }
+.настр-ползунок { flex: 1 1 150px; min-width: 110px; max-width: 250px; accent-color: var(--акцент); cursor: pointer; }
+.настр-ряд.с-ползунком .настр-намёк { display: none; }
+.настр-выбор { cursor: pointer; }
+.настр-выбор option { background: var(--панель-выше); color: var(--текст); }
+.настр-галочка { width: 17px; height: 17px; accent-color: var(--акцент); }
+.настр-намёк { flex: none; max-width: 260px; font-size: 11px; color: var(--тусклый); }
+.настр-описание { margin: 0 0 9px; font-size: 12px; color: var(--тусклый); line-height: 1.45; }
+.настр-текст { width: 100%; min-height: 110px; resize: vertical; padding: 9px 12px; border: 1px solid var(--линия); border-radius: 10px; background: var(--панель-выше); color: var(--текст); font: inherit; font-size: 13px; line-height: 1.5; }
+.настр-текст.настр-текст-высокий { height: 430px; }
+.настр-перечитать { margin-top: 8px; }
+.настр-адреса { padding: 4px 0; font-size: 13px; color: var(--приглушён); overflow-wrap: anywhere; }
+.настр-телряд { display: flex; align-items: center; gap: 12px; padding: 6px 0 2px; }
+.настр-телряд[hidden] { display: none; }
+.образец-заголовок { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--линия); font-weight: 600; font-size: 13px; }
+.образец-добавить { margin-top: 0; }
+/* «Новый голос из записи» — три пронумерованных шага (хозяин 28.09: «всё в
+   одну строку напихано»). Шаги 2 и 3 приглушены, пока файл не выбран. */
+.образец-шаги { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--линия); }
+.образец-шаг { display: flex; gap: 12px; padding: 8px 0; transition: opacity .18s ease; }
+.образец-шаг.приглушён { opacity: .45; }
+.образец-номер { flex: none; width: 24px; height: 24px; border: 1px solid var(--акцент); border-radius: 50%; display: flex; align-items: center; justify-content: center; color: var(--акцент); font-size: 12px; font-weight: 600; }
+.образец-шаг.готов .образец-номер { background: var(--акцент); color: var(--на-акценте, var(--фон)); }
+.образец-шаг-тело { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+.образец-шаг-имя { font-size: 13px; font-weight: 600; line-height: 24px; }
+.образец-файл, .образец-скрытый { display: none; }
+.образец-файл-инфо { font-size: 12px; color: var(--приглушён); overflow-wrap: anywhere; }
+.образец-файл-инфо:empty { display: none; }
+.образец-подсказка { font-size: 11px; color: var(--тусклый); }
+.образец-переключатель { display: flex; flex-direction: column; gap: 6px; }
+.образец-вариант { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.образец-статус { padding-top: 2px; }
+
+/* «Твой компьютер» — первым в «Озвучивании», свёрнутой строкой с итогом. */
+.железо-карточка { margin: 2px 0 14px; border: 1px solid var(--линия); border-radius: 10px; background: var(--панель-выше); }
+.железо-шапка { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 0; border-radius: 10px; background: none; color: var(--текст); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.железо-шапка:hover .железо-имя { color: var(--акцент); }
+.железо-имя { flex: none; font-weight: 600; }
+.железо-итог { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--приглушён); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.железо-стрелка { flex: none; color: var(--тусклый); }
+.железо-тело { max-height: 0; overflow: hidden; opacity: 0; padding: 0 12px; transition: max-height .22s ease, opacity .18s ease, padding-bottom .22s ease; }
+.железо-тело.раскрыто { max-height: 560px; opacity: 1; padding-bottom: 12px; }
+
+/* Значок темы в шапке, перед огоньком связи. */
+.тема-значок { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--линия); border-radius: 50%; background: var(--панель); color: var(--приглушён); cursor: pointer; }
+.тема-значок:hover { color: var(--акцент); border-color: var(--акцент); }
+.тема-значок:disabled { opacity: .6; cursor: default; }
+.тема-значок svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.тема-подпись { font-size: 12px; color: var(--тусклый); }
+.тема-подпись.плохо { color: var(--тревога); }
+.тема-подпись:empty { display: none; }
+.настр-телряд .настр-число { width: 90px; flex: none; }
+.настр-файл { display: block; max-width: 100%; margin: 10px 0 2px; color: var(--приглушён); font: inherit; font-size: 12px; }
+.настр-файл::file-selector-button { margin-right: 10px; padding: 7px 10px; border: 1px solid var(--линия); border-radius: 8px; background: var(--панель-выше); color: var(--текст); font: inherit; cursor: pointer; }
+.настр-файл::file-selector-button:hover { border-color: var(--синий); }
+.настр-плеер { display: block; width: min(100%, 360px); margin-top: 10px; }
+.настр-низ { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 14px; }
+/* Кнопки проверки внизу формы: у каждого раздела своя, лишние скрыты.
+   `.голос-кнопка` задаёт `display` только через общие правила, но на всякий
+   случай hidden здесь объявлен явно — иначе кнопка осталась бы видимой. */
+.настр-проверка[hidden] { display: none; }
+.настр-низ .настр-статус { flex: 1 1 200px; min-width: 0; }
+.настр-статус { font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.настр-статус.плохо { color: var(--тревога); }
+
+/* «Голос → Звук»: полоска уровня микрофона. Синяя, а не зелёная: зелёный в
+   пульте — это «работает как надо», а тут измеритель громкости. Шкала в
+   децибелах, заполнение ставит страница (см. `звукУровеньПоказать`). */
+.звук-уровень { flex: 1 1 200px; min-width: 120px; height: 8px; border-radius: 4px; background: var(--панель-выше); overflow: hidden; }
+.звук-уровень > i { display: block; height: 100%; width: 0; background: var(--синий); transition: width .12s linear; }
+.звук-уровень.приглушено { opacity: .5; }
+/* Полоска — во всю ширину поля, намёк переносится под неё, в колонку полей
+   (190 px подписи + 12 px зазора), иначе он давит полоску до нуля. */
+.настр-ряд.с-уровнем { flex-wrap: wrap; row-gap: 4px; }
+.настр-ряд.с-уровнем .настр-намёк { flex: 1 1 100%; max-width: none; padding-left: 202px; }
+.звук-уровень-подпись { font-size: 11px; color: var(--тусклый); padding: 0 0 6px 202px; }
+@media (max-width: 620px) { .настр-ряд.с-уровнем .настр-намёк, .звук-уровень-подпись { padding-left: 0; } }
+.звук-уровень-подпись:empty { display: none; }
+
+/* «Твой компьютер» в «Озвучивании»: те же строки-цифры, что у итогов
+   проверки, но значения длинные (процессор, видеокарта) и переносятся. */
+.железо-блок { padding: 2px 0 0; font-size: 13px; }
+.железо-строка { display: flex; justify-content: space-between; gap: 12px; padding: 3px 2px; border-top: 1px solid var(--линия); }
+.железо-строка:first-child { border-top: 0; }
+.железо-строка span { flex: none; color: var(--приглушён); }
+.железо-строка b { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.железо-совет { font-size: 12px; color: var(--тусклый); padding: 3px 2px; line-height: 1.45; }
+.железо-совет.плохо { color: var(--тревога); }
+
+/* Погода в разделе «Телефон»: поле поиска и найденные города. */
+.пог-ввод { flex: 1 1 240px; max-width: 320px; }
+.пог-список { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 6px 0; }
+.пог-список:empty { display: none; }
+.пог-место { text-align: left; }
+
+/* Раздел «О программе»: та же строка без карточек-в-карточках, что и у
+   соседей. Шапка крупная — это имя программы, а не заголовок раздела. */
+.обн-шапка { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; padding: 2px 0 12px; }
+.обн-имя { font-size: 26px; font-weight: 600; letter-spacing: .2px; line-height: 1.15; }
+.обн-строка { font-size: 12px; color: var(--тусклый); }
+.обн-строка + .обн-строка { margin-top: 2px; }
+.обн-ряд { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 4px 0; }
+.обн-статус { flex: 1 1 260px; min-width: 0; font-size: 13px; color: var(--приглушён); overflow-wrap: anywhere; }
+.обн-статус.плохо { color: var(--тревога); }
+.обн-блок[hidden] { display: none; }
+.обн-название { padding: 10px 0 2px; font-size: 14px; font-weight: 600; }
+.обн-название:empty { padding: 0; }
+/* Заметки с GitHub: длинные, поэтому своя прокрутка и перенос строк
+   ровно там, где их поставил автор выпуска. */
+.обн-заметки {
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 6px 0 12px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--акцент);
+  border-radius: 0 9px 9px 0;
+  background: var(--панель-выше);
+  color: var(--текст);
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.обн-заметки:empty { display: none; }
+.обн-шаги { padding: 6px 0 2px; }
+.обн-шаг { padding: 3px 0 3px 16px; font-size: 12.5px; color: var(--тусклый); position: relative; overflow-wrap: anywhere; }
+.обн-шаг::before { content: '—'; position: absolute; left: 0; color: var(--тусклый); }
+/* Последний шаг — тот, что идёт сейчас: его видно первым. */
+.обн-шаг-текущий { color: var(--текст); }
+.обн-шаг-текущий::before { color: var(--акцент); }
+.обн-итог { padding: 8px 0 2px; font-size: 13px; overflow-wrap: anywhere; }
+.обн-итог.плохо { color: var(--тревога); }
+.обн-итог + .голос-кнопка { margin-top: 8px; }
+@media (max-width: 620px) { .настр-ряд { flex-wrap: wrap; } .настр-имя { width: 100%; } }
+@media (max-width: 620px) { .настр-навигация { align-items: start; flex-direction: column; gap: 5px; } .настр-раздел { width: min(300px, calc(100vw - 60px)); } .настр-пояснение { padding-bottom: 2px; } }
+
+/* ---------- Заметки: две колонки, темы слева, записи справа ---------- */
+
+/* Страница, а не форма: слева перечень папки, справа сама заметка целиком.
+   Без вложенных карточек — тонкие разделители и рамка у самой записи. */
+.лист.заметочный {
+  padding: 0;
+  display: flex;
+  min-height: 320px;
+  height: calc(100vh - 125px);
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.заметки { flex: 1; min-width: 0; display: flex; min-height: 0; }
+
+.зам-левая {
+  width: 320px;
+  flex: none;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 14px 0 16px;
+  border-right: 1px solid var(--линия);
+}
+
+.зам-верх { flex: none; display: flex; flex-direction: column; gap: 6px; }
+.зам-кнопки { display: flex; gap: 8px; }
+.зам-путь { font-size: 11px; color: var(--тусклый); overflow-wrap: anywhere; }
+
+.зам-поиск {
+  flex: none;
+  padding: 7px 12px;
+  border: 1px solid var(--линия);
+  border-radius: 9px;
+  background: var(--панель);
+  color: var(--текст);
+  font: inherit;
+  font-size: 13px;
+}
+.зам-поиск::placeholder { color: var(--тусклый); }
+.зам-поиск:focus { outline: none; border-color: var(--синий); }
+
+.зам-подсказка { flex: none; font-size: 11px; line-height: 1.4; color: var(--тусклый); overflow-wrap: anywhere; }
+
+.зам-разделы { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+
+.зам-раздел-имя {
+  padding: 10px 2px 5px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: .7px;
+  color: var(--тусклый);
+}
+
+.зам-темы { display: flex; flex-direction: column; }
+
+.зам-тема {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 7px 10px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0 8px 8px 0;
+  background: transparent;
+  color: var(--приглушён);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.зам-тема:hover { background: var(--панель); color: var(--текст); }
+.зам-тема.активная { border-left-color: var(--акцент); background: var(--акцент-тень); color: var(--текст); }
+.зам-тема-имя { font-size: 13px; overflow-wrap: anywhere; }
+.зам-тема.активная .зам-тема-имя { font-weight: 600; }
+.зам-тема-под { font-size: 11px; color: var(--тусклый); }
+
+.зам-пусто { padding: 22px 10px; color: var(--тусклый); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+
+.зам-статус { flex: none; min-height: 16px; font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.зам-статус.плохо { color: var(--тревога); }
+
+.зам-правая { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.зам-содержимое { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 14px 0 20px 20px; }
+
+.зам-шапка {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 11px;
+  border-bottom: 1px solid var(--линия);
+}
+.зам-имена { min-width: 0; }
+.зам-заголовок { margin: 0 0 2px; font-size: 19px; font-weight: 600; overflow-wrap: anywhere; }
+.зам-раздел-под { font-size: 12px; color: var(--тусклый); }
+.зам-действия { display: flex; gap: 8px; flex: none; }
+.голос-кнопка.опасная { color: var(--тревога); }
+/* Рамка — тенью внутрь, а не `border`: у кнопок пульта рамки нет, и
+   появлявшийся на наведении пиксель раздувал «Удалить тему» — она и соседняя
+   «Открыть файл» дёргались под курсором. */
+.голос-кнопка.опасная:hover:not(:disabled) { color: var(--тревога); box-shadow: inset 0 0 0 1px var(--тревога); }
+
+.зам-лента { padding-top: 4px; }
+
+.зам-запись { padding: 13px 0 15px; border-bottom: 1px solid var(--линия); }
+.зам-запись-шапка { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.зам-запись-левая { min-width: 0; }
+.зам-время { font-size: 11px; color: var(--тусклый); font-variant-numeric: tabular-nums; }
+.зам-запись-имя { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+
+.зам-убрать {
+  flex: none;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--тусклый);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.зам-убрать:hover { color: var(--тревога); border-color: var(--тревога); }
+
+.зам-тело { margin-top: 7px; font-size: 13.5px; line-height: 1.62; color: var(--текст); }
+.зам-тело p { margin: 0 0 9px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.зам-тело p:last-child { margin-bottom: 0; }
+.зам-подзаголовок { margin: 14px 0 6px; font-size: 14px; font-weight: 600; color: var(--приглушён); }
+.зам-пункты { margin: 0 0 9px; padding-left: 20px; }
+.зам-пункты li { margin-bottom: 3px; overflow-wrap: anywhere; }
+
+/* Надиктованное как есть: свёрнуто, разворачивается щелчком. */
+.зам-сырое { margin-top: 9px; }
+.зам-сырое summary { font-size: 12px; color: var(--тусклый); cursor: pointer; }
+.зам-сырое summary:hover { color: var(--приглушён); }
+.зам-сырое-тело {
+  margin-top: 6px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--линия);
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--тусклый);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.зам-сырое-тело p { margin: 0 0 6px; }
+.зам-сырое-тело p:last-child { margin-bottom: 0; }
+
+@media (max-width: 1000px) {
+  .зам-левая { width: 262px; }
+  .зам-шапка { flex-direction: column; }
+}
+
+/* ---------- Проверка: три компактные секции без карточек-в-карточках ---------- */
+.лист.проверочный { padding: 18px 22px 20px; }
+.проверка { max-width: 760px; }
+.пров-секция { padding: 12px 0 14px; border-bottom: 1px solid var(--линия); }
+.пров-секция:last-child, .пров-секция.последняя { border-bottom: 0; padding-bottom: 2px; }
+.пров-секция h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+.пров-намёк { font-size: 12px; color: var(--тусклый); margin-bottom: 10px; overflow-wrap: anywhere; }
+.пров-намёк.пров-ошибка { color: var(--тревога); }
+.пров-ряд { display: flex; align-items: center; gap: 12px; padding: 6px 0; flex-wrap: wrap; }
+.пров-статус { font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.пров-статус.плохо { color: var(--тревога); }
+.пров-таблица { display: flex; flex-direction: column; }
+.пров-строка { display: flex; gap: 10px; align-items: baseline; padding: 6px 2px; border-top: 1px solid var(--линия); font-size: 13px; }
+.пров-строка:first-child { border-top: 0; }
+.пров-знак { flex: none; width: 16px; font-weight: 700; color: var(--акцент); }
+.пров-строка.плохая .пров-знак { color: var(--тревога); }
+.пров-тело { min-width: 0; flex: 1; }
+.пров-верх-строки { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.пров-верх-строки b { font-weight: 600; }
+.пров-верх-строки span { color: var(--приглушён); overflow-wrap: anywhere; }
+.пров-примечание { font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.пров-пусто { padding: 10px 2px; font-size: 12px; color: var(--тусклый); }
+.пров-итог { padding: 6px 0; font-size: 13px; }
+.пров-цифра { display: flex; justify-content: space-between; gap: 12px; padding: 3px 2px; border-top: 1px solid var(--линия); }
+.пров-цифра:first-child { border-top: 0; }
+.пров-цифра span { color: var(--приглушён); }
+.пров-цифра b { font-weight: 600; white-space: nowrap; }
+.пров-текст { margin: 8px 0 4px; padding: 10px 12px; border-left: 2px solid var(--акцент); background: var(--панель-выше); border-radius: 0 9px 9px 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--текст); }
+
+/* ---------- Программы: экран телефона слева, свойства справа ---------- */
+.лист.программный { padding: 18px 22px 20px; }
+.программы { max-width: 1080px; }
+.прог-верх { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--линия); }
+.прог-счёт { font-size: 12px; color: var(--тусклый); }
+/* Две колонки: телефон и его настройка сетки — слева, свойства выбранной
+   программы — справа. Слева колонка шире: макет телефона важнее формы. */
+.прог-две { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(300px, 1fr); gap: 20px; align-items: start; padding-top: 14px; }
+/* Телефон прилипает: у программы с подменю свойства длинные, и без этого
+   экран уезжал вверх — правишь значок и не видишь, что получилось. */
+.прог-левая { min-width: 0; position: sticky; top: 12px; }
+.прог-правая { min-width: 0; }
+.прог-правая-шапка { margin-bottom: 8px; font-size: 12px; color: var(--приглушён); font-weight: 600; }
+.прог-свойства { min-width: 0; }
+
+/* Телефон: тёмный корпус со скруглением, как настоящий, а внутри — рамка
+   без своей границы, чтобы значки телефона не оказались в рамке внутри
+   рамки. */
+.прог-телефон { display: flex; justify-content: center; }
+.прог-телефон-корпус { width: 100%; padding: 12px; border-radius: 28px; background: #0b0c10; box-shadow: 0 10px 30px var(--тень-телефон); }
+.прог-телефон-рамка { overflow: hidden; border-radius: 14px; background: #0b0c10; }
+/* Светлая тема: корпус макета тоже светлый, иначе тёмная рамка вокруг
+   светлого экрана телефона выглядит чужеродно. */
+:root[data-theme="light"] .прог-телефон-корпус,
+:root[data-theme="light"] .прог-телефон-рамка { background: #dfe3e8; }
+.прог-телефон-экран { display: block; width: 851px; height: 393px; border: 0; transform-origin: 0 0; }
+.прог-намёк { padding-top: 9px; font-size: 11px; color: var(--тусклый); overflow-wrap: anywhere; }
+/* Подпись под макетом: размер экрана настоящего телефона. Мелко и тускло —
+   это справочное, а не заголовок. */
+.прог-подпись-экрана { padding-top: 7px; font-size: 11px; color: var(--тусклый); }
+.прог-добавление { display: flex; gap: 7px; flex-wrap: wrap; padding-top: 9px; }
+.прог-добавление[hidden] { display: none; }
+/* «Из запущенных…»: карточки как у программ, но в одну колонку. */
+.прог-запущенные { flex: 1 0 100%; display: flex; flex-direction: column; gap: 5px; }
+.прог-запущенные[hidden] { display: none; }
+.прог-запущенные-пусто { font-size: 12px; color: var(--тусклый); }
+.прог-запущенная { display: flex; align-items: center; gap: 9px; padding: 6px 9px;
+  border: 1px solid var(--линия); border-radius: 10px;
+  background: none; color: inherit; text-align: left; cursor: pointer; }
+.прог-запущенная.уже { opacity: .5; cursor: default; }
+.прог-запущенная-значок { width: 32px; height: 32px; flex: 0 0 32px; }
+.прог-запущенная-значок img { width: 32px; height: 32px; object-fit: contain; }
+.прог-запущенная-слова { display: flex; flex-direction: column; min-width: 0; }
+.прог-запущенная-имя { font-size: 13px; }
+.прог-запущенная-файл { font-size: 11px; color: var(--тусклый); overflow-wrap: anywhere; }
+
+/* Строка «Сетка» — кнопки-переключатели, как фильтры журнала: тот же вид
+   и то жеactive-состояние, чтобы вкладка не выглядела чужеродной. */
+.прог-сетка-вид { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 18px; padding: 10px 0 2px; }
+.прог-переключатели { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.прог-переключатели-имя { font-size: 11px; color: var(--тусклый); }
+.прог-переключатели button {
+  padding: 5px 12px;
+  border: 1px solid var(--линия);
+  border-radius: 999px;
+  background: var(--панель-выше);
+  color: var(--приглушён);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.прог-переключатели button:hover { color: var(--текст); border-color: var(--синий); }
+.прог-переключатели button.активный { border-color: var(--акцент); color: var(--акцент); background: var(--акцент-тень); }
+.прог-галочка { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--приглушён); cursor: pointer; }
+.прог-галочка input { width: 15px; height: 15px; accent-color: var(--акцент); }
+
+.прог-строка { padding: 10px 0 12px; border-bottom: 1px solid var(--линия); }
+.прог-строка.не-найдена .прог-подпись { color: var(--тревога); }
+.прог-шапка { display: flex; align-items: center; gap: 11px; margin-bottom: 10px; }
+/* Крупный значок в «Свойствах» — тот же рисунок, что на экране. Пустой
+   показатель, когда программы не выбрано. */
+.прог-образ { display: grid; place-items: center; flex: none; width: 52px; height: 52px; border-radius: 14px; background: var(--панель-выше); color: var(--приглушён); overflow: hidden; }
+.прог-образ svg { width: 30px; height: 30px; }
+.прог-образ img { width: 40px; height: 40px; object-fit: contain; }
+.прог-образ.пусто { color: var(--тусклый); font-size: 20px; }
+.прог-подпись { font-size: 12px; color: var(--приглушён); overflow-wrap: anywhere; min-width: 0; flex: 1; }
+.прог-двиг { display: flex; gap: 4px; flex: none; }
+.прог-кнопка { min-width: 28px; height: 26px; padding: 0 7px; border: 1px solid var(--линия); border-radius: 7px; background: var(--панель-выше); color: var(--приглушён); font: inherit; font-size: 12px; line-height: 1; cursor: pointer; }
+.прог-кнопка:hover { color: var(--текст); border-color: var(--синий); }
+.прог-кнопка.пуск { color: var(--акцент); }
+.прог-кнопка.убрать:hover { color: var(--тревога); border-color: var(--тревога); }
+.прог-сетка { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.прог-поле { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.прог-поле.широкий { grid-column: span 2; }
+.прог-поле span { font-size: 11px; color: var(--тусклый); }
+.прог-поле input, .прог-поле select { padding: 6px 9px; border: 1px solid var(--линия); border-radius: 8px; background: var(--панель-выше); color: var(--текст); font: inherit; font-size: 13px; min-width: 0; width: 100%; }
+.прог-поле input:focus, .прог-поле select:focus { outline: none; border-color: var(--синий); }
+.прог-поле select option { background: var(--панель-выше); color: var(--текст); }
+.прог-пусто { padding: 26px 10px; text-align: center; color: var(--тусклый); }
+/* Набор рисунков — плитки 44×44, выбранная обведена акцентом. */
+.прог-значки { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+.прог-значок {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--линия);
+  border-radius: 11px;
+  background: var(--панель-выше);
+  color: var(--приглушён);
+  cursor: pointer;
+}
+.прог-значок:hover { color: var(--текст); border-color: var(--синий); }
+.прог-значок svg { width: 23px; height: 23px; }
+.прог-значок.выбран { border-color: var(--акцент); color: var(--акцент); background: var(--акцент-тень); }
+.прог-поле input[type="color"] { width: 44px; height: 26px; padding: 2px; flex: none; cursor: pointer; }
+.прог-файл-ряд { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.прог-выбрать-путь { align-self: flex-start; margin-top: 2px; }
+.прог-файл-ряд .голос-кнопка { flex: none; }
+.прог-файл-намёк { font-size: 11px; color: var(--тусклый); overflow-wrap: anywhere; min-width: 0; }
+.прог-низ { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-top: 12px; }
+.прог-статус { font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.прог-статус.плохо { color: var(--тревога); }
+/* Несохранённые правки: и подпись у кнопки, и сама кнопка — иначе хозяин
+   нажмёт «Сохранить» на другой вкладке и не узнает, что здесь что-то менял. */
+.прог-несохранено { font-size: 12px; color: var(--акцент); }
+.прог-несохранено[hidden] { display: none; }
+.голос-кнопка.несохранено { border-color: var(--акцент); color: var(--акцент); }
+/* --- Меню на телефоне --- */
+.prog-меню { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--линия); }
+.прог-меню-шапка { width: 100%; padding: 6px 9px; border: 1px solid var(--линия); border-radius: 8px; background: var(--панель-выше); color: var(--приглушён); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
+.прог-меню-шапка:hover { color: var(--текст); border-color: var(--синий); }
+.прог-меню-тело { padding-top: 9px; }
+.прог-меню-список { display: flex; flex-direction: column; gap: 7px; }
+.прог-меню-пункт { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 8px; align-items: start; padding: 8px; border: 1px solid var(--линия); border-radius: 9px; background: var(--панель); }
+.прог-меню-знак { display: grid; place-items: center; width: 30px; height: 30px; border: 1px solid var(--линия); border-radius: 8px; color: var(--синий); }
+.прог-меню-знак svg { width: 17px; height: 17px; }
+.прог-меню-сетка { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.прог-меню-панель { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; }
+.прог-меню-панель .прог-кнопка:first-of-type { margin-left: auto; }
+.прог-меню-значки { flex: 1; min-width: 0; padding: 4px 7px; border: 1px solid var(--линия); border-radius: 7px; background: var(--панель-выше); color: var(--текст); font: inherit; font-size: 12px; }
+.прог-меню-значки option { background: var(--панель-выше); color: var(--текст); }
+.прог-меню-добавление { display: flex; gap: 7px; flex-wrap: wrap; padding-top: 9px; }
+.прог-меню-галочка { display: flex; align-items: center; gap: 7px; padding: 7px 0 0; font-size: 12px; color: var(--приглушён); cursor: pointer; }
+.прог-меню-галочка input { width: 15px; height: 15px; accent-color: var(--синий); }
+  /* «Включает также…» — выбор пункта этой же программы. Отдельной строкой, а не
+     третьим полем сетки: подпись длиннее названия пункта. */
+  .прог-меню-связь { grid-column: 1 / -1; }
+  .прог-меню-связь select { padding: 6px 9px; border: 1px solid var(--линия); border-radius: 8px; background: var(--панель-выше); color: var(--текст); font: inherit; font-size: 13px; width: 100%; }
+/* --- Нижние кнопки телефона ---
+   Панель «Кнопка внизу N» — те же поля и та же сетка, что у пункта подменю,
+   поэтому своих правил у неё почти нет (класс свой — «прог-кнопка» занят кнопками ↑ ↓ ✕ высотой 26 px, и панель сжималась до неё): только ширина полей (здесь список
+   программ длинный, одной колонки мало) и намёк с примерами. */
+  .прог-низ-кнопка .прог-меню-шапка { cursor: default; }
+  .прог-низ-кнопка .прог-меню-шапка:hover { color: var(--приглушён); border-color: var(--линия); }
+  .прог-низ-кнопка .прог-меню-сетка { grid-template-columns: minmax(0, 1fr); }
+  .прог-низ-кнопка .прог-намёк { padding-top: 10px; line-height: 1.4; }
+  .прог-меню-связь option { background: var(--панель-выше); color: var(--текст); }
+.прог-меню-подсказка { padding-top: 8px; font-size: 11px; color: var(--тусклый); overflow-wrap: anywhere; }
+/* Узкое окно: телефон и свойства друг под другом. Ниже 1100 px две колонки
+   уже не помещаются — свойства уезжают в узкую полосу и поля в них рвутся. */
+@media (max-width: 1100px) { .прог-две { grid-template-columns: minmax(0, 1fr); } .прог-левая { position: static; } }
+@media (max-width: 760px) { .прог-сетка { grid-template-columns: repeat(2, minmax(0, 1fr)); } .прог-поле.широкий { grid-column: span 2; } }
+@media (max-width: 520px) { .прог-сетка { grid-template-columns: minmax(0, 1fr); } .прог-поле.широкий { grid-column: span 1; } .прог-верх { flex-wrap: wrap; } .прог-две { gap: 14px; } }
+
+/* ---------- Команды: инструкция, что сказать и что будет ---------- */
+/* Три раздела подряд, карточки команд в две колонки от 1100 px. Зелёного
+   в оформлении нет: акцент янтарный, второй цвет синий. */
+.лист.командный { padding: 20px 24px 24px; }
+.команды { max-width: 1000px; }
+.ком-секция { padding: 12px 0 16px; border-bottom: 1px solid var(--линия); }
+.ком-секция:last-child { border-bottom: 0; padding-bottom: 2px; }
+.ком-секция h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
+.ком-пояснение { margin-bottom: 9px; font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.ком-статус { padding: 14px 0; font-size: 13px; color: var(--тусклый); }
+.ком-пункт { margin: 0 0 7px; font-size: 13px; line-height: 1.6; color: var(--приглушён); overflow-wrap: anywhere; }
+.ком-пункт:last-child { margin-bottom: 0; }
+.ком-пункт b { color: var(--текст); font-weight: 600; }
+.ком-текст { margin: 0; font-size: 13px; line-height: 1.65; color: var(--приглушён); overflow-wrap: anywhere; }
+/* `align-items: start` — иначе короткая карточка («Громкость») вытягивается
+   до высоты соседней и внутри неё пустое поле. */
+.ком-сетка { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; }
+@media (min-width: 1100px) { .ком-сетка { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ком-карточка {
+  padding: 12px 14px; border: 1px solid var(--линия); border-radius: 11px;
+  background: var(--панель-выше); min-width: 0;
+}
+.ком-карточка h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; color: var(--акцент); }
+.ком-что { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--текст); overflow-wrap: anywhere; }
+.ком-примеры { display: flex; flex-wrap: wrap; gap: 6px; }
+.ком-плашка {
+  padding: 4px 9px; border-radius: 8px; background: var(--панель);
+  color: var(--приглушён); font: inherit; font-size: 13px; font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.ком-арг { margin: 8px 0 0; font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
+.ком-программы { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--линия); }
+.ком-программа { padding: 2px 0; font-size: 12px; color: var(--приглушён); overflow-wrap: anywhere; }
+.ком-программа b { color: var(--синий); font-weight: 600; }
+.ком-прозвища { color: var(--тусклый); }
+
+/* ---------- Готовые характеры ----------
+   Четыре карточки над полем «Характер»; выбранная — янтарной обводкой, как
+   переключатели на вкладке «Программы». */
+.характер-карточки { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 4px 0 8px; }
+.характер-карточка {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px;
+  padding: 10px 12px; text-align: left; cursor: pointer;
+  background: transparent; border: 1px solid var(--линия); border-radius: 10px;
+  color: var(--текст); font: inherit;
+  transition: border-color .15s, background .15s;
+}
+.характер-карточка:hover { border-color: var(--синий); }
+.характер-карточка.активный { border-color: var(--акцент); background: var(--акцент-тень); }
+.характер-имя { font-size: 13px; font-weight: 600; }
+.характер-карточка.активный .характер-имя { color: var(--акцент); }
+.характер-карточка.правленый { border-style: dashed; border-color: var(--акцент); }
+.характер-намёк { font-size: 11.5px; line-height: 1.35; color: var(--приглушён); }
+@media (max-width: 1100px) { .характер-карточки { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+/* «О программе» — свой пункт меню: та же ширина, что у формы настроек, и те
+   же блоки `обн-*`, что жили в ней раньше. */
+.обн-страница { max-width: 760px; }
+.обн-галочка { display: flex; align-items: center; gap: 9px; padding: 8px 0 2px; font-size: 13px; color: var(--приглушён); cursor: pointer; }
+.обн-галочка input { width: 16px; height: 16px; accent-color: var(--синий); }
+.обн-текст { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--линия); }
+.обн-абзац { margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: var(--приглушён); }
+.обн-абзац:last-child { margin-bottom: 0; }
+
+/* ---------- Мастер первого запуска ----------
+   Слой поверх всего окна: пока идёт первый запуск, разделы под ним не нужны.
+   Карточка прокручивается сама (окно пульта бывает 1000×700), а шапка с
+   кнопками «Назад» и «Дальше» остаются на виду. Классы с префиксом
+   `мастер-`: без него легко задеть чужой блок (см. `прог-кнопка`). */
+.мастер {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: var(--фон);
+}
+.мастер[hidden], #мастер[hidden] { display: none; }
+.мастер-карточка {
+  display: flex; flex-direction: column; gap: 14px;
+  width: 100%; max-width: 760px; max-height: 100%; min-height: 0;
+  padding: 20px 24px; background: var(--панель);
+  border: 1px solid var(--линия); border-radius: 14px;
+}
+.мастер-шапка { display: flex; align-items: center; gap: 14px; flex: none; }
+.мастер-шаг { flex: none; font-size: 12px; color: var(--тусклый); }
+.мастер-полоса { flex: 1 1 auto; height: 4px; border-radius: 2px; background: var(--панель-выше); overflow: hidden; }
+.мастер-полоса i { display: block; height: 100%; width: 0; background: var(--акцент); transition: width .2s ease; }
+.мастер-пропустить {
+  flex: none; padding: 4px 2px; background: none; border: 0;
+  color: var(--тусклый); font: inherit; font-size: 12px; cursor: pointer;
+}
+.мастер-пропустить:hover { color: var(--текст); }
+.мастер-тело { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.мастер-низ { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: none; padding-top: 2px; border-top: 1px solid var(--линия); }
+.мастер-низ .голос-кнопка[hidden] { display: none; }
+.мастер-заголовок { margin: 0 0 6px; font-size: 15px; font-weight: 600; }
+.мастер-текст { margin: 0 0 10px; font-size: 13px; line-height: 1.55; color: var(--приглушён); }
+.мастер-подпись { margin: 12px 0 0; font-size: 12px; color: var(--тусклый); line-height: 1.45; overflow-wrap: anywhere; }
+.мастер-подпись.плохо { color: var(--тревога); }
+.мастер-ряд { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 5px 0; }
+.мастер-ряд > span:first-child { flex: 1 1 190px; font-size: 13px; color: var(--приглушён); }
+.мастер-ряд .настр-выбор, .мастер-ряд .настр-ввод { flex: 1 1 240px; max-width: 100%; }
+.мастер-блок { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--линия); }
+/* Заголовок «Твой компьютер» берёт вид из настроек, а там у него своя черта
+   сверху — вторая черта под блоком выглядела двойной линией. */
+.мастер-блок > .образец-заголовок:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.мастер-адрес-поле { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.мастер-адрес { font-size: 14px; color: var(--текст); overflow-wrap: anywhere; }
+.мастер-крупно { display: block; margin: 6px 0; font-size: 18px; color: var(--текст); overflow-wrap: anywhere; }
+/* Подложка белая и поля 12 px: камера телефона тёмный код на тёмном фоне не
+   прочтёт, а сервер рисует QR чёрным по белому. */
+.мастер-qr { display: inline-block; padding: 12px; background: #fff; border-radius: 10px; line-height: 0; }
+.мастер-qr img { width: 180px; height: 180px; display: block; }
+/* QR нет (нет библиотеки segno) — адрес крупно, без белой подложки. */
+.мастер-qr.без-кода { background: none; padding: 0; line-height: normal; }
+.мастер-ссылки { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 0; }
+.мастер-ссылка {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  width: 100%; padding: 9px 12px; text-align: left; cursor: pointer;
+  background: var(--панель-выше); border: 1px solid var(--линия); border-radius: 10px;
+  color: var(--текст); font: inherit; font-size: 13px;
+}
+.мастер-ссылка:hover { border-color: var(--синий); }
+.мастер-характеры { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 4px 0 8px; }
+@media (max-width: 1100px) { .мастер-характеры { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.мастер-предупреждение { margin: 10px 0 0; padding: 9px 12px; font-size: 12px; line-height: 1.45; color: var(--приглушён); background: var(--панель-выше); border: 1px solid var(--линия); border-radius: 10px; }
+

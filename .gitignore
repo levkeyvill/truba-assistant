@@ -1,0 +1,15 @@
+.env
+.venv/
+models/
+data/
+vendor/
+voice/*.wav
+voice/*.mp3
+__pycache__/
+*.pyc
+
+# Папки, которые создаёт установщик (tools/install.ps1). В репозитории их
+# быть не должно никогда: тут гигабайты окружения и моделей.
+.python/
+.cache/
+.tools/
