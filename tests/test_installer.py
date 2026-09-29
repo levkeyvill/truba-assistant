@@ -185,6 +185,25 @@ class InstallPs1Tests(unittest.TestCase):
         self.assertLess(начало, self.текст.index("Шаг 1 "))
         self.assertIn("exit 1", self.текст[начало:начало + 900])
 
+    def test_it_asks_before_installing(self):
+        # 29.09, первые отзывы: «установочник сразу начинает установку. надо
+        # предупреждение и "нажми да чтобы установить"». Вопрос — после отказа
+        # по русским буквам в пути и раньше всего, что пишет на диск.
+        вопрос = self.текст.index("Установить? Нажми Д")
+        self.assertLess(self.текст.index("НЕ ПОЛУЧИЛОСЬ: в пути"), вопрос)
+        self.assertLess(вопрос, self.текст.index("New-Item -ItemType Directory"))
+        self.assertLess(вопрос, self.текст.index("Unblock-File"))
+        self.assertLess(вопрос, self.текст.index("Шаг 1 "))
+        # «Д» — клавиша L в любой раскладке; «Y» в русской — это «Н», «нет».
+        self.assertIn("[ConsoleKey]::L", self.текст)
+        self.assertNotIn("[ConsoleKey]::Y", self.текст)
+        # Отмена ничего не ставит и не пугает окном «Installation failed».
+        отмена = self.текст.index("Отменено — ничего не установлено")
+        self.assertIn("exit 0", self.текст[отмена:отмена + 200])
+        # Без вопроса — только ключом -Yes и без клавиатуры (проверки).
+        self.assertIn("[switch]$Yes", self.текст)
+        self.assertIn("[Console]::IsInputRedirected", self.текст)
+
     def test_shortcuts_first_settings_and_the_launch(self):
         self.assertIn("CreateShortcut", self.текст)
         self.assertIn("'Труба.lnk'", self.текст)

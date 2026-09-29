@@ -17,7 +17,9 @@ param(
     # Не запускать пульт в конце. Для проверок и для тихой установки.
     [switch]$NoLaunch,
     # Пересоздать .venv с нуля: лечит сломанное окружение.
-    [switch]$Repair
+    [switch]$Repair,
+    # Не спрашивать «Установить?»: кнопка в пульте уже спросила сама.
+    [switch]$Yes
 )
 
 # $PSScriptRoot = <корень>\tools, корень Трубы на уровень выше.
@@ -106,9 +108,6 @@ function ПортЗанят {
     }
 }
 
-New-Item -ItemType Directory -Force -Path $data | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $root '.tools') | Out-Null
-
 # Дальше в командах пути относительные (requirements.txt, tools\...): если
 # скрипт запустили не из корня (например, правой кнопкой → «Запустить с
 # помощью PowerShell»), uv взял бы файлы не оттуда.
@@ -117,8 +116,6 @@ Set-Location -LiteralPath $root
 Write-Host ''
 Write-Host '  Труба — установка' -ForegroundColor Cyan
 Write-Host '  -----------------' -ForegroundColor DarkCyan
-Write-Лог "Установка в $root" 'White'
-Write-Лог "Журнал: $log" 'DarkGray'
 
 # --- Путь без русских букв ---------------------------------------------------
 #
@@ -139,6 +136,57 @@ if ($root -match '[^\x00-\x7F]') {
     Write-Host '  например C:\Truba, и запусти установщик оттуда.' -ForegroundColor Red
     exit 1
 }
+
+# --- Спросить, прежде чем ставить --------------------------------------------
+#
+# Двойной щелчок бывает случайным, а установка качает гигабайты и идёт минут
+# двадцать. 29.09 первые люди попросили: «надо предупреждение и "нажми да,
+# чтобы установить"». Поэтому сначала говорим, что будет, и ждём «Д».
+# Без вопроса — с ключом -Yes (кнопка «Поставить качественные голоса» в
+# пульте уже спросила сама) и когда ввода нет вовсе (проверки, тихая
+# установка): спрашивать там некого.
+
+if (-not $Yes -and -not [Console]::IsInputRedirected) {
+    Write-Host ''
+    if ($Voices) {
+        Write-Host '  Будут поставлены качественные голоса Higgs и ESpeech (видеокарта NVIDIA):' -ForegroundColor White
+        Write-Host '  torch для видеокарты и библиотеки — около 5 ГБ, 15–30 минут. Модель' -ForegroundColor Gray
+        Write-Host '  Higgs (~9 ГБ) скачается потом, когда выберешь этот голос в пульте.' -ForegroundColor Gray
+    }
+    else {
+        Write-Host '  Будет установлена Труба — голосовой ассистент.' -ForegroundColor White
+        Write-Host '  Python, библиотеки и модели — около 4 ГБ, 15–25 минут, нужен интернет.' -ForegroundColor Gray
+    }
+    if ($Repair) {
+        Write-Host '  Окружение .venv будет пересоздано с нуля (ключ -Repair).' -ForegroundColor Gray
+    }
+    Write-Host "  Всё ставится в эту папку: $root" -ForegroundColor Gray
+    Write-Host '  Прав администратора не нужно; удалить Трубу — удалить эту папку.' -ForegroundColor Gray
+    Write-Host ''
+    Write-Host '  Установить? Нажми Д — да. Любая другая клавиша — отмена.' -ForegroundColor Yellow
+    # Клавиша, а не буква: «Д» в русской раскладке и «L» в английской — одна
+    # и та же кнопка. «Y» не берём: в русской раскладке это «Н», то есть «нет».
+    $да = $true
+    try {
+        $да = ([Console]::ReadKey($true).Key -eq [ConsoleKey]::L)
+    }
+    catch {
+        # Клавиатуру не прочитать (не консоль) — спрашивать некого, ставим.
+        $да = $true
+    }
+    if (-not $да) {
+        Write-Host ''
+        Write-Host '  Отменено — ничего не установлено.' -ForegroundColor Gray
+        Start-Sleep -Seconds 2
+        exit 0
+    }
+    Write-Host '  Ставлю.' -ForegroundColor White
+}
+
+New-Item -ItemType Directory -Force -Path $data | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $root '.tools') | Out-Null
+Write-Лог "Установка в $root" 'White'
+Write-Лог "Журнал: $log" 'DarkGray'
 
 # Файлы из скачанного ZIP Windows помечает «из интернета» (Zone.Identifier), и
 # двойной щелчок по «Труба.vbs» каждый раз спрашивает «Запустить?». Снимаем

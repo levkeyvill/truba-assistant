@@ -1282,6 +1282,9 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .образец-файл-инфо { font-size: 12px; color: var(--приглушён); overflow-wrap: anywhere; }
 .образец-файл-инфо:empty { display: none; }
 .образец-подсказка { font-size: 11px; color: var(--тусклый); }
+/* Адреса в «Чтобы экран телефона не гас» набирают на телефоне руками —
+   они должны читаться целиком и выделяться мышью одним движением. */
+.не-гасить-адрес { color: var(--текст); font-weight: 600; overflow-wrap: anywhere; user-select: all; }
 .образец-переключатель { display: flex; flex-direction: column; gap: 6px; }
 .образец-вариант { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
 .образец-статус { padding-top: 2px; }

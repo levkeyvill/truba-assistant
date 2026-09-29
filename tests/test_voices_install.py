@@ -159,7 +159,9 @@ class ОтдельнымОкномTests(unittest.TestCase):
         self.assertTrue(ответ["ok"], ответ)
         команда = запуск.call_args[0][0]
         self.assertEqual(команда[:3], ["cmd.exe", "/c", "start"])
-        self.assertTrue(команда[-1].endswith(voices_install.BAT))
+        self.assertTrue(команда[-2].endswith(voices_install.BAT))
+        # Пульт уже спросил «Начать?» — установщик второй раз не спрашивает.
+        self.assertEqual(команда[-1], "-Yes")
 
     def test_no_bat_is_said_in_words(self):
         with self._можно(), mock.patch.object(voices_install.subprocess, "Popen") as запуск:

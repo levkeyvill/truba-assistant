@@ -91,7 +91,9 @@ def check(root=None) -> dict:
 
     место = hw.get("disk_free_gb")
     if место is not None and float(место) < MIN_DISK_GB:
-        return {"ok": False,
+        # `reason` — для пульта: про место «Твой компьютер» уже сказал
+        # красной строкой (`hardware.warnings`), второй раз не повторяет.
+        return {"ok": False, "reason": "disk",
                 "error": f"мало места на диске ({место} ГБ) — качественным "
                          f"голосам нужно от {MIN_DISK_GB} ГБ"}
 
@@ -249,8 +251,9 @@ def launch_external(root=None) -> dict:
     try:
         # `start` — новое окно консоли, чтобы человек видел шаги; не дочерний
         # процесс: пульт сейчас закроется, а установка должна идти дальше.
+        # `-Yes`: пульт уже спросил «Начать?», второй вопрос в окне лишний.
         subprocess.Popen(
-            ["cmd.exe", "/c", "start", "Труба — качественные голоса", str(bat)],
+            ["cmd.exe", "/c", "start", "Труба — качественные голоса", str(bat), "-Yes"],
             cwd=str(root),
             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),

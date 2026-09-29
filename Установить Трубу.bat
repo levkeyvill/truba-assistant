@@ -1,6 +1,6 @@
 @echo off
 rem Truba installer. ASCII only: cyrillic in a .bat file breaks the encoding.
-rem Double-click this file, or run it with keys: -Voices, -NoLaunch, -Repair.
+rem Double-click this file, or run it with keys: -Voices, -NoLaunch, -Repair, -Yes.
 setlocal
 cd /d "%~dp0"
 title Truba - installing

@@ -1633,6 +1633,7 @@ class WebRuntime:
             "result": getattr(self, "_voices_result", None),
             "possible": bool(проверка.get("ok")),
             "why": "" if проверка.get("ok") else str(проверка.get("error") or ""),
+            "reason": "" if проверка.get("ok") else str(проверка.get("reason") or ""),
             "installed": bool(hardware.voices_installed()),
         }
 

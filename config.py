@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore", message=".*Couldn't find ffprobe.*")
 
 # Версия Трубы. Поднимаем при каждом выпуске, формат X.Y.Z; выпуск на GitHub
 # помечается тегом `vX.Y.Z` — по нему и находится «последняя версия».
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 # Репозиторий на GitHub в виде «владелец/репозиторий»: отсюда обновление
 # спрашивает о новой версии и отсюда же качает выпуск.
 UPDATE_REPO = "levkeyvill/truba-assistant"
