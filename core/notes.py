@@ -611,6 +611,146 @@ def delete_topic(section: str, topic: str) -> Path:
     return target
 
 
+# --- Правка ---------------------------------------------------------------
+#
+# Хозяин хочет поправить заметку из пульта, а не открывать Obsidian: мысль
+# легла не туда, заголовок неудачный, или он просто продиктовал ещё одну.
+# Правится только причёсанный текст — сырая диктовка в свёртке не трогается.
+
+
+def _head_line(entry: dict, title: str) -> str:
+    """Новая строка `## ` для записи, с прежней датой.
+
+    Дата — часть записи, а не украшение: переименование мысли не должно
+    делать её свежей. Записи без даты (правили руками) даты не получают.
+    """
+    title = " ".join(str(title or "").split())
+    when = (entry.get("when") or "").strip()
+    if when:
+        return f"## {when} — {title}" if title else f"## {when}"
+    if title:
+        return f"## {title}"
+    # Даты нет и заголовка нет — строку не выдумываем, оставляем прежнюю.
+    return f"## {entry.get('heading', '')}".rstrip()
+
+
+def edit_entry(section: str, topic: str, index: int, heading: str,
+               title: str, text: str) -> Path:
+    """Заменяет заголовок и текст записи под номером `index`. Путь к файлу.
+
+    Проверки те же, что в `delete_entry`: номер должен существовать, а
+    заголовок под ним — совпасть с тем, что хозяин видел на экране. Хозяин
+    правит файл руками, пока смотрит пульт, и номер уже про другую запись.
+
+    Сырая диктовка в свёртке переписывается из прежней и остаётся на месте:
+    распознавание речи врало, и это единственная честная копия того, что он
+    сказал. В корзину ничего не уходит — запись не удаляли, её исправили.
+    """
+    data = read(section, topic)
+    entries = data["entries"]
+    try:
+        number = int(index)
+    except (TypeError, ValueError):
+        raise ValueError("неверный номер записи") from None
+    if not 0 <= number < len(entries):
+        raise ValueError("записи с таким номером нет")
+    entry = entries[number]
+    if (entry["heading"] or "").strip() != (heading or "").strip():
+        raise ValueError("файл изменился — посмотри заметку заново")
+    body = (text or "").strip()
+    if not body:
+        raise ValueError("пустой текст")
+    # Заголовки `#`/`##` внутри текста разбор принял бы за новую запись —
+    # опускаем их до `###`, как и при добавлении.
+    body = re.sub(r"(?m)^#{1,2}(?=\s)", "###", body)
+
+    block = [_head_line(entry, title), "", body, ""]
+    if entry.get("raw"):
+        block += ["> [!quote]- Как было сказано"]
+        block += [f"> {line}" for line in entry["raw"].split("\n")]
+        block += [""]
+
+    path = Path(data["path"])
+    _head, chunks = _chunks(_read_lines(path))
+    chunks[number] = block
+    rebuilt = list(_head)
+    for chunk in chunks:
+        rebuilt += chunk
+    while rebuilt and not rebuilt[-1].strip():
+        rebuilt.pop()
+    _stamp(rebuilt, datetime.now())
+    _write(path, "\n".join(rebuilt).rstrip("\n") + "\n")
+    return path
+
+
+def _reface(lines: list[str], topic: str, section: str,
+            when: datetime) -> None:
+    """Переименовывает тему внутри файла: шапка, тег и строка `# `.
+
+    Меняются только строки, которые уже есть: файл, правленный руками, не
+    должен получить нашу шапку поверх чужой правки. Записи не трогаем.
+    """
+    # Первая `---` открывает шапку, а не закрывает её: закрывает вторая.
+    in_front = bool(lines) and lines[0].strip() == "---"
+    start = 1 if in_front else 0
+    titled = True
+    for index in range(start, len(lines)):
+        line = lines[index]
+        if in_front:
+            if line.strip() == "---":
+                in_front = False
+            elif line.startswith("тема:"):
+                lines[index] = f"тема: {topic}"
+            elif line.startswith("раздел:"):
+                lines[index] = f"раздел: {section}"
+            elif line.startswith("tags: ["):
+                lines[index] = f"tags: [{TAG}, {_tag_of(section)}]"
+            continue
+        if HEADING.match(line):
+            break  # дальше записи — их не трогаем
+        if titled and line.startswith("# "):
+            lines[index] = f"# {topic}"
+            titled = False
+    _stamp(lines, when)
+
+
+def rename_topic(section: str, topic: str, new_topic: str,
+                 new_section: str = "") -> Path:
+    """Переименовывает тему и/ или переносит её в другой раздел.
+
+    Модель иногда кладёт мысль не в тот раздел, и хозяин переносит её руками
+    — папку в Obsidian он всё равно видит, заметку переносит не охотно.
+
+    Сначала пишем новый файл и только потом убираем старый: если запись
+    не вышла, заметка остаётся на месте целиком. Склеивать с темой-тёзкой не
+    надо — две разные мысли молча слились бы в одну.
+    """
+    old = topic_path(section, topic)
+    if not old.is_file():
+        raise FileNotFoundError(f"нет такой темы: {topic}")
+    раздел = str(new_section or "").strip() or section
+    target = topic_path(раздел, new_topic or topic)
+    if str(target) == str(old):
+        return old
+    # На Windows «Книга.md» и «книга.md» — один и тот же файл: переименование
+    # только регистром это правка имени, а не «тема с таким именем уже есть».
+    same = target.exists() and os.path.samefile(target, old)
+    if target.exists() and not same:
+        raise ValueError("тема с таким именем уже есть")
+    lines = _read_lines(old)
+    _reface(lines, target.stem, target.parent.name, datetime.now())
+    if same and old.name != target.name:
+        # Только регистр: запись поверх «Книга.md» оставила бы на диске
+        # прежнее имя — Windows хранит регистр от старого файла. Сначала
+        # переименовать сам файл, потом писать.
+        old.rename(target)
+    _write(target, "\n".join(lines).rstrip("\n") + "\n")
+    if not same:
+        old.unlink(missing_ok=True)
+        _prune_section(section)
+    return target
+
+
 def known_topics() -> list[dict]:
     """Список разделов с темами для подсказки модели: куда положить мысль."""
     return [{"name": s["name"],

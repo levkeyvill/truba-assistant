@@ -185,3 +185,178 @@ class StorageTests(TmpFolder):
     def test_no_leftover_part_files(self):
         notes.add("Книги", "Тема", "Первая", "Один.")
         self.assertEqual([p.name for p in self.tmp.rglob("*.part")], [])
+
+
+# --- Правка записей -------------------------------------------------------
+
+
+class EditTests(TmpFolder):
+    def test_an_entry_gets_a_new_heading_and_text_with_its_own_date(self):
+        notes.add("Книги", "Тема", "Первая", "Старый текст.",
+                  raw="ну значит так", when=self.when(26, 23, 0))
+        notes.add("Книги", "Тема", "Вторая", "Два.", when=self.when(27, 4))
+        path = self.tmp / "Книги" / "Тема.md"
+        before = path.read_text(encoding="utf-8")
+        heading = notes.read("Книги", "Тема")["entries"][0]["heading"]
+        notes.edit_entry("Книги", "Тема", 0, heading, "  Правленый  ",
+                         "Новый текст.")
+        after = path.read_text(encoding="utf-8")
+        entry = notes.read("Книги", "Тема")["entries"][0]
+        # Дата прежняя: правка мысли не делает её сегодняшней.
+        self.assertEqual(entry["when"], "26.09.2026, 23:00")
+        self.assertEqual(entry["title"], "Правленый")
+        self.assertEqual(entry["text"], "Новый текст.")
+        # Сырая диктовка — единственная честная копия того, что он сказал.
+        self.assertEqual(entry["raw"], "ну значит так")
+        # Соседняя запись и голова файла — байт в байт как были.
+        self.assertIn("## 27.09.2026, 04:15 — Вторая\n\nДва.\n", after)
+        # Голова та же, кроме даты «обновлено» — она теперь сегодняшняя.
+        def без_даты(текст):
+            голова = текст[:текст.index("## 26.09.")]
+            return [с for с in голова.split("\n") if not с.startswith("обновлено:")]
+        self.assertEqual(без_даты(after), без_даты(before))
+        self.assertIn("создано: 2026-09-26", after)
+        self.assertIn(f"обновлено: {datetime.date.today():%Y-%m-%d}", after)
+
+    def test_a_stale_heading_is_refused_and_nothing_is_lost(self):
+        notes.add("Книги", "Тема", "Первая", "Один.")
+        path = self.tmp / "Книги" / "Тема.md"
+        before = path.read_text(encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "изменился"):
+            notes.edit_entry("Книги", "Тема", 0, "устаревшая запись",
+                             "Новое", "Текст.")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_a_wrong_number_is_refused(self):
+        notes.add("Книги", "Тема", "Первая", "Один.")
+        with self.assertRaisesRegex(ValueError, "номером нет"):
+            notes.edit_entry("Книги", "Тема", 5, "что угодно", "Новое", "Текст.")
+
+    def test_editing_a_note_without_raw_adds_no_quote(self):
+        # Цитаты не было — правка не должна её выдумывать: сырого диктования
+        # у рукописной записи не существует.
+        path = notes.add("Книги", "Тема", "Первая", "Один.", when=self.when())
+        heading = notes.read("Книги", "Тема")["entries"][0]["heading"]
+        notes.edit_entry("Книги", "Тема", 0, heading, "Правлена", "Два.")
+        self.assertNotIn("[!quote]", path.read_text(encoding="utf-8"))
+        self.assertEqual(notes.read("Книги", "Тема")["entries"][0]["text"],
+                         "Два.")
+
+    def test_a_heading_inside_the_text_is_pushed_down(self):
+        # Иначе разбор принял бы `## ` за новую запись.
+        path = notes.add("Книги", "Тема", "Первая", "Один.", when=self.when())
+        heading = notes.read("Книги", "Тема")["entries"][0]["heading"]
+        notes.edit_entry("Книги", "Тема", 0, heading, "Правлена",
+                         "# Шапка\n\n## Подшапка\n\nТекст.")
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("### Шапка", body)
+        self.assertIn("### Подшапка", body)
+        self.assertEqual(len(notes.read("Книги", "Тема")["entries"]), 1)
+
+    def test_an_empty_title_keeps_the_date_and_drops_the_name(self):
+        notes.add("Книги", "Тема", "Первая", "Один.", when=self.when())
+        heading = notes.read("Книги", "Тема")["entries"][0]["heading"]
+        notes.edit_entry("Книги", "Тема", 0, heading, "  ", "Два.")
+        self.assertEqual(notes.read("Книги", "Тема")["entries"][0]["heading"],
+                         "27.09.2026, 02:15")
+
+    def test_an_empty_text_is_refused_and_nothing_changes(self):
+        path = notes.add("Книги", "Тема", "Первая", "Один.")
+        before = path.read_text(encoding="utf-8")
+        heading = notes.read("Книги", "Тема")["entries"][0]["heading"]
+        with self.assertRaisesRegex(ValueError, "пустой текст"):
+            notes.edit_entry("Книги", "Тема", 0, heading, "Новое", "   \n ")
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+
+    def test_editing_nothing_goes_to_the_trash_nowhere(self):
+        # Правка — не удаление: корзина заметок остаётся нетронутой.
+        notes.add("Книги", "Тема", "Первая", "Один.")
+        heading = notes.read("Книги", "Тема")["entries"][0]["heading"]
+        notes.edit_entry("Книги", "Тема", 0, heading, "Правлена", "Два.")
+        self.assertFalse((self.tmp / notes.TRASH).exists())
+
+
+# --- Переименование тем ---------------------------------------------------
+
+
+class RenameTests(TmpFolder):
+    def test_a_topic_is_renamed_in_the_same_section(self):
+        notes.add("Книги", "Мастер", "Первая", "Один.", when=self.when())
+        path = notes.rename_topic("Книги", "Мастер", "Мастер и Маргарита")
+        self.assertEqual(path, self.tmp / "Книги" / "Мастер и Маргарита.md")
+        self.assertFalse((self.tmp / "Книги" / "Мастер.md").exists())
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("тема: Мастер и Маргарита", body)
+        self.assertIn("# Мастер и Маргарита", body)
+        self.assertIn("tags: [заметки-трубы, книги]", body)
+        # Записи — не трогаем.
+        self.assertIn("## 27.09.2026, 02:15 — Первая", body)
+        self.assertIn("Один.", body)
+        self.assertEqual(notes.read("Книги", "Мастер и Маргарита")["topic"],
+                         "Мастер и Маргарита")
+
+    def test_a_topic_moves_to_another_section(self):
+        notes.add("Книги", "Мастер", "Первая", "Один.")
+        path = notes.rename_topic("Книги", "Мастер", "Мастер", "Идеи")
+        self.assertEqual(path, self.tmp / "Идеи" / "Мастер.md")
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("раздел: Идеи", body)
+        self.assertIn("tags: [заметки-трубы, идеи]", body)
+        # Старый раздел опустел — папка без файлов только мешает.
+        self.assertFalse((self.tmp / "Книги").exists())
+        self.assertIn("Один.", body)
+
+    def test_renaming_only_the_case_is_not_a_refusal(self):
+        # На Windows «Книга.md» и «книга.md» — один и тот же файл, и хозяин
+        # вправе поправить регистр: это не «тема с таким именем уже есть».
+        notes.add("Книги", "Книга", "Первая", "Один.")
+        path = notes.rename_topic("Книги", "Книга", "книга")
+        self.assertEqual(path.name, "книга.md")
+        # Имя на диске — новое, а не прежнее «Книга.md» с новой шапкой.
+        self.assertEqual(sorted(p.name for p in (self.tmp / "Книги").iterdir()),
+                         ["книга.md"])
+        body = path.read_text(encoding="utf-8")
+        self.assertIn("тема: книга", body)
+        self.assertIn("Один.", body)
+
+    def test_renaming_into_an_existing_topic_is_refused(self):
+        # Склеивать нельзя: две разные мысли молча слились бы в одну.
+        first = notes.add("Книги", "Первая", "Запись", "Один.")
+        second = notes.add("Книги", "Вторая", "Запись", "Два.")
+        before = (first.read_text(encoding="utf-8"),
+                  second.read_text(encoding="utf-8"))
+        with self.assertRaisesRegex(ValueError, "уже есть"):
+            notes.rename_topic("Книги", "Первая", "Вторая")
+        self.assertEqual(first.read_text(encoding="utf-8"), before[0])
+        self.assertEqual(second.read_text(encoding="utf-8"), before[1])
+
+    def test_a_missing_topic_is_an_error(self):
+        with self.assertRaises(FileNotFoundError):
+            notes.rename_topic("Книги", "Нет такой", "Другая")
+
+    def test_rename_into_a_name_that_leaves_the_folder_is_refused(self):
+        path = notes.add("Книги", "Тема", "Первая", "Один.")
+        before = path.read_text(encoding="utf-8")
+        for имя in ("..", "..\\..\\Windows", "C:\\Windows", "/etc/passwd"):
+            with self.subTest(имя=имя):
+                with self.assertRaises(ValueError):
+                    notes.rename_topic("Книги", "Тема", имя)
+        with self.assertRaises(ValueError):
+            notes.rename_topic("Книги", "Тема", "Тема", "..")
+        self.assertTrue(path.exists())
+        self.assertEqual(path.read_text(encoding="utf-8"), before)
+        self.assertEqual(sorted(p.name for p in self.tmp.rglob("*")),
+                         ["Книги", "Тема.md"])
+
+    def test_renaming_a_file_edited_by_hand_keeps_its_entries(self):
+        # Файл без нашей шапки: переименование не должно навязывать шапку
+        # поверх чужой правки — меняется только строка `# `.
+        path = notes.add("Книги", "Тема", "Первая", "Один.")
+        body = path.read_text(encoding="utf-8")
+        path.write_text("# Тема\n\nСвоей строкой.\n\n" + body[body.index("## "):],
+                        encoding="utf-8")
+        new = notes.rename_topic("Книги", "Тема", "Другая")
+        after = new.read_text(encoding="utf-8")
+        self.assertTrue(after.startswith("# Другая\n"))
+        self.assertIn("Своей строкой.", after)
+        self.assertNotIn("тема:", after)

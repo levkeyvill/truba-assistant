@@ -1545,6 +1545,60 @@ class PhoneServer:
                 return _fail(exc)
             return JSONResponse(res)
 
+        @app.post("/api/notes/edit")
+        async def api_notes_edit(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("нужен JSON-объект")
+                res = await asyncio.to_thread(rt.notes_edit, body)
+            except (ValueError, FileNotFoundError) as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
+        @app.post("/api/notes/rename")
+        async def api_notes_rename(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("нужен JSON-объект")
+                res = await asyncio.to_thread(rt.notes_rename, body)
+            except (ValueError, FileNotFoundError) as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
+        @app.post("/api/notes/add")
+        async def api_notes_add(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("нужен JSON-объект")
+                res = await asyncio.to_thread(rt.notes_add, body)
+            except (ValueError, FileNotFoundError) as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
         @app.post("/api/notes/open")
         async def api_notes_open(request: Request):
             if not _local(request):

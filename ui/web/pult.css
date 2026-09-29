@@ -1481,16 +1481,20 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 
 .зам-шапка {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 10px 14px;
   padding-bottom: 11px;
   border-bottom: 1px solid var(--линия);
 }
-.зам-имена { min-width: 0; }
+/* Название не сжимается в столбик «Переименован / ная»: не хватает места —
+   кнопки уходят строкой ниже (с четырьмя кнопками так и было, 29.09). */
+.зам-имена { min-width: 0; flex: 1 1 240px; }
 .зам-заголовок { margin: 0 0 2px; font-size: 19px; font-weight: 600; overflow-wrap: anywhere; }
 .зам-раздел-под { font-size: 12px; color: var(--тусклый); }
-.зам-действия { display: flex; gap: 8px; flex: none; }
+/* Кнопок стало четыре — на узком окне они переносятся, а не сжимают слова. */
+.зам-действия { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; flex: none; }
 .голос-кнопка.опасная { color: var(--тревога); }
 /* Рамка — тенью внутрь, а не `border`: у кнопок пульта рамки нет, и
    появлявшийся на наведении пиксель раздувал «Удалить тему» — она и соседняя
@@ -1517,6 +1521,29 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
   cursor: pointer;
 }
 .зам-убрать:hover { color: var(--тревога); border-color: var(--тревога); }
+
+/* «Изменить» — видом как «Удалить», но при наведении не тревожит, а тянется
+   к акценту: правка — обычное дело, а не опасное. */
+.зам-изменить {
+  flex: none;
+  /* К правому краю, рядом с «Удалить», а не посередине карточки. */
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--тусклый);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.зам-изменить:hover { color: var(--акцент); border-color: var(--акцент); }
+
+/* Форма правки: колонка полей под карточкой или под шапкой темы. */
+.зам-форма { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+/* Внутри карточки отступ уже есть — свой не нужен. */
+.зам-тело > .зам-форма { margin-top: 0; }
+.зам-форма-кнопки { display: flex; gap: 8px; margin-top: 2px; }
 
 .зам-тело { margin-top: 7px; font-size: 13.5px; line-height: 1.62; color: var(--текст); }
 .зам-тело p { margin: 0 0 9px; white-space: pre-wrap; overflow-wrap: anywhere; }

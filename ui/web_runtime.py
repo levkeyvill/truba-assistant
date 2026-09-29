@@ -2291,6 +2291,52 @@ class WebRuntime:
         self._remember("note", f"удалила «{section} / {topic}»")
         return {"ok": True, "path": str(path)}
 
+    def notes_edit(self, body: dict) -> dict:
+        """Правит заголовок и текст одной записи. Дату записи не трогаем."""
+        from core import notes
+
+        body = body if isinstance(body, dict) else {}
+        section = str(body.get("section", "")).strip()
+        topic = str(body.get("topic", "")).strip()
+        path = notes.edit_entry(section, topic, body.get("index", -1),
+                                str(body.get("heading", "")),
+                                str(body.get("title", "")),
+                                str(body.get("text", "")))
+        self._remember("note", f"поправила запись в «{section} / {topic}»")
+        return {"ok": True, "path": str(path)}
+
+    def notes_rename(self, body: dict) -> dict:
+        """Переименовывает тему и/или переносит её в другой раздел."""
+        from core import notes
+
+        body = body if isinstance(body, dict) else {}
+        section = str(body.get("section", "")).strip()
+        topic = str(body.get("topic", "")).strip()
+        new_section = str(body.get("new_section", "")).strip()
+        path = notes.rename_topic(section, topic,
+                                  str(body.get("new_topic", "")), new_section)
+        # Раздел и тема — как их потом увидит список: имя папки и имя файла
+        # без `.md`, а не то, что хозяин напечатал в поле.
+        раздел = path.parent.name
+        имя = path.stem
+        self._remember("note", f"переименовала «{section} / {topic}» в "
+                               f"«{раздел} / {имя}»")
+        return {"ok": True, "path": str(path), "section": раздел, "topic": имя}
+
+    def notes_add(self, body: dict) -> dict:
+        """Дописывает запись руками — тем же `add`, что и голосовая."""
+        from core import notes
+
+        body = body if isinstance(body, dict) else {}
+        section = str(body.get("section", "")).strip()
+        topic = str(body.get("topic", "")).strip()
+        text = str(body.get("text", "")).strip()
+        if not text:
+            raise ValueError("пустой текст")
+        path = notes.add(section, topic, str(body.get("title", "")), text)
+        self._remember("note", f"дописала запись в «{section} / {topic}»")
+        return {"ok": True, "path": str(path)}
+
     def notes_open(self, body: dict) -> dict:
         """Открывает папку заметок или файл темы — в проводнике или Obsidian."""
         import os

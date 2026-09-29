@@ -161,11 +161,132 @@ class NotesApiTests(unittest.TestCase):
         for method, path in (("get", "/api/notes"),
                              ("get", "/api/notes/topic?section=Книги&topic=Тема"),
                              ("post", "/api/notes/delete"),
+                             ("post", "/api/notes/edit"),
+                             ("post", "/api/notes/rename"),
+                             ("post", "/api/notes/add"),
                              ("post", "/api/notes/open")):
             with self.subTest(путь=path):
                 answer = getattr(self.вдали, method)(path)
                 self.assertEqual(answer.status_code, 403, path)
                 self.assertIn("только с этого компьютера", answer.json()["error"])
+
+    # --- Правка и дописывание --------------------------------------------
+
+    def test_an_entry_is_edited_by_number_and_heading(self):
+        self._заметка()
+        self._заметка(заголовок="Вторая", текст="Два.")
+        topic = self.client.get("/api/notes/topic",
+                                params={"section": "Книги", "topic": "Тема"}).json()
+        heading = topic["entries"][0]["heading"]
+        answer = self.client.post("/api/notes/edit", json={
+            "section": "Книги", "topic": "Тема", "index": 0, "heading": heading,
+            "title": "Правлена", "text": "Новый текст."})
+        тело = answer.json()
+        self.assertTrue(тело["ok"], тело)
+        self.assertEqual(тело["path"], str(self.tmp / "Книги" / "Тема.md"))
+        left = self.client.get("/api/notes/topic",
+                               params={"section": "Книги", "topic": "Тема"}).json()
+        self.assertEqual(left["entries"][0]["title"], "Правлена")
+        self.assertEqual(left["entries"][0]["text"], "Новый текст.")
+
+    def test_editing_with_a_stale_heading_changes_nothing(self):
+        self._заметка()
+        answer = self.client.post("/api/notes/edit", json={
+            "section": "Книги", "topic": "Тема", "index": 0,
+            "heading": "устаревшая запись", "title": "Правлена", "text": "Новое."})
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("изменился", answer.json()["error"])
+        self.assertIn("Один.",
+                      (self.tmp / "Книги" / "Тема.md").read_text(encoding="utf-8"))
+
+    def test_editing_an_empty_text_is_a_400(self):
+        self._заметка()
+        topic = self.client.get("/api/notes/topic",
+                                params={"section": "Книги", "topic": "Тема"}).json()
+        answer = self.client.post("/api/notes/edit", json={
+            "section": "Книги", "topic": "Тема", "index": 0,
+            "heading": topic["entries"][0]["heading"],
+            "title": "Правлена", "text": "   "})
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("пустой текст", answer.json()["error"])
+
+    def test_an_entry_is_written_by_hand(self):
+        self._заметка()
+        answer = self.client.post("/api/notes/add", json={
+            "section": "Книги", "topic": "Тема",
+            "title": "Руками", "text": "Новый текст."})
+        тело = answer.json()
+        self.assertTrue(тело["ok"], тело)
+        self.assertEqual(тело["path"], str(self.tmp / "Книги" / "Тема.md"))
+        left = self.client.get("/api/notes/topic",
+                               params={"section": "Книги", "topic": "Тема"}).json()
+        self.assertEqual([e["title"] for e in left["entries"]],
+                         ["Первая", "Руками"])
+
+    def test_writing_an_empty_text_is_a_400(self):
+        self._заметка()
+        answer = self.client.post("/api/notes/add", json={
+            "section": "Книги", "topic": "Тема", "title": "Пусто", "text": ""})
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("пустой текст", answer.json()["error"])
+
+    def test_a_topic_is_renamed_and_the_new_names_come_back(self):
+        self._заметка()
+        answer = self.client.post("/api/notes/rename", json={
+            "section": "Книги", "topic": "Тема", "new_topic": "Другая тема",
+            "new_section": ""})
+        тело = answer.json()
+        self.assertTrue(тело["ok"], тело)
+        # Раздел и тема — как их потом увидит список.
+        self.assertEqual(тело["section"], "Книги")
+        self.assertEqual(тело["topic"], "Другая тема")
+        self.assertEqual(тело["path"],
+                         str(self.tmp / "Книги" / "Другая тема.md"))
+        self.assertTrue((self.tmp / "Книги" / "Другая тема.md").exists())
+        self.assertFalse((self.tmp / "Книги" / "Тема.md").exists())
+        listed = self.client.get("/api/notes").json()["sections"]
+        self.assertEqual([t["name"] for t in listed[0]["topics"]],
+                         ["Другая тема"])
+
+    def test_a_topic_moves_to_another_section(self):
+        self._заметка()
+        answer = self.client.post("/api/notes/rename", json={
+            "section": "Книги", "topic": "Тема", "new_topic": "Тема",
+            "new_section": "Идеи"})
+        тело = answer.json()
+        self.assertTrue(тело["ok"], тело)
+        self.assertEqual(тело["section"], "Идеи")
+        self.assertIn("раздел: Идеи",
+                      (self.tmp / "Идеи" / "Тема.md").read_text(encoding="utf-8"))
+
+    def test_renaming_into_a_taken_name_is_a_400(self):
+        self._заметка()
+        self._заметка(тема="Другая")
+        answer = self.client.post("/api/notes/rename", json={
+            "section": "Книги", "topic": "Тема", "new_topic": "Другая",
+            "new_section": ""})
+        self.assertEqual(answer.status_code, 400)
+        self.assertIn("уже есть", answer.json()["error"])
+        # Обе темы целы.
+        self.assertTrue((self.tmp / "Книги" / "Тема.md").exists())
+        self.assertTrue((self.tmp / "Книги" / "Другая.md").exists())
+
+    def test_renaming_cannot_walk_out_of_the_folder(self):
+        # Пульт виден всей сети: имя с `..` не должно ни переименовать, ни
+        # создать файл за папкой заметок.
+        self._заметка()
+        for имя in ("..", "..\\..\\Windows", "C:\\Windows", "/etc/passwd"):
+            with self.subTest(имя=имя):
+                answer = self.client.post("/api/notes/rename", json={
+                    "section": "Книги", "topic": "Тема", "new_topic": имя,
+                    "new_section": ""})
+                self.assertEqual(answer.status_code, 400, имя)
+        answer = self.client.post("/api/notes/rename", json={
+            "section": "Книги", "topic": "Тема", "new_topic": "Тема",
+            "new_section": ".."})
+        self.assertEqual(answer.status_code, 400)
+        self.assertEqual(sorted(p.name for p in self.tmp.rglob("*")),
+                         ["Книги", "Тема.md"])
 
     def test_opening_the_folder_does_not_really_open_it(self):
         self._заметка()
