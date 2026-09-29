@@ -497,6 +497,19 @@ class HiggsVoice:
         )
         from transformers.models.qwen3.modeling_qwen3 import Qwen3RotaryEmbedding
 
+        # FP8 (`torch._scaled_mm`) есть только у RTX 40 и 50 серии (compute
+        # capability 8.9 и выше). На RTX 30 и старше умножение падает с
+        # невнятной ошибкой CUDA — да ещё после скачивания 9 ГБ весов. Говорим
+        # сразу и словами (29.09, проверка выпуска: у автора 5070 Ti, у людей —
+        # любые карты).
+        if self.precision == "fp8" and str(self.device).startswith("cuda"):
+            if not torch.cuda.is_available():
+                raise RuntimeError("Higgs нужна видеокарта NVIDIA — выбери голос Silero")
+            if tuple(torch.cuda.get_device_capability(self.device)) < (8, 9):
+                raise RuntimeError(
+                    "Higgs работает только на видеокартах RTX 40 и 50 серии — "
+                    "на этой выбери ESpeech или Silero")
+
         folder = _weights_folder()
         raw = json.loads((folder / "config.json").read_text(encoding="utf-8"))
         audio_cfg = raw["audio_encoder_config"]

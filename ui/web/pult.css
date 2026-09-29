@@ -1829,6 +1829,10 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .мастер-текст { margin: 0 0 10px; font-size: 13px; line-height: 1.55; color: var(--приглушён); }
 .мастер-подпись { margin: 12px 0 0; font-size: 12px; color: var(--тусклый); line-height: 1.45; overflow-wrap: anywhere; }
 .мастер-подпись.плохо { color: var(--тревога); }
+/* Предупреждение про мат под карточками характеров: янтарём, чтобы его
+   заметили, но не красным — это не ошибка, а выбор. */
+.мастер-подпись.мастер-мат { color: var(--акцент); font-weight: 600; }
+.мастер-подпись.мастер-мат[hidden] { display: none; }
 .мастер-ряд { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 5px 0; }
 .мастер-ряд > span:first-child { flex: 1 1 190px; font-size: 13px; color: var(--приглушён); }
 .мастер-ряд .настр-выбор, .мастер-ряд .настр-ввод { flex: 1 1 240px; max-width: 100%; }

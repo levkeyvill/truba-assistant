@@ -84,7 +84,8 @@ def _voice() -> dict:
         внизу = f"Silero · {config.SILERO_SPEAKER} · без видеопамяти"
     elif config.TTS_ENGINE == "higgs":
         главное = "Голос по образцу"
-        внизу = f"Higgs · {config.VOICE_NAME} · 4.3 ГБ видеокарты при включённом голосе"
+        образец = config.VOICE_NAME or "образец не выбран"
+        внизу = f"Higgs · {образец} · 4.3 ГБ видеокарты при включённом голосе"
     else:
         главное = "Голос по образцу"
         внизу = "ESpeech · на видеокарте"

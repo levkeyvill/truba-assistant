@@ -159,7 +159,7 @@ class StreamTests(unittest.TestCase):
         loop._brain = Broken([])
         loop._answer("проверка звука")
         said = [p for k, p in loop.events if k == "sentence"]
-        self.assertEqual(said, ["Облако меня не пускает, похоже, отвалился VPN."])
+        self.assertEqual(said, ["Облако меня не пускает из этой страны — нужен VPN или другой сервис."])
         self.assertEqual(len([c for c in speaker.calls if c[0] == "say"]), 2)
         self.assertEqual(loop.events[-1][1]["sentences"], 1)
 

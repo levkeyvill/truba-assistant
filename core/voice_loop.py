@@ -163,8 +163,8 @@ JUST_NAME = re.compile(r"^[\s,.!?-]*труб\w*[\s,.!?-]*$", re.IGNORECASE)
 # из Discord) она ждала по 8 с OpenAI, потом 8 с DeepSeek, а потом
 # повторяла «не могу достучаться до облака» — двадцать секунд подряд.
 CLOUD_DOWN_WORDS = (
-    "Облако не отвечает — похоже, отвалился VPN. Буду молчать, пока связь "
-    "не вернётся."
+    "Облако не отвечает — проверь интернет или VPN. Буду молчать, пока "
+    "связь не вернётся."
 )
 # Через сколько после неудачи всё же попробовать снова. Молчать нужно, но и
 # молчать навсегда нельзя: иначе о вернувшейся связи никто не узнает.
@@ -337,7 +337,9 @@ def _trouble_words(exc: Exception) -> str:
     """Что сказать вслух, если модель не ответила."""
     text = f"{type(exc).__name__} {exc}".lower()
     if "country" in text or "region" in text:
-        return "Облако меня не пускает, похоже, отвалился VPN."
+        # Про VPN — не «отвалился»: у многих его нет вовсе, и отказ по стране
+        # для них значит «нужен VPN или другой сервис» (29.09, проверка выпуска).
+        return "Облако меня не пускает из этой страны — нужен VPN или другой сервис."
     if "connection" in text or "timeout" in text or "timed out" in text:
         return "Не могу достучаться до облака, проверь интернет."
     if "insufficient" in text or "quota" in text or "balance" in text:
@@ -619,6 +621,11 @@ class VoiceLoop:
         if config.TTS_ENGINE in ("espeech", "higgs"):
             from core.tts import Reference
 
+            if not config.VOICE_NAME:
+                raise RuntimeError(
+                    "Не выбран образец голоса — добавь его: «Голос → Озвучивание → "
+                    "Новый голос из записи», или выбери голос Silero"
+                )
             wav = config.ROOT / "voice" / f"{config.VOICE_NAME}.wav"
             txt = config.ROOT / "voice" / f"{config.VOICE_NAME}.txt"
             if not wav.exists() or not txt.exists():
@@ -1819,8 +1826,9 @@ class VoiceLoop:
         start = end - len(phrase) / config.SAMPLE_RATE
         if meter.share_during(start, end, config.VOICE_APP_LEVEL) < config.VOICE_APP_SHARE:
             return ""
-        # Название нужно для журнала: по какой именно программе судили.
-        return meter.loudest_app(start, end, config.VOICE_APP_LEVEL) or "Discord"
+        # Название нужно для журнала: по какой именно программе судили. Не
+        # узнали — так и пишем: «Discord» тут был программой автора (29.09).
+        return meter.loudest_app(start, end, config.VOICE_APP_LEVEL) or "программа с голосом"
 
     def _should_answer(
         self, text: str, phrase: np.ndarray | None = None, heard_at: float | None = None

@@ -431,7 +431,7 @@ class CloudDownTests(unittest.TestCase):
     def test_region_and_money_errors_are_not_a_network_outage(self):
         for exc, words in (
             (RuntimeError("Error code: 403 - unsupported_country_region_territory"),
-             "Облако меня не пускает, похоже, отвалился VPN."),
+             "Облако меня не пускает из этой страны — нужен VPN или другой сервис."),
             (RuntimeError("insufficient_quota: на счёте кончились деньги"),
              "В облаке кончились деньги на счёте."),
         ):
