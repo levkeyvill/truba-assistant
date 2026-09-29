@@ -9,18 +9,22 @@ PhoneSpeaker повторяет интерфейс колонок из audio_out
 """
 
 import asyncio
+import hmac
 import io
 import json
 import os
+import secrets
 import socket
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import numpy as np
 from fastapi import WebSocket
 
 import config
+from core import safe_files
 
 # ВАЖНО: без "from __future__ import annotations".
 # С ним аннотации превращаются в строки, и FastAPI не может разобрать
@@ -106,6 +110,67 @@ def _с_темой(разметка: str) -> str:
     if "data-theme" in тег:
         return разметка
     return разметка[:конец] + f' data-theme="{_тема()}"' + разметка[конец:]
+
+
+# --- Кто может подключаться ------------------------------------------------
+#
+# Пульт открыт на этом компьютере, телефон — из домашней сети. До 29.09
+# сервер пускал в сеть без спроса: с любого устройства в том же Wi-Fi можно
+# было прочитать память и заметки, снять экран и нажимать кнопки. Теперь:
+#   - данные пульта (настройки, журнал, программы, /state) — только отсюда;
+#   - телефон подключается по ключу из ссылки в QR-коде (один раз: дальше
+#     страница помнит его сама);
+#   - WebSocket не пускает чужие страницы (Origin), даже из браузера на
+#     этом же компьютере.
+
+# Адреса «этого компьютера». Тесты FastAPI стучатся как testserver/testclient.
+LOCAL_HOSTS = ("127.0.0.1", "::1", "::ffff:127.0.0.1", "testserver", "testclient")
+
+# Ключ привязки телефона. Создаётся один раз и живёт в данных, а не в
+# настройках: его не показывают и не правят руками. Тесты подменяют путь.
+KEY_FILE = config.DATA_DIR / "phone_key.txt"
+KEY_MIN = 16
+
+
+def client_is_local(conn) -> bool:
+    """Запрос или WebSocket с этого компьютера."""
+    client = getattr(conn, "client", None)
+    return (client.host if client else "") in LOCAL_HOSTS
+
+
+def phone_key() -> str:
+    """Ключ привязки телефона; нет — заводится сразу."""
+    try:
+        ключ = KEY_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        ключ = ""
+    if len(ключ) >= KEY_MIN:
+        return ключ
+    ключ = secrets.token_urlsafe(18)
+    safe_files.write_text(KEY_FILE, ключ)
+    return ключ
+
+
+def ws_refusal(ws) -> str:
+    """Почему не пускаем это соединение. Пустая строка — пускаем.
+
+    Origin проверяется у всех: страница телефона и макет в пульте приходят с
+    этого же сервера, и их Origin совпадает с Host. Не совпал — это чужой
+    сайт, который пытается дотянуться до Трубы из браузера. Ключ — только у
+    соединений из сети: пульт и его макет телефона работают отсюда.
+    """
+    origin = ws.headers.get("origin")
+    host = (ws.headers.get("host") or "").lower()
+    if origin and urlsplit(origin).netloc.lower() != host:
+        return "чужая страница"
+    if client_is_local(ws):
+        return ""
+    ключ = str(ws.query_params.get("k") or "")
+    # Байтами: строку с не-ASCII знаками `compare_digest` не сравнивает, а
+    # падает — и присланный кириллицей «ключ» ронял бы проверку.
+    if not ключ or not hmac.compare_digest(ключ.encode("utf-8"), phone_key().encode("utf-8")):
+        return "нет ключа"
+    return ""
 
 
 # Размер экрана последнего телефона. Отдельный файл, а не поле в настройках:
@@ -381,10 +446,14 @@ class PhoneServer:
             return FileResponse(target, media_type=kind, headers=NO_CACHE)
 
         @app.get("/state")
-        async def state():
-            """Сводка состояния для карточек наверху пульта."""
+        async def state(request: Request):
+            """Сводка состояния для карточек наверху пульта. Только отсюда."""
             from core import state as snapshot
 
+            if not client_is_local(request):
+                return JSONResponse(
+                    {"ok": False, "error": "доступно только с этого компьютера"},
+                    status_code=403)
             return JSONResponse(snapshot.everything(self), headers=NO_CACHE)
 
         # --- Чат пульта ---------------------------------------------------
@@ -410,10 +479,7 @@ class PhoneServer:
         @app.post("/chat")
         async def chat(request: Request):
             """Текстовый чат пульта. Только с этого же компа."""
-            client = request.client.host if request.client else ""
-            # TestClient из тестов стучится как testserver/testclient —
-            # в бою scope.client всегда IP-кортеж, так что это только для тестов.
-            if client not in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "testserver", "testclient"):
+            if not client_is_local(request):
                 return JSONResponse(
                     {"ok": False, "error": "чат доступен только с этого компьютера"},
                     status_code=403,
@@ -477,8 +543,7 @@ class PhoneServer:
         @app.post("/chat/stream")
         async def chat_stream(request: Request):
             """Части ответа по мере готовности; история остаётся общей с голосом."""
-            client = request.client.host if request.client else ""
-            if client not in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "testserver", "testclient"):
+            if not client_is_local(request):
                 return JSONResponse({"ok": False, "error": "чат доступен только с этого компьютера"}, status_code=403)
             try:
                 body = await request.json()
@@ -557,9 +622,7 @@ class PhoneServer:
 
         # --- Веб-пульт: локальный REST ------------------------------------
         def _local(request: Request) -> bool:
-            host = request.client.host if request.client else ""
-            return host in ("127.0.0.1", "::1", "::ffff:127.0.0.1",
-                            "testserver", "testclient")
+            return client_is_local(request)
 
         def _local_secret(request: Request) -> bool:
             """Не отдаём ключи странице с чужим Host/Origin (DNS rebinding)."""
@@ -596,8 +659,11 @@ class PhoneServer:
             detail = f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
             return JSONResponse({"ok": False, "error": detail}, status_code=code)
 
+        # Журнал событий — это дословно расслышанные фразы: только отсюда.
         @app.get("/api/runtime")
-        async def api_runtime(after: int = 0):
+        async def api_runtime(request: Request, after: int = 0):
+            if not _local(request):
+                return _deny()
             rt = getattr(self, "runtime", None)
             if rt is None:
                 return _no_runtime()
@@ -610,7 +676,9 @@ class PhoneServer:
             return JSONResponse({"ok": True, "voice": state, "events": items, "overview": overview})
 
         @app.get("/api/voice/events")
-        async def api_voice_events(after: int = 0):
+        async def api_voice_events(request: Request, after: int = 0):
+            if not _local(request):
+                return _deny()
             rt = getattr(self, "runtime", None)
             if rt is None:
                 return _no_runtime()
@@ -714,8 +782,11 @@ class PhoneServer:
                 return _fail(exc)
             return JSONResponse({"ok": True, **сводка}, headers=NO_CACHE)
 
+        # В снимке настроек — характер, память о хозяине и ключ телефона.
         @app.get("/api/settings")
-        async def api_settings_get():
+        async def api_settings_get(request: Request):
+            if not _local(request):
+                return _deny()
             rt = getattr(self, "runtime", None)
             if rt is None:
                 return _no_runtime()
@@ -942,7 +1013,9 @@ class PhoneServer:
             return JSONResponse({"ok": True, **result})
 
         @app.get("/api/apps")
-        async def api_apps_get():
+        async def api_apps_get(request: Request):
+            if not _local(request):
+                return _deny()
             rt = getattr(self, "runtime", None)
             if rt is None:
                 return _no_runtime()
@@ -1620,6 +1693,19 @@ class PhoneServer:
         @app.websocket("/ws")
         async def socket(ws: WebSocket):
             self._emit("ws_attempt", None)
+            отказ = ws_refusal(ws)
+            if отказ:
+                self._emit("ws_refused", отказ)
+                if отказ == "нет ключа":
+                    # Телефону — внятный ответ: страница скажет, что его надо
+                    # привязать заново по QR-коду, а не будет молча
+                    # переподключаться.
+                    await ws.accept()
+                    await ws.send_text(json.dumps({"type": "need_key"}))
+                    await ws.close(code=4401)
+                else:
+                    await ws.close(code=1008)
+                return
             await ws.accept()
             self._clients.add(ws)
             self._emit("connected", None)

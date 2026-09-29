@@ -60,6 +60,12 @@ config.NOTES_DIR = str(SAFE / "notes")
 voices_install.LOG_PATH = SAFE / "voices_install.log"
 # Размер экрана телефона: макет в пульте читает его при каждом запуске.
 phone.VIEWPORT_FILE = SAFE / "phone_viewport.json"
+# Ключ привязки телефона: тест не должен ни прочитать настоящий, ни завести
+# свой в живой `data/` — иначе телефон хозяина разом стал бы чужим.
+phone.KEY_FILE = SAFE / "phone_key.txt"
+# Список программ хозяина: с 29.09 битый файл уезжает в карантин, и тест с
+# испорченным списком не должен добраться до настоящего.
+launcher.APPS_FILE = SAFE / "apps.json"
 
 
 class DataGuardTests(unittest.TestCase):
@@ -70,7 +76,8 @@ class DataGuardTests(unittest.TestCase):
                      bookmarks.CACHE_DIR,
                      usage.USAGE_PATH, usage.OPENROUTER_PRICES_PATH,
                      usage.USD_RUB_PATH, weather.CACHE_PATH,
-                     voices_install.LOG_PATH, phone.VIEWPORT_FILE,
+                     voices_install.LOG_PATH, phone.VIEWPORT_FILE, phone.KEY_FILE,
+                     launcher.APPS_FILE,
                      autostart.STARTUP_DIR, notes.root()):
             self.assertTrue(str(path).startswith(str(SAFE)), path)
 

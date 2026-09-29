@@ -411,7 +411,7 @@ DICTATION_CANCEL = re.compile(
 DICTATION_START = "Диктуй. Скажешь «всё» — запишу."
 DICTATION_EMPTY = "Нечего записывать."
 DICTATION_CANCEL_SAY = "Не записываю."
-DICTATION_WRITING = "Записываю…"
+DICTATION_DONE = "Готово, записала."
 
 
 class VoiceLoop:
@@ -1027,12 +1027,45 @@ class VoiceLoop:
         self._write_note(" ".join(parts), command)
 
     def _write_note(self, said: str, command: str) -> None:
-        """Причёсывает и пишет. Облако может ответить криво — пишем сырое."""
+        """Отвечает сразу, а причёсывание и запись уводит в фон.
+
+        Облако думает секунд десять, и всё это время голосовой цикл был бы
+        занят: хозяин сказал «всё» — и ждал. Теперь «Готово» он слышит сразу,
+        а заметка дописывается его словами и уходит на телефон тостом, когда
+        она уже на диске.
+        """
+        self._say_back(DICTATION_DONE)
+        # В историю мозга — по его же словам: обсудить надиктованное можно
+        # сразу, не дожидаясь причёсывания.
+        self._remember(command or "запиши заметку",
+                       "Записала заметку: " + said[:500])
+        self._open_conversation()
+        self._background(self._place_note, said, command)
+
+    def _background(self, fn, *args) -> None:
+        """Делает `fn(*args)` в отдельном потоке: голосовой ход не ждёт.
+
+        Отдельным методом — чтобы тесты подменяли его немедленным вызовом и
+        не ловили гонок. Любое исключение показываем, а не роняем молча:
+        запись на диске без этого тихо потерялась бы.
+        """
+        def run() -> None:
+            try:
+                fn(*args)
+            except Exception as exc:
+                self._emit("error", f"заметки: {type(exc).__name__}: {exc}")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def _place_note(self, said: str, command: str) -> None:
+        """Причёсывает и пишет. Облако может ответить криво — пишем сырое.
+
+        Выполняется в фоне, после того как «Готово» уже прозвучало: вслух
+        второй раз она не говорит — повтор посреди следующего разговора
+        только мешал бы. Раздел и тема уходят событием и тостом.
+        """
         from core import notes
 
-        # Причёсывание идёт в облако и занимает секунд десять, поэтому
-        # короткое «Записываю…» — иначе эти секунды будут тишиной.
-        self._say_back(DICTATION_WRITING)
         try:
             placed = notes.polish(self._brain, said, command, notes.known_topics())
         except Exception as exc:
@@ -1044,23 +1077,20 @@ class VoiceLoop:
                              placed["text"], raw="" if raw else said)
         except Exception as exc:
             self._emit("error", f"заметки: {type(exc).__name__}: {exc}")
-            self._say_back("Не получилось записать.")
+            self._toast("Заметка не записалась", ok=False)
+            # Мысль пропала — об этом молчать нельзя, это единственный раз,
+            # когда она говорит вслух о записи.
+            self._say_back("Не получилось записать заметку.")
             return
         section, topic = placed["section"], placed["topic"]
-        words = len(placed["text"].split())
         if raw:
             self._emit("note", "облако не ответило — записала сырое")
-            said_out = ("Записала как есть, в Разное — Входящие: облако не "
-                        "ответило.")
+            toast = "Заметка — Разное / Входящие, как сказано"
         else:
+            words = len(placed["text"].split())
             self._emit("note", f"записала в «{section} / {topic}» ({words} слов)")
-            said_out = f"Записала в «{section} — {topic}»."
-        self._say_back(said_out)
-        # В историю мозга — чтобы можно было сразу обсудить записанное.
-        self._remember(command or "запиши заметку",
-                       f"Записала заметку в «{section} — {topic}»: "
-                       + placed["text"][:500])
-        self._open_conversation()
+            toast = f"Заметка — {section} / {topic}"
+        self._toast(toast)
 
     def _heard_at(self) -> float:
         """Когда в микрофоне последний раз звучала речь. 0.0 — слушателя нет.
@@ -2065,6 +2095,16 @@ class VoiceLoop:
             self._server.send_line(who, text)
         if sound:
             self._server.send_sound(sound)
+
+    def _toast(self, text: str, ok: bool = True) -> None:
+        """Короткая надпись на телефоне. Сервера может не быть — молча."""
+        server = getattr(self, "_server", None)
+        if server is None:
+            return
+        try:
+            server.send_toast(text, ok=ok)
+        except Exception:
+            pass
 
     def _tell_dictation(self, on: bool) -> None:
         """Идёт ли диктовка — телефон по этому держит янтарный край."""

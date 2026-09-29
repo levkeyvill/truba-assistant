@@ -9,6 +9,7 @@
 настоящего облака.
 """
 
+import shutil
 import tempfile
 import threading
 import unittest
@@ -22,6 +23,7 @@ import config
 from core import commands, notes
 from core.voice_loop import (
     DICTATION_CANCEL_SAY,
+    DICTATION_DONE,
     DICTATION_EMPTY,
     DICTATION_START,
     VoiceLoop,
@@ -117,6 +119,8 @@ def _цикл(tmp, test):
     loop._last_turn = 0.0
     loop._last_talk = 0.0
     loop._server = None
+    # Фон — сразу: тест проверяет запись, а не гонку за потоком.
+    loop._background = lambda fn, *args: fn(*args)
     loop._brain = None
     loop._turn = None
     loop._dictation = None
@@ -150,7 +154,9 @@ def _цикл(tmp, test):
     return loop
 
 
-class DictationTests(unittest.TestCase):
+class _Заготовка(unittest.TestCase):
+    """Временная папка заметок и одна принятая фраза."""
+
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="truba-dictation-"))
         self._saved = config.NOTES_DIR
@@ -160,6 +166,9 @@ class DictationTests(unittest.TestCase):
     def _сказать(self, loop, текст):
         """Одна принятая фраза — ровно как её принимает основной цикл."""
         loop._turn_body(текст, np.zeros(8, dtype=np.float32), 0.0, 0.0, False)
+
+
+class DictationTests(_Заготовка):
 
     def test_the_command_opens_the_dictation_and_nothing_is_written_yet(self):
         loop = _цикл(self.tmp, self)
@@ -315,7 +324,8 @@ class DictationTests(unittest.TestCase):
         self.assertEqual(текст, "надиктованное как есть")
         # Сырое и есть текст: повторять его в свёртке незачем.
         self.assertEqual(без_сырого, "")
-        self.assertIn("как есть", loop.said[-1])
+        # Вслух — то же «Готово»: облако молчало, но мысль записана.
+        self.assertEqual(loop.said[-1], DICTATION_DONE)
         self.assertIn(("note", "облако не ответило — записала сырое"),
                       loop.events)
 
@@ -362,26 +372,30 @@ class DictationTests(unittest.TestCase):
         self.assertEqual(loop.written, [])
 
     def test_a_broken_write_is_not_hidden(self):
-        # Диск занят или папка недоступна: молчать про это нельзя.
+        # Диск занят или папка недоступна: молчать про это нельзя — «Готово»
+        # она уже сказала, а мысль на диске не появилась.
         loop = _цикл(self.tmp, self)
         with mock.patch.object(notes, "add", side_effect=OSError("диск занят")):
             self._сказать(loop, "запиши заметку")
             self._сказать(loop, "мысль про воланда")
             self._сказать(loop, "всё")
-        self.assertIn("Не получилось записать.", loop.said)
+        self.assertIn("Не получилось записать заметку.", loop.said)
         self.assertTrue(any(kind == "error" for kind, _ in loop.events))
 
     def test_the_note_is_told_out_and_kept_in_the_talk(self):
-        # Итог — голосом и в историю: сразу после записи он может сказать
-        # «а что ты там записала» — и она должна знать, что именно.
+        # Вслух — короткое «Готово»: ждать облако он не должен. Раздел и тема
+        # уходят событием, а в историю мозга — его же словами, чтобы можно
+        # было обсудить записанное сразу.
         loop = _цикл(self.tmp, self)
         self._сказать(loop, "запиши заметку")
         self._сказать(loop, "мысль про воланда")
         self._сказать(loop, "всё")
-        self.assertIn("Записала в «Книги — Мастер и Маргарита».", loop.said)
+        self.assertEqual(loop.said, [DICTATION_START, DICTATION_DONE])
+        self.assertIn(("note", "записала в «Книги / Мастер и Маргарита» "
+                      "(2 слов)"), loop.events)
         said, answered = loop.remembered[-1]
         self.assertEqual(said, "запиши заметку")
-        self.assertIn("Причёсанный текст.", answered)
+        self.assertIn("Записала заметку: мысль про воланда", answered)
         self.assertTrue(loop._open)
 
     def test_the_journal_says_what_happened(self):
@@ -394,6 +408,115 @@ class DictationTests(unittest.TestCase):
                       "(2 слов)"), loop.events)
         self.assertIn("заметка: диктовка начата",
                       WebRuntime._log_messages("note", "диктовка начата"))
+
+
+class BackgroundNoteTests(_Заготовка):
+    """«Всё» — и сразу ответ: облако и запись уходят в фон."""
+
+    def _с_пустым_фоном(self):
+        """Цикл, у которого фон только запоминает вызов, но не выполняет."""
+        loop = _цикл(self.tmp, self)
+        отложенный = []
+        loop._background = lambda fn, *args: отложенный.append((fn, args))
+        return loop, отложенный
+
+    def test_the_answer_comes_before_the_cloud(self):
+        # Хозяин не должен ждать облако: «Готово» звучит в ту же секунду,
+        # а причёсывания на этот момент ещё не было.
+        loop, отложенный = self._с_пустым_фоном()
+        self._сказать(loop, "запиши заметку")
+        self._сказать(loop, "мысль про воланда")
+        self._сказать(loop, "всё")
+
+        self.assertEqual(loop.said[-1], DICTATION_DONE)
+        self.assertEqual(loop.polished, [])
+        self.assertEqual(loop.written, [])
+
+        # Запустили отложенное — заметка появилась.
+        fn, args = отложенный[0]
+        fn(*args)
+        self.assertEqual([фраза for фраза, _ in loop.polished],
+                         ["мысль про воланда"])
+        self.assertEqual(len(loop.written), 1)
+
+    def test_a_note_lands_even_when_the_cloud_died(self):
+        # Облако упало — мысль всё равно на диске, сырая, в «Разное /
+        # Входящие». Вслух больше ничего: «Готово» она уже сказала.
+        loop = _цикл(self.tmp, self)
+        with mock.patch.object(notes, "polish", side_effect=OSError("облако")):
+            self._сказать(loop, "запиши заметку")
+            self._сказать(loop, "мысль про воланда")
+            self._сказать(loop, "всё")
+        self.assertEqual(loop.said, [DICTATION_START, DICTATION_DONE])
+        self.assertEqual(len(loop.written), 1)
+        self.assertEqual(loop.written[0][:2], ("Разное", "Входящие"))
+        self.assertIn(("note", "облако не ответило — записала сырое"),
+                      loop.events)
+
+    def test_a_broken_file_is_told_out_aloud(self):
+        # Записать не вышло — об этом она говорит вслух, даже после «Готово».
+        loop = _цикл(self.tmp, self)
+        with mock.patch.object(notes, "add", side_effect=OSError("диск занят")):
+            self._сказать(loop, "запиши заметку")
+            self._сказать(loop, "мысль про воланда")
+            self._сказать(loop, "всё")
+        self.assertEqual(loop.said[-1], "Не получилось записать заметку.")
+        self.assertTrue(any(kind == "error" for kind, _ in loop.events))
+
+    def test_the_note_goes_into_the_talk_right_away(self):
+        # «А что ты там записала» — сразу после «всё», по его же словам.
+        loop, отложенный = self._с_пустым_фоном()
+        self._сказать(loop, "запиши заметку")
+        self._сказать(loop, "мысль про воланда")
+        self._сказать(loop, "всё")
+
+        said, answered = loop.remembered[-1]
+        self.assertEqual(said, "запиши заметку")
+        self.assertEqual(answered, "Записала заметку: мысль про воланда")
+
+    def test_the_background_keeps_a_failure_visible(self):
+        # Настоящий поток: исключение внутри него проглатывать нельзя, иначе
+        # потерянная запись выглядела бы как успешная.
+        loop = _цикл(self.tmp, self)
+        # Настоящий `_background` вместо подменённого заготовкой.
+        loop._background = VoiceLoop._background.__get__(loop)
+        поток_готов = threading.Event()
+        loop._emit = lambda kind, payload: (loop.events.append((kind, payload)),
+                                            поток_готов.set())
+
+        loop._background(lambda: 1 / 0)
+        self.assertTrue(поток_готов.wait(5.0), loop.events)
+        self.assertEqual(loop.events[0][0], "error")
+        self.assertIn("заметки: ZeroDivisionError", loop.events[0][1])
+
+
+class NotesLockTests(unittest.TestCase):
+    """Файл темы правится из двух потоков сразу — записи не теряются."""
+
+    def test_two_threads_add_into_one_topic(self):
+        # Диктовка ушла в фон, а пульт в это же время правит ту же тему:
+        # без замка половина записей затиралась бы.
+        tmp = Path(tempfile.mkdtemp(prefix="truba-lock-"))
+        self.addCleanup(shutil.rmtree, tmp, True)
+        self._было = config.NOTES_DIR
+        config.NOTES_DIR = str(tmp)
+        self.addCleanup(setattr, config, "NOTES_DIR", self._было)
+
+        def пишет(метка):
+            for i in range(20):
+                notes.add("Книги", "Мастер и Маргарита", f"{метка} {i}",
+                          f"Мысль {метка}-{i}.")
+
+        потоки = [threading.Thread(target=пишет, args=(м,))
+                  for м in ("один", "два")]
+        for поток in потоки:
+            поток.start()
+        for поток in потоки:
+            поток.join()
+
+        body = (tmp / "Книги" / "Мастер и Маргарита.md").read_text(encoding="utf-8")
+        self.assertEqual(body.count("Мысль один-"), 20)
+        self.assertEqual(body.count("Мысль два-"), 20)
 
 
 if __name__ == "__main__":

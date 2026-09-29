@@ -197,10 +197,12 @@ COMMANDS = (
     Spec(
         id="search",
         title="Поиск в интернете",
-        forms=(r"найди в интернете\s+(?P<arg>.+)", r"поищи\s+(?P<arg>.+)",
-               r"погугли\s+(?P<arg>.+)"),
-        examples=("найди в интернете курс доллара", "поищи что будет с рублем",
-                  "погугли новости"),
+        # «в инете», «в сети», «загугли» — 29.09, хозяин: «когда я говорю найти
+        # в интернете или в инете или что-то подобное, она сразу ищет».
+        forms=(r"(?:найди|поищи|посмотри|глянь) в (?:интернете|инете|сети|гугле)\s+(?P<arg>.+)",
+               r"поищи\s+(?P<arg>.+)", r"(?:по|за)гугли\s+(?P<arg>.+)"),
+        examples=("найди в интернете курс доллара", "найди в инете погоду на выходные",
+                  "поищи что будет с рублем", "погугли новости", "загугли рецепт блинов"),
         does="Ищет в интернете и отвечает голосом.",
         arg="что искать",
     ),
@@ -438,17 +440,18 @@ def understand(text: str, apps: list[dict] | None = None) -> Command | None:
     if not text:
         return None
     # Вопрос — это разговор, а не приказ: «ты сделала скриншот?» не должен
-    # снимать экран второй раз.
-    if "?" in text:
-        return None
-    if len(text.split()) > MAX_WORDS:
-        return None
+    # снимать экран второй раз. Длинная фраза — тоже разговор. Кроме поиска:
+    # «найди в инете, что такое квантовый компьютер?» — и вопрос, и прямая
+    # просьба искать, а формы поиска начинаются с самого глагола.
+    only_search = "?" in text or len(text.split()) > MAX_WORDS
 
     clean = normalize(text)
     if not clean:
         return None
 
     for spec in COMMANDS:
+        if only_search and spec.id != "search":
+            continue
         for form, pattern in _PATTERNS[spec.id]:
             found = pattern.match(clean)
             if found is None:

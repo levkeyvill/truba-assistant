@@ -38,9 +38,11 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from datetime import datetime
 
 import config
+from core import safe_files
 
 HISTORY_PATH = config.DATA_DIR / "history.json"
 MEMORY_PATH = config.DATA_DIR / "memory.json"
@@ -56,6 +58,12 @@ DEFAULT_WEIGHT = 2
 MAX_REMOVALS = 3
 # Сколько забытого держим в архиве.
 ARCHIVE_LIMIT = 200
+
+# Один замок на всё, что читает память и записывает её обратно: разбор
+# разговора (отдельным потоком, их может быть два подряд), ручная правка в
+# пульте и «Забыть всё». Без него одна запись молча затирала другую (29.09,
+# проверка кода). RLock — `apply_changes` зовёт `save_facts` под тем же замком.
+_LOCK = threading.RLock()
 
 
 # --- Факты ---------------------------------------------------------------
@@ -87,7 +95,12 @@ def _load() -> dict:
         return {}
     try:
         data = json.loads(MEMORY_PATH.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError:
+        # Битый файл — в сторону: иначе первый же разбор разговора записал бы
+        # поверх пустую память, и старые факты пропали бы насовсем.
+        safe_files.quarantine(MEMORY_PATH)
+        return {}
+    except OSError:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -104,11 +117,10 @@ def load_forgotten() -> list[dict]:
 
 def save_facts(facts: list[dict], forgotten: list[dict] | None = None) -> None:
     """Пишет факты. Архив забытого сохраняется, если не передан новый."""
-    if forgotten is None:
-        forgotten = load_forgotten()
-    MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    MEMORY_PATH.write_text(
-        json.dumps(
+    with _LOCK:
+        if forgotten is None:
+            forgotten = load_forgotten()
+        safe_files.write_text(MEMORY_PATH, json.dumps(
             {
                 "updated": datetime.now().isoformat(timespec="seconds"),
                 "facts": facts,
@@ -116,9 +128,7 @@ def save_facts(facts: list[dict], forgotten: list[dict] | None = None) -> None:
             },
             ensure_ascii=False,
             indent=2,
-        ),
-        encoding="utf-8",
-    )
+        ))
 
 
 def add_facts(texts: list[str]) -> list[str]:
@@ -127,22 +137,62 @@ def add_facts(texts: list[str]) -> list[str]:
     return changes.get("added", [])
 
 
-def numbered() -> str:
-    """Память с номерами — для модели, чтобы она могла сослаться на строку."""
+def numbered(facts: list[dict] | None = None) -> str:
+    """Память с номерами — для модели, чтобы она могла сослаться на строку.
+
+    `facts` — снимок, который потом уйдёт в `apply_changes(…, seen=…)`: по
+    нему номера модели и переводятся обратно в факты.
+    """
+    facts = load_facts() if facts is None else facts
     return "\n".join(
         f"{i}. {f['text']} [важность {_weight(f.get('weight'))}]"
-        for i, f in enumerate(load_facts(), 1)
+        for i, f in enumerate(facts, 1)
     )
 
 
-def apply_changes(ops: list[dict]) -> dict:
+def _renumber(ops: list, seen: list[str], facts: list[dict]) -> list:
+    """Номера модели — к нынешней памяти.
+
+    Модель видела снимок `seen` (тексты по порядку), а пока она думала,
+    память могли поправить в пульте или записать соседним разбором: номер 3
+    тогда указывал бы на чужой факт. Поэтому номер → текст из снимка → тот
+    же факт в нынешней памяти. Такого уже нет — правка пропускается.
+    """
+    где = {}
+    for index, fact in enumerate(facts):
+        где.setdefault(_key(fact["text"]), index)
+    out = []
+    for op in ops if isinstance(ops, list) else []:
+        if not isinstance(op, dict) or "id" not in op:
+            out.append(op)
+            continue
+        try:
+            было = seen[int(op.get("id")) - 1]
+        except (TypeError, ValueError, IndexError):
+            continue
+        сейчас = где.get(_key(было))
+        if сейчас is None:
+            continue
+        out.append({**op, "id": сейчас + 1})
+    return out
+
+
+def apply_changes(ops: list[dict], seen: list[str] | None = None) -> dict:
     """Применяет правки модели к памяти. Возвращает, что изменилось.
 
-    Номера — из `numbered()` на момент разбора: 1 — первая строка.
+    Номера — из `numbered()` на момент разбора: 1 — первая строка. Если
+    передан снимок `seen`, номера сверяются по нему (см. `_renumber`).
     Непонятные и повторные правки молча пропускаются: память дороже,
     чем аккуратность ответа модели.
     """
-    facts = load_facts()
+    with _LOCK:
+        facts = load_facts()
+        if seen is not None:
+            ops = _renumber(ops, seen, facts)
+        return _apply(ops, facts)
+
+
+def _apply(ops: list[dict], facts: list[dict]) -> dict:
     forgotten = load_forgotten()
     keys = {_key(f["text"]) for f in facts}
     touched: set[int] = set()
@@ -217,26 +267,49 @@ def as_text() -> str:
     return "\n".join(f["text"] for f in load_facts())
 
 
-def from_text(text: str) -> None:
+def _lines(text: str) -> list[str]:
+    out = []
+    for line in (text or "").splitlines():
+        line = line.strip(" -–—•*\t")
+        if line:
+            out.append(line)
+    return out
+
+
+def from_text(text: str, base: str | None = None) -> None:
     """Принимает поправленный человеком список. Пустые строки выкидывает.
 
     Даты и важность у уцелевших строк сохраняем: человек правит одну
     строчку, а не переписывает память заново. Стёртое рукой — это его
     решение, в архив не кладём.
+
+    `base` — текст памяти, каким человек его открыл. Факты, которые разбор
+    разговора дописал уже после этого, он не видел и стереть не мог — они
+    остаются (29.09: иначе правка давно открытой страницы молча стирала
+    свежее).
     """
-    was = {_key(f["text"]): f for f in load_facts()}
-    facts = []
-    for line in (text or "").splitlines():
-        line = line.strip(" -–—•*\t")
-        if not line:
-            continue
-        old = was.get(_key(line))
-        facts.append(
-            old
-            if old
-            else {"text": line[:MAX_FACT_CHARS], "added": _now(), "weight": DEFAULT_WEIGHT}
-        )
-    save_facts(facts)
+    with _LOCK:
+        current = load_facts()
+        was = {_key(f["text"]): f for f in current}
+        facts = []
+        written = set()
+        for line in _lines(text):
+            key = _key(line)
+            old = was.get(key)
+            facts.append(
+                old
+                if old
+                else {"text": line[:MAX_FACT_CHARS], "added": _now(), "weight": DEFAULT_WEIGHT}
+            )
+            written.add(key)
+        if base is not None:
+            seen = {_key(line) for line in _lines(base)}
+            for fact in current:
+                key = _key(fact["text"])
+                if key not in seen and key not in written:
+                    facts.append(fact)
+                    written.add(key)
+        save_facts(facts)
 
 
 def as_prompt() -> str:
@@ -295,18 +368,16 @@ def load_history(limit: int) -> list[dict]:
 
 
 def save_history(turns) -> None:
-    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
-    HISTORY_PATH.write_text(
-        json.dumps(
-            {
-                "updated": datetime.now().isoformat(timespec="seconds"),
-                "turns": list(turns),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+    # Пишется после каждого ответа — чаще всех файлов, и оборванная запись
+    # тут вероятнее всего.
+    safe_files.write_text(HISTORY_PATH, json.dumps(
+        {
+            "updated": datetime.now().isoformat(timespec="seconds"),
+            "turns": list(turns),
+        },
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 def clear_history() -> None:

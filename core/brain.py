@@ -259,6 +259,37 @@ def _host_of(url: str) -> str:
         return ""
 
 
+def _attach_found(messages: list[dict], query: str, result: str, ok: bool = True) -> None:
+    """Итог быстрого поиска — к реплике человека, только в этот запрос.
+
+    Сообщение копируется, а не правится на месте: в истории реплика должна
+    остаться как сказана, без найденного (оно не копится в каждом следующем
+    запросе — как и при обычном поиске).
+
+    ok=False — поисковики не ответили. Второй попытки нет: 29.09 вживую
+    они падали оба раза подряд, и ответ ждал 26 секунд вместо 10.
+    """
+    if not messages or messages[-1].get("role") != "user":
+        return
+    last = dict(messages[-1])
+    if not isinstance(last.get("content"), str):
+        return
+    if ok:
+        last["content"] += (
+            f"\n\n[Ты уже поискала в интернете по запросу «{query}». Найдено:]\n{result}\n"
+            "[Ответь по найденному коротко и своими словами, для голоса: без ссылок "
+            "и без списков. Если ответа в найденном нет — так и скажи.]"
+        )
+    else:
+        last["content"] += (
+            f"\n\n[Ты попробовала поискать в интернете «{query}», но поисковики "
+            "сейчас не ответили. Скажи об этом одной фразой. Если знаешь ответ "
+            "сама — коротко ответь и предупреди, что это по памяти, а не из "
+            "интернета; свежих цифр и новостей по памяти не называй.]"
+        )
+    messages[-1] = last
+
+
 def _collect_sources(name: str, result: str, into: list) -> None:
     """Кладёт в `into` то, что реально пришло из интернета: {title, host, url}.
 
@@ -1112,20 +1143,36 @@ class Brain:
         увиденному.
         """
         self._maybe_home()
-        messages = self._messages(user_text, context, image, aloud, search)
+        self.ended = False
+        self.not_to_me = False
+        self.last_sources = []
+        # Быстрый поиск (29.09, хозяин: «YouTube она открывает сразу, а поиск
+        # долго думает»). Раньше первый поход к модели нужен был только
+        # затем, чтобы она сформулировала запрос, — а запрос и так известен:
+        # «найди в интернете <что>» или фраза с кнопки «Найти». Ищем сами,
+        # пока звучит «секунду, гляну», и отдаём найденное вместе с репликой:
+        # ответ — одним кругом. Поисковики не ответили — тоже одним кругом:
+        # она честно говорит, что интернет молчит (см. `_attach_found`).
+        # Прежний путь через инструмент остался для поиска со снимком.
+        found = None
+        if search and first is None and image is None and self._tools_on():
+            found = yield from self._search_first(user_text)
+        fast = found is not None
+        messages = self._messages(user_text, context, image, aloud, search and not fast)
+        if fast:
+            _attach_found(messages, found["query"], found["result"], found["ok"])
         # Заход первой — без инструментов вовсе. Пустой список в тело
         # запроса не попадает: ниже `elif tools:` проверяет на
         # непустоту, и провайдер получает запрос вообще без `tools`.
         # На ходе с кнопки поиска набор — только интернет, а на заходе первой
-        # инструментов нет вовсе: там `not_to_me` нечего решать.
-        tools = [] if first is not None else self._tool_list(
+        # инструментов нет вовсе: там `not_to_me` нечего решать. Быстрый
+        # поиск уже сделан — отвечать по нему, без новых кругов.
+        tools = [] if first is not None or fast else self._tool_list(
             aloud and can_end, user_text, search, named and not search
         )
-        self.ended = False
-        self.not_to_me = False
-        # Источники — только из этого ответа. Кнопка поиска показывает их
-        # телефону, и старые из прошлого запроса показывать нельзя.
-        self.last_sources = []
+        # Источники — только из этого ответа (сброшены выше, до быстрого
+        # поиска). Кнопка поиска показывает их телефону, и старые из прошлого
+        # запроса показывать нельзя.
         # Замеры времени — тоже только про этот ответ: прошлые круги в записи
         # о задержке только сбивали бы с толку.
         self.last_timing = {"rounds": []}
@@ -1140,11 +1187,12 @@ class Brain:
         # Ход с кнопки поиска: первый круг идёт с `tool_choice`, чтобы модель
         # не ответила болтовнёй, не поискав. Снимаем в `finally` — обычный
         # ответ `tool_choice` не должен получать никогда (см. `_open_stream_here`).
-        self._must_search = bool(search) and self._tools_on()
+        self._must_search = bool(search) and self._tools_on() and not fast
 
         try:
             yield from self._reply_rounds(
-                messages, tools, user_text, voice, usage, first
+                messages, tools, user_text, voice, usage, first,
+                found=found["query"] if fast and found["ok"] else None,
             )
         finally:
             self._must_search = False
@@ -1155,6 +1203,52 @@ class Brain:
                 self._tell("tokens", {**usage,
                                       "model": self._hedge_model or self.model})
 
+    def _search_first(self, user_text: str):
+        """Быстрый поиск до первого круга к модели.
+
+        Генератор: пока поиск идёт отдельным потоком, отдаёт «секунду,
+        гляну» — человек не сидит в тишине. Возвращает
+        `{"ok", "query", "result"}`; `ok=False` — поиск не удался, и ответ
+        пойдёт прежним путём (модель с инструментом).
+        Запрос — из команды («найди в интернете <что>»), а фраза с кнопки
+        «Найти» — сама и есть запрос.
+        """
+        import json
+
+        from core import commands, web
+
+        order = commands.understand(user_text, [])
+        query = (order.target if order is not None and order.action == "search"
+                 and order.target else user_text)
+        query = " ".join(str(query or "").split())[:200]
+        if not query:
+            return {"ok": False, "query": "", "result": ""}
+        box: dict = {}
+
+        def run() -> None:
+            try:
+                box["result"] = web.run_tool(
+                    "web_search", json.dumps({"query": query}, ensure_ascii=False),
+                    self.on_event)
+            except Exception as exc:
+                box["result"] = json.dumps(
+                    {"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
+
+        поиск = threading.Thread(target=run, daemon=True, name="fast-search")
+        поиск.start()
+        if self.on_event is not None:
+            try:
+                self.on_event("web_start", {"after": 0.0})
+            except Exception:
+                pass
+        yield random.choice(FILLERS)
+        поиск.join(timeout=float(getattr(config, "WEB_SEARCH_BUDGET", TOOL_BUDGET)) + 5.0)
+        result = str(box.get("result") or '{"error": "поиск не ответил"}')
+        ok = not result.startswith('{"error"')
+        if ok:
+            _collect_sources("web_search", result, self.last_sources)
+        return {"ok": ok, "query": query, "result": result}
+
     def _reply_rounds(
         self,
         messages: list[dict],
@@ -1163,16 +1257,21 @@ class Brain:
         voice: float | None,
         usage: dict,
         first: str | None = None,
+        found: str | None = None,
     ) -> Iterator[str]:
-        """Круги инструментов и выдача ответа. Расход копится в `usage`."""
+        """Круги инструментов и выдача ответа. Расход копится в `usage`.
+
+        `found` — запрос быстрого поиска, уже сделанного до первого круга:
+        он идёт в пометку истории, как если бы искала сама модель.
+        """
         from core import hands, web
 
         # Все поисковики разом отказали — повторять через секунду бесполезно.
         # 25 сентября на этом она молчала по 20 с: искала, ждала отказа,
         # искала снова. Отвечает тем, что есть.
         spoken = ""
-        searched = False
-        queries: list[str] = []
+        searched = found is not None
+        queries: list[str] = [found] if found else []
         search_started = None
         dead = False
         asked_at = time.monotonic()
@@ -1937,13 +2036,24 @@ class Brain:
         решил, что память сломалась, потому что молчание выглядело поломкой),
         False — не спрашивала, разговор был слишком короткий.
         """
-        from core import memory
-
         self.did_ask = False
         with self._reply_lock:
             count = min(self._undigested, len(self._history))
             fresh = list(self._history)[-count:] if count else []
             self._undigested = 0
+        try:
+            return self._digest(fresh)
+        except Exception:
+            # Облако не ответило — кусок не разобран: возвращаем его в очередь,
+            # следующий разбор возьмёт его вместе с новым (29.09: раньше он
+            # терялся насовсем). Не больше, чем есть в истории.
+            with self._reply_lock:
+                self._undigested = min(self._undigested + count, len(self._history))
+            raise
+
+    def _digest(self, fresh: list[dict]) -> dict:
+        from core import memory
+
         fresh = own_turns(fresh, float(getattr(config, "OWNER_THRESHOLD", 0.0)))
 
         talk = "\n".join(
@@ -1954,7 +2064,10 @@ class Brain:
         if len(talk) < 80:
             return {}
 
-        known = memory.numbered()
+        # Снимок: по нему номера из ответа модели потом переводятся обратно
+        # в факты — память за время запроса могли поправить (см. memory._renumber).
+        snapshot = memory.load_facts()
+        known = memory.numbered(snapshot)
         ask = (
             "Ниже кусок разговора человека с его голосовым помощником и то, "
             "что помощник уже помнит о человеке — с номерами строк.\n\n"
@@ -2002,7 +2115,7 @@ class Brain:
                 )
             return {}
 
-        return memory.apply_changes(memory_ops(text))
+        return memory.apply_changes(memory_ops(text), seen=[f["text"] for f in snapshot])
 
 
 def own_turns(turns: list[dict], threshold: float) -> list[dict]:

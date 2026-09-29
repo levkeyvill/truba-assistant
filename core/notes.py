@@ -47,6 +47,7 @@ import ctypes
 import json
 import os
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -78,6 +79,12 @@ BAD_CHARS = '\\/":*?<>#^[]'
 # заметок — отклоняем целиком: тихо починить её нельзя, а вот незаметно
 # испортить чужой файл — можно.
 ESCAPES = re.compile(r"(^\s*[\\/])|(^\s*[A-Za-z]:[\\/])|(\.\.)")
+
+# Заметки пишутся из двух потоков сразу: диктовка уходит в фон, а пульт в
+# это время правит ту же тему. Файл темы — это «прочитал, поправил строки,
+# записал обратно», и без замка две правки затирают друг друга. RLock, а не
+# Lock: `delete_entry` внутри зовёт `read`.
+_LOCK = threading.RLock()
 
 
 def documents_dir() -> Path:
@@ -472,34 +479,35 @@ def add(section: str, topic: str, title: str, text: str,
     Новые записи всегда в конец: тема — это хронология, и мысль, которую
     он сказал полчаса назад, не должна оказываться после сегодняшней.
     """
-    stamp = when or datetime.now()
-    path = topic_path(section, topic)
-    if path.is_file():
-        lines = _read_lines(path)
-        if not lines or lines[0].strip() != "---":
-            # Файл правили руками и шапки в нём уже нет — добавляем запись
-            # как есть, не навязывая свою шапку поверх чужой правки.
-            pass
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        lines = list(_front(topic, folder_name(section), _tag_of(section), stamp))
+    with _LOCK:
+        stamp = when or datetime.now()
+        path = topic_path(section, topic)
+        if path.is_file():
+            lines = _read_lines(path)
+            if not lines or lines[0].strip() != "---":
+                # Файл правили руками и шапки в нём уже нет — добавляем запись
+                # как есть, не навязывая свою шапку поверх чужой правки.
+                pass
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lines = list(_front(topic, folder_name(section), _tag_of(section), stamp))
 
-    when = f"{stamp:%d.%m.%Y, %H:%M}"
-    title = " ".join(str(title or "").split())
-    heading = f"## {when} — {title}" if title else f"## {when}"
-    # Заголовки `#`/`##` внутри текста разбор принял бы за новую запись —
-    # опускаем их до `###`, внутри записи это просто подзаголовок.
-    body = re.sub(r"(?m)^#{1,2}(?=\s)", "###", (text or "").strip())
-    block = [heading, "", body, ""]
-    if (raw or "").strip():
-        block += ["> [!quote]- Как было сказано"]
-        block += [f"> {line}" for line in raw.strip().split("\n")]
-        block += [""]
-    while lines and not lines[-1].strip():
-        lines.pop()
-    lines += [""] + block
-    _stamp(lines, stamp)
-    _write(path, "\n".join(lines).rstrip("\n") + "\n")
+        when = f"{stamp:%d.%m.%Y, %H:%M}"
+        title = " ".join(str(title or "").split())
+        heading = f"## {when} — {title}" if title else f"## {when}"
+        # Заголовки `#`/`##` внутри текста разбор принял бы за новую запись —
+        # опускаем их до `###`, внутри записи это просто подзаголовок.
+        body = re.sub(r"(?m)^#{1,2}(?=\s)", "###", (text or "").strip())
+        block = [heading, "", body, ""]
+        if (raw or "").strip():
+            block += ["> [!quote]- Как было сказано"]
+            block += [f"> {line}" for line in raw.strip().split("\n")]
+            block += [""]
+        while lines and not lines[-1].strip():
+            lines.pop()
+        lines += [""] + block
+        _stamp(lines, stamp)
+        _write(path, "\n".join(lines).rstrip("\n") + "\n")
     return path
 
 
@@ -566,48 +574,50 @@ def delete_entry(section: str, topic: str, index: int, heading: str) -> Path:
     номер теперь про другую запись: трогать нельзя, поэтому возвращаем
     ошибку, а пульт пусть перезагрузит список.
     """
-    data = read(section, topic)
-    entries = data["entries"]
-    try:
-        number = int(index)
-    except (TypeError, ValueError):
-        raise ValueError("неверный номер записи") from None
-    if not 0 <= number < len(entries):
-        raise ValueError("записи с таким номером нет")
-    entry = entries[number]
-    if (entry["heading"] or "").strip() != (heading or "").strip():
-        raise ValueError("файл изменился — посмотри заметку заново")
+    with _LOCK:
+        data = read(section, topic)
+        entries = data["entries"]
+        try:
+            number = int(index)
+        except (TypeError, ValueError):
+            raise ValueError("неверный номер записи") from None
+        if not 0 <= number < len(entries):
+            raise ValueError("записи с таким номером нет")
+        entry = entries[number]
+        if (entry["heading"] or "").strip() != (heading or "").strip():
+            raise ValueError("файл изменился — посмотри заметку заново")
 
-    path = Path(data["path"])
-    _head, chunks = _chunks(_read_lines(path))
-    removed = chunks.pop(number)
-    # Удалённое уходит в корзину до того, как файл переписывается: если
-    # запись записать не выйдет, заметка останется на месте целиком.
-    _to_trash(path, path.stem, "\n".join(removed).strip())
-    if chunks:
-        # Собираем заново, сохраняя голову и порядок оставшихся кусков.
-        rebuilt = list(_head)
-        for chunk in chunks:
-            rebuilt += chunk
-        while rebuilt and not rebuilt[-1].strip():
-            rebuilt.pop()
-        _stamp(rebuilt, datetime.now())
-        _write(path, "\n".join(rebuilt).rstrip("\n") + "\n")
-        return path
-    # Запись была последней — тема без неё пустая, и файл уходит целиком.
-    path.unlink(missing_ok=True)
-    _prune_section(section)
+        path = Path(data["path"])
+        _head, chunks = _chunks(_read_lines(path))
+        removed = chunks.pop(number)
+        # Удалённое уходит в корзину до того, как файл переписывается: если
+        # запись записать не выйдет, заметка останется на месте целиком.
+        _to_trash(path, path.stem, "\n".join(removed).strip())
+        if chunks:
+            # Собираем заново, сохраняя голову и порядок оставшихся кусков.
+            rebuilt = list(_head)
+            for chunk in chunks:
+                rebuilt += chunk
+            while rebuilt and not rebuilt[-1].strip():
+                rebuilt.pop()
+            _stamp(rebuilt, datetime.now())
+            _write(path, "\n".join(rebuilt).rstrip("\n") + "\n")
+            return path
+        # Запись была последней — тема без неё пустая, и файл уходит целиком.
+        path.unlink(missing_ok=True)
+        _prune_section(section)
     return _trash_path(path.stem)
 
 
 def delete_topic(section: str, topic: str) -> Path:
     """Убирает тему целиком. Файл уезжает в корзину заметок."""
-    path = topic_path(section, topic)
-    if not path.is_file():
-        raise FileNotFoundError(f"нет такой темы: {topic}")
-    target = _to_trash(path, path.stem)
-    path.unlink(missing_ok=True)
-    _prune_section(section)
+    with _LOCK:
+        path = topic_path(section, topic)
+        if not path.is_file():
+            raise FileNotFoundError(f"нет такой темы: {topic}")
+        target = _to_trash(path, path.stem)
+        path.unlink(missing_ok=True)
+        _prune_section(section)
     return target
 
 
@@ -646,40 +656,41 @@ def edit_entry(section: str, topic: str, index: int, heading: str,
     распознавание речи врало, и это единственная честная копия того, что он
     сказал. В корзину ничего не уходит — запись не удаляли, её исправили.
     """
-    data = read(section, topic)
-    entries = data["entries"]
-    try:
-        number = int(index)
-    except (TypeError, ValueError):
-        raise ValueError("неверный номер записи") from None
-    if not 0 <= number < len(entries):
-        raise ValueError("записи с таким номером нет")
-    entry = entries[number]
-    if (entry["heading"] or "").strip() != (heading or "").strip():
-        raise ValueError("файл изменился — посмотри заметку заново")
-    body = (text or "").strip()
-    if not body:
-        raise ValueError("пустой текст")
-    # Заголовки `#`/`##` внутри текста разбор принял бы за новую запись —
-    # опускаем их до `###`, как и при добавлении.
-    body = re.sub(r"(?m)^#{1,2}(?=\s)", "###", body)
+    with _LOCK:
+        data = read(section, topic)
+        entries = data["entries"]
+        try:
+            number = int(index)
+        except (TypeError, ValueError):
+            raise ValueError("неверный номер записи") from None
+        if not 0 <= number < len(entries):
+            raise ValueError("записи с таким номером нет")
+        entry = entries[number]
+        if (entry["heading"] or "").strip() != (heading or "").strip():
+            raise ValueError("файл изменился — посмотри заметку заново")
+        body = (text or "").strip()
+        if not body:
+            raise ValueError("пустой текст")
+        # Заголовки `#`/`##` внутри текста разбор принял бы за новую запись —
+        # опускаем их до `###`, как и при добавлении.
+        body = re.sub(r"(?m)^#{1,2}(?=\s)", "###", body)
 
-    block = [_head_line(entry, title), "", body, ""]
-    if entry.get("raw"):
-        block += ["> [!quote]- Как было сказано"]
-        block += [f"> {line}" for line in entry["raw"].split("\n")]
-        block += [""]
+        block = [_head_line(entry, title), "", body, ""]
+        if entry.get("raw"):
+            block += ["> [!quote]- Как было сказано"]
+            block += [f"> {line}" for line in entry["raw"].split("\n")]
+            block += [""]
 
-    path = Path(data["path"])
-    _head, chunks = _chunks(_read_lines(path))
-    chunks[number] = block
-    rebuilt = list(_head)
-    for chunk in chunks:
-        rebuilt += chunk
-    while rebuilt and not rebuilt[-1].strip():
-        rebuilt.pop()
-    _stamp(rebuilt, datetime.now())
-    _write(path, "\n".join(rebuilt).rstrip("\n") + "\n")
+        path = Path(data["path"])
+        _head, chunks = _chunks(_read_lines(path))
+        chunks[number] = block
+        rebuilt = list(_head)
+        for chunk in chunks:
+            rebuilt += chunk
+        while rebuilt and not rebuilt[-1].strip():
+            rebuilt.pop()
+        _stamp(rebuilt, datetime.now())
+        _write(path, "\n".join(rebuilt).rstrip("\n") + "\n")
     return path
 
 
@@ -725,29 +736,30 @@ def rename_topic(section: str, topic: str, new_topic: str,
     не вышла, заметка остаётся на месте целиком. Склеивать с темой-тёзкой не
     надо — две разные мысли молча слились бы в одну.
     """
-    old = topic_path(section, topic)
-    if not old.is_file():
-        raise FileNotFoundError(f"нет такой темы: {topic}")
-    раздел = str(new_section or "").strip() or section
-    target = topic_path(раздел, new_topic or topic)
-    if str(target) == str(old):
-        return old
-    # На Windows «Книга.md» и «книга.md» — один и тот же файл: переименование
-    # только регистром это правка имени, а не «тема с таким именем уже есть».
-    same = target.exists() and os.path.samefile(target, old)
-    if target.exists() and not same:
-        raise ValueError("тема с таким именем уже есть")
-    lines = _read_lines(old)
-    _reface(lines, target.stem, target.parent.name, datetime.now())
-    if same and old.name != target.name:
-        # Только регистр: запись поверх «Книга.md» оставила бы на диске
-        # прежнее имя — Windows хранит регистр от старого файла. Сначала
-        # переименовать сам файл, потом писать.
-        old.rename(target)
-    _write(target, "\n".join(lines).rstrip("\n") + "\n")
-    if not same:
-        old.unlink(missing_ok=True)
-        _prune_section(section)
+    with _LOCK:
+        old = topic_path(section, topic)
+        if not old.is_file():
+            raise FileNotFoundError(f"нет такой темы: {topic}")
+        раздел = str(new_section or "").strip() or section
+        target = topic_path(раздел, new_topic or topic)
+        if str(target) == str(old):
+            return old
+        # На Windows «Книга.md» и «книга.md» — один и тот же файл: переименование
+        # только регистром это правка имени, а не «тема с таким именем уже есть».
+        same = target.exists() and os.path.samefile(target, old)
+        if target.exists() and not same:
+            raise ValueError("тема с таким именем уже есть")
+        lines = _read_lines(old)
+        _reface(lines, target.stem, target.parent.name, datetime.now())
+        if same and old.name != target.name:
+            # Только регистр: запись поверх «Книга.md» оставила бы на диске
+            # прежнее имя — Windows хранит регистр от старого файла. Сначала
+            # переименовать сам файл, потом писать.
+            old.rename(target)
+        _write(target, "\n".join(lines).rstrip("\n") + "\n")
+        if not same:
+            old.unlink(missing_ok=True)
+            _prune_section(section)
     return target
 
 

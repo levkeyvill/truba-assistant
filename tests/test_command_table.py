@@ -193,6 +193,25 @@ class SearchTests(unittest.TestCase):
         self.assertIsNone(commands.understand("поищи", APPS))
         self.assertIsNone(commands.understand("найди в интернете", APPS))
 
+    def test_a_search_asked_as_a_question_is_still_a_search(self):
+        # 29.09: «найди в интернете что такое квантовый компьютер?» уходило
+        # в разговор, и модель думала, искать ли, — лишние секунды.
+        order = commands.understand(
+            "найди в интернете, что такое квантовый компьютер?", APPS)
+        self.assertEqual((order.action, order.target),
+                         ("search", "что такое квантовый компьютер"))
+
+    def test_a_long_search_is_still_a_search(self):
+        длинная = ("найди в инете сколько стоит билет на поезд из Москвы "
+                   "в Питер на эти выходные и есть ли места в купе")
+        self.assertGreater(len(длинная.split()), commands.MAX_WORDS)
+        self.assertEqual(commands.understand(длинная, APPS).action, "search")
+
+    def test_a_question_is_never_another_command(self):
+        # Поиску «?» не мешает, остальным командам — по-прежнему мешает.
+        self.assertIsNone(commands.understand("открой ютуб?", APPS))
+        self.assertIsNone(commands.understand("сделай скриншот?", APPS))
+
 
 # --- Цитата доходит от модели до проверки -----------------------------------
 

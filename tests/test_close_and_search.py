@@ -21,6 +21,7 @@ import numpy as np
 
 import config
 from core import audio_in, commands, hands, launcher, web
+from core import brain as brain_module
 from core.brain import MAX_SOURCES, Brain
 from core.voice_loop import VoiceLoop
 from ui.web_runtime import WebRuntime
@@ -646,26 +647,81 @@ class SearchModeTests(unittest.TestCase):
     def tearDown(self):
         config.WEB_SEARCH, config.TTS_ENGINE = self._saved
 
-    def test_web_tools_even_on_small_talk(self):
-        # «ну привет» словами поиска не просит, а кнопка нажата.
-        brain = _brain([[_chunk("Привет.")]])
-        list(brain.reply("ну привет", search=True))
-        self.assertIn("web_search", _names(brain))
-        self.assertIn("read_page", _names(brain))
+    # --- Быстрый поиск (29.09): ищем сами, модель отвечает одним кругом ---
+
+    FOUND = '{"query": "курс доллара", "results": [{"title": "Курс ЦБ", "url": "https://cbr.ru/rates", "snippet": "92 рубля"}]}'
+
+    def test_the_button_turn_searches_before_asking_the_model(self):
+        # Раньше первый поход к модели нужен был только, чтобы она придумала
+        # запрос: +1.5–4 с на пустом месте. Теперь поиск — до модели.
+        brain = _brain([[_chunk("Девяносто два рубля.")]])
+        with mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
+            said = list(brain.reply("сколько стоит доллар", search=True))
+        self.assertEqual(поиск.call_args[0][0], "web_search")
+        self.assertIn('"query": "сколько стоит доллар"', поиск.call_args[0][1])
+        # Один запрос к модели, без инструментов и без требования их звать.
+        self.assertEqual(len(brain._client.bodies), 1)
+        self.assertEqual(_names(brain), [])
+        self.assertNotIn("tool_choice", brain._client.bodies[0])
+        последнее = brain._client.bodies[0]["messages"][-1]["content"]
+        self.assertIn("92 рубля", последнее)
+        self.assertIn("Ты уже поискала в интернете", последнее)
+        # Сначала «секунду, гляну», потом ответ.
+        self.assertIn(said[0], brain_module.FILLERS)
+        self.assertEqual(said[-1], "Девяносто два рубля.")
+
+    def test_the_command_gives_the_query_without_its_verb(self):
+        brain = _brain([[_chunk("Девяносто два рубля.")]])
+        with mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
+            list(brain.reply("найди в инете курс доллара", search=True))
+        self.assertIn('"query": "курс доллара"', поиск.call_args[0][1])
+
+    def test_found_text_stays_out_of_the_history(self):
+        brain = _brain([[_chunk("Девяносто два рубля.")]])
+        with mock.patch.object(web, "run_tool", return_value=self.FOUND):
+            list(brain.reply("сколько стоит доллар", search=True))
+        реплика = [t for t in brain._history if t["role"] == "user"][-1]
+        self.assertEqual(реплика["content"], "сколько стоит доллар")
+        ответ = [t for t in brain._history if t["role"] == "assistant"][-1]
+        self.assertEqual(ответ.get("searched"), ["сколько стоит доллар"])
+
+    # --- Поисковики не ответили — сразу честный ответ, без второй попытки ---
+
+    FAILED = '{"error": "поисковики не ответили"}'
+
+    def test_a_failed_search_is_told_at_once_without_a_second_try(self):
+        # 29.09 вживую: быстрый поиск упал, модель искала ещё раз, упало и
+        # это — 26 секунд тишины вместо 10.
+        brain = _brain([[_chunk("Интернет сейчас не отвечает.")]])
+        with mock.patch.object(web, "run_tool", return_value=self.FAILED) as поиск:
+            said = list(brain.reply("сколько стоит доллар", search=True))
+        self.assertEqual(поиск.call_count, 1)
+        self.assertEqual(len(brain._client.bodies), 1)
+        self.assertEqual(_names(brain), [])
+        self.assertNotIn("tool_choice", brain._client.bodies[0])
+        последнее = brain._client.bodies[0]["messages"][-1]["content"]
+        self.assertIn("поисковики сейчас не ответили", последнее)
+        self.assertEqual(said[-1], "Интернет сейчас не отвечает.")
+        # Не нашла — значит, и «уже искала» в истории не пишем.
+        ответ = [t for t in brain._history if t["role"] == "assistant"][-1]
+        self.assertNotIn("searched", ответ)
+
+    # --- Поиск со снимком экрана — прежний путь через инструмент -----------
+
+    IMAGE = "data:image/png;base64,iVBORw0KGgo="
 
     def test_the_button_turn_gives_the_internet_and_nothing_else(self):
         # 28.09, 21:26: на фразу с кнопки она сняла экран и описала его.
         brain = _brain([[_chunk("Привет.")]])
-        list(brain.reply("А что я на поиск нажимаю", search=True))
+        list(brain.reply("А что я на поиск нажимаю", search=True, image=self.IMAGE))
         self.assertEqual(_names(brain), ["web_search", "read_page"])
 
     def test_the_first_turn_demands_the_search(self):
-        # Иначе модель отвечает болтовнёй, ни разу не поискав: поиск
-        # обязан быть в первом же круге, а дальше она и сама знает.
+        # Иначе модель отвечает болтовнёй, ни разу не поискав.
         brain = _brain([_tool_call("web_search", '{"query": "курс доллара"}'),
                         [_chunk("Девяносто два рубля.")]])
         with mock.patch.object(web, "run_tool", return_value='{"results": []}'):
-            list(brain.reply("сколько стоит доллар", search=True))
+            list(brain.reply("сколько стоит доллар", search=True, image=self.IMAGE))
         self.assertEqual(brain._client.bodies[0].get("tool_choice"), "required")
         self.assertNotIn("tool_choice", brain._client.bodies[1])
 
@@ -701,7 +757,8 @@ class SearchModeTests(unittest.TestCase):
         picky = _Picky(brain._client.streams)
         brain._client = picky
         with mock.patch.object(web, "run_tool", return_value='{"results": []}'):
-            said = list(brain.reply("сколько стоит доллар", search=True))
+            said = list(brain.reply("сколько стоит доллар", search=True,
+                                    image=self.IMAGE))
         self.assertEqual(picky.bodies[0].get("tool_choice"), "required")
         self.assertNotIn("tool_choice", picky.bodies[1])
         self.assertEqual([t["function"]["name"] for t in picky.bodies[1]["tools"]],
@@ -715,8 +772,10 @@ class SearchModeTests(unittest.TestCase):
         self.assertNotIn("web_search", _names(brain))
 
     def test_prompt_says_it_is_a_query(self):
+        # Подсказка «это запрос для поиска» нужна прежнему пути, где искать
+        # будет сама модель (поиск со снимком).
         brain = _brain([[_chunk("Ок.")]])
-        list(brain.reply("сколько стоит доллар", search=True))
+        list(brain.reply("сколько стоит доллар", search=True, image=self.IMAGE))
         system = "\n".join(
             str(m["content"]) for m in brain._client.bodies[0]["messages"]
             if m["role"] == "system"

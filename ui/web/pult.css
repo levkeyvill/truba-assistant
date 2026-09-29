@@ -1874,6 +1874,10 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
    прочтёт, а сервер рисует QR чёрным по белому. */
 .мастер-qr { display: inline-block; padding: 12px; background: #fff; border-radius: 10px; line-height: 0; }
 .мастер-qr img { width: 180px; height: 180px; display: block; }
+.образец-шаги.без-черты { border-bottom: 0; padding-bottom: 0; }
+/* В «Настройках → Телефон» код стоит под кнопкой «Копировать адрес». */
+.настр-qr { margin: 8px 0 4px; }
+.настр-qr[hidden] { display: none; }
 /* QR нет (нет библиотеки segno) — адрес крупно, без белой подложки. */
 .мастер-qr.без-кода { background: none; padding: 0; line-height: normal; }
 .мастер-ссылки { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 0; }

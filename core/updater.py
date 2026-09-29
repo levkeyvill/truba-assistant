@@ -53,6 +53,14 @@ MAX_ARCHIVE = 300 * 1024 * 1024
 NOTES_LIMIT = 4000
 # Сколько бэкапов держим: три последних достаточно, а диск они не съедают.
 KEEP_BACKUPS = 3
+# Список файлов, которых до обновления не было, — внутри бэкапа. Откат их
+# убирает: иначе новый файл неудачного выпуска оставался бы в папке (29.09,
+# проверка кода).
+ADDED_ENTRY = "__добавлены__.json"
+# Какие файлы поставил прошлый выпуск. Файл, который из нового выпуска
+# убрали, по нему находится и удаляется; всё, чего в списке нет (своё у
+# человека), не трогается никогда.
+MANIFEST = "release_files.json"
 # Папка с бэкапами и журналом pip — внутри `data`, то есть рядом с личным,
 # но в стороне от кода.
 UPDATES_DIR = "updates"
@@ -286,8 +294,12 @@ def _бэкапы(root: Path) -> list:
     return sorted(found, key=lambda p: p.name, reverse=True)
 
 
-def _сделать_бэкап(root: Path, файлы: dict) -> Path:
-    """Копия всего, что сейчас будет заменено."""
+def _сделать_бэкап(root: Path, файлы, добавленные=()) -> Path:
+    """Копия всего, что сейчас будет заменено или удалено.
+
+    `добавленные` — файлы, которых до обновления не было: копировать нечего,
+    но откат должен знать, что их надо убрать.
+    """
     папка = _папка_обновлений(root)
     метка = datetime.now().strftime("%Y-%m-%d_%H%M")
     куда = папка / f"backup_{config.VERSION}_{метка}.zip"
@@ -296,6 +308,7 @@ def _сделать_бэкап(root: Path, файлы: dict) -> Path:
             текущий = root / relative
             if текущий.is_file():
                 коробка.write(текущий, relative)
+        коробка.writestr(ADDED_ENTRY, json.dumps(sorted(добавленные), ensure_ascii=False))
     # Держим последние три. Уборка — только после того, как копия собралась.
     for лишний in _бэкапы(root)[KEEP_BACKUPS:]:
         try:
@@ -313,7 +326,16 @@ def rollback(backup: Path, root: Path | None = None) -> bool:
         return False
     try:
         with zipfile.ZipFile(backup) as коробка:
-            for имя in коробка.namelist():
+            имена = коробка.namelist()
+            if ADDED_ENTRY in имена:
+                try:
+                    добавленные = json.loads(коробка.read(ADDED_ENTRY).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError):
+                    добавленные = []
+                _убрать(root, добавленные if isinstance(добавленные, list) else [])
+            for имя in имена:
+                if имя == ADDED_ENTRY:
+                    continue
                 _проверить_имя(имя)
                 куда = root / имя
                 куда.parent.mkdir(parents=True, exist_ok=True)
@@ -329,6 +351,44 @@ def _применить(root: Path, файлы: dict) -> None:
         куда = root / relative
         куда.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(источник, куда)
+
+
+def _убрать(root: Path, relatives) -> None:
+    """Удаляет файлы кода по списку. Только из белого списка и только внутри
+    папки Трубы — чужое и личное этим путём не удалить."""
+    корень = root.resolve()
+    for relative in relatives:
+        relative = str(relative)
+        try:
+            _проверить_имя(relative)
+        except ValueError:
+            continue
+        if not _разрешён(relative):
+            continue
+        путь = root / relative
+        try:
+            if путь.resolve().is_relative_to(корень) and путь.is_file():
+                путь.unlink()
+        except OSError:
+            continue
+
+
+def _манифест(root: Path) -> set | None:
+    """Файлы, которые поставил прошлый выпуск. None — списка ещё нет."""
+    путь = root / "data" / UPDATES_DIR / MANIFEST
+    try:
+        данные = json.loads(путь.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {str(x) for x in данные} if isinstance(данные, list) else None
+
+
+def _записать_манифест(root: Path, relatives) -> None:
+    try:
+        (_папка_обновлений(root) / MANIFEST).write_text(
+            json.dumps(sorted(relatives), ensure_ascii=False, indent=0), encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _прочитать(путь: Path):
@@ -430,15 +490,25 @@ def install(release: dict, root: Path | None = None, on_step=None) -> dict:
         # Прежние требования читаем ДО замены: с ними сравниваем новые.
         старые = _прочитать(root / "requirements.txt")
 
+        # Новые файлы — чтобы откат их убрал; лишние — файлы прошлого выпуска,
+        # которых в новом нет. Список прошлого выпуска есть только после
+        # первого обновления: до него лишним не считается ничего.
+        прошлый = _манифест(root) or set()
+        добавленные = sorted(relative for relative in файлы
+                             if not (root / relative).exists())
+        лишние = sorted(relative for relative in прошлый - set(файлы)
+                        if _разрешён(relative) and (root / relative).is_file())
+
         шаг("делаю копию прежних файлов")
         try:
-            бэкап = _сделать_бэкап(root, файлы)
+            бэкап = _сделать_бэкап(root, list(файлы) + лишние, добавленные)
         except Exception as exc:
             return {"ok": False, "error": f"копия не собралась: {exc}"}
 
         шаг("ставлю новые файлы")
         try:
             _применить(root, файлы)
+            _убрать(root, лишние)
         except Exception as exc:
             rollback(бэкап, root)
             return {"ok": False, "error": f"файлы не заменились: {exc}",
@@ -462,6 +532,9 @@ def install(release: dict, root: Path | None = None, on_step=None) -> dict:
                     "error": "новый код не запускается — вернула прежний",
                     "rolled_back": True}
 
+    # Запуск прошёл — теперь это список файлов этого выпуска: по нему
+    # следующее обновление найдёт, что из выпуска убрали.
+    _записать_манифест(root, файлы)
     try:
         (_папка_обновлений(root) / "last.json").write_text(json.dumps(
             {"from": откуда, "to": куда,

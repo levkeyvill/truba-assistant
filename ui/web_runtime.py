@@ -419,6 +419,11 @@ class WebRuntime:
             return [simple[kind]]
         if kind == "notes_topic":
             return [f"телефон читает «{str(data.get('topic', ''))[:60]}»"]
+        if kind == "ws_refused":
+            if payload == "нет ключа":
+                return ["телефон без ключа не пустила — наведи его камеру на "
+                        "QR-код в «Настройки → Телефон»"]
+            return ["чужую страницу к телефонному каналу не пустила"]
         if kind == "loading":
             return [f"загружаю: {payload}"]
         if kind == "stt_loading":
@@ -1484,9 +1489,17 @@ class WebRuntime:
             автозапуск = autostart.enabled()
         except Exception:
             автозапуск = False
+        # Ключ привязки телефона: пульт вставляет его в ссылку и QR-код.
+        # Отдаётся только сюда — /api/settings закрыт для сети.
+        try:
+            from core.phone import phone_key
+
+            ключ_телефона = phone_key()
+        except Exception:
+            ключ_телефона = ""
         return {
             "provider": provider, "providers": providers,
-            "settings": values, "persona": persona,
+            "settings": values, "persona": persona, "phone_key": ключ_телефона,
             "memory": mem_text, "addresses": local_addresses(),
             "voices": voices, "voice_samples": samples,
             "owner_known": owner_known, "autostart": автозапуск,
@@ -1695,19 +1708,27 @@ class WebRuntime:
         проверяем до импорта segno, чтобы чужой адрес отбивался одинаково
         независимо от того, стоит ли библиотека.
         """
+        from urllib.parse import parse_qs, urlsplit
+
         import config
-        from core.phone import local_addresses
+        from core.phone import local_addresses, phone_key
 
         allowed = {f"http://{ip}:{config.PHONE_PORT}" for ip in local_addresses()}
-        text = str(url or "").strip().rstrip("/")
-        if text not in allowed:
+        части = urlsplit(str(url or "").strip())
+        основа = f"{части.scheme}://{части.netloc}"
+        # С 29.09 в ссылке ещё ключ привязки телефона (`/?k=…`) — и ничего,
+        # кроме него: ни другого пути, ни чужих параметров.
+        запрос = parse_qs(части.query, keep_blank_values=True)
+        ключ_свой = not части.query or (set(запрос) == {"k"} and запрос["k"] == [phone_key()])
+        if (основа not in allowed or части.path not in ("", "/") or части.fragment
+                or not ключ_свой):
             raise ValueError("это не адрес этого компьютера в локальной сети")
 
         import segno
         from starlette.responses import Response
 
         # Цвета и поля — у save(), а не у make(): make их не знает и падает.
-        qr = segno.make(text)
+        qr = segno.make(str(url or "").strip())
         буфер = io.BytesIO()
         qr.save(буфер, kind="svg", scale=4, dark="#000000", light=None, border=2)
         return Response(
@@ -2169,7 +2190,10 @@ class WebRuntime:
         if persona_changed:
             settings.save_persona(payload["persona"])
         if "memory" in payload:
-            memory.from_text(payload["memory"])
+            # `memory_base` — какой память была, когда страницу открыли: факты,
+            # дописанные разбором разговора после этого, правка не сотрёт.
+            base = payload.get("memory_base")
+            memory.from_text(payload["memory"], base if isinstance(base, str) else None)
         if payload.get("clear_history"):
             if self.brain is not None:
                 self.brain.forget()

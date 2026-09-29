@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 
 import config
-from core import hotkeys, toggles
+from core import hotkeys, safe_files, toggles
 
 APPS_FILE = config.ROOT / "apps.json"
 # Список для свежей установки. Своего `apps.json` ещё нет — телефон не должен
@@ -158,7 +158,14 @@ def read_list() -> list[dict]:
             continue
         try:
             items = json.loads(файл.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError:
+            # Свой список испорчен — в сторону, а не под затирание: иначе
+            # первая же правка в «Программах» записала бы поверх запасной
+            # список, и кнопки человека пропали бы насовсем.
+            if файл == APPS_FILE:
+                safe_files.quarantine(APPS_FILE)
+            continue
+        except OSError:
             continue
         if isinstance(items, list):
             return items
@@ -167,9 +174,7 @@ def read_list() -> list[dict]:
 
 def save_list(items: list[dict]) -> None:
     """Перезаписывает список целиком — порядок в файле и есть порядок кнопок."""
-    APPS_FILE.write_text(
-        json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    safe_files.write_text(APPS_FILE, json.dumps(items, ensure_ascii=False, indent=2))
 
 
 # Опознаватель уходит в имена файлов со значками, а Windows и кодировки —

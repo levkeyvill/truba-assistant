@@ -10,7 +10,7 @@ import json
 import os
 
 import config
-from core import proactive
+from core import proactive, safe_files
 
 ENV_PATH = config.ROOT / ".env"
 SETTINGS_PATH = config.ROOT / "settings.json"
@@ -515,7 +515,12 @@ def load_settings() -> dict:
     if файл_был:
         try:
             сохранённые = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError:
+            # Битый файл — в сторону, а не под затирание первой же записью:
+            # из него ещё можно вытащить настройки руками.
+            safe_files.quarantine(SETTINGS_PATH)
+            сохранённые = None
+        except OSError:
             сохранённые = None
         if isinstance(сохранённые, dict):
             data.update(сохранённые)
@@ -538,9 +543,7 @@ def load_settings() -> dict:
 def save_settings(values: dict) -> None:
     data = load_settings()
     data.update(values)
-    SETTINGS_PATH.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    safe_files.write_text(SETTINGS_PATH, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 # --- Ключи и провайдер ---------------------------------------------------
@@ -570,7 +573,8 @@ def _write_env(values: dict[str, str]) -> None:
     for name, spec in config.PROVIDERS.items():
         env_name = spec["key_env"]
         lines.append(f"{env_name}={values.get(env_name, '')}")
-    ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Здесь ключи: оборванная запись оставила бы человека без ключа.
+    safe_files.write_text(ENV_PATH, "\n".join(lines) + "\n")
 
 
 def get_provider() -> str:
@@ -697,5 +701,4 @@ def load_persona() -> str:
 
 
 def save_persona(text: str) -> None:
-    PERSONA_PATH.parent.mkdir(exist_ok=True)
-    PERSONA_PATH.write_text(text, encoding="utf-8")
+    safe_files.write_text(PERSONA_PATH, text)

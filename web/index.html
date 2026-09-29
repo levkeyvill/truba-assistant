@@ -2811,8 +2811,29 @@ function setState(name) {
   label.style.color = 'var(--muted)';
 }
 
+/* Ключ привязки: приходит в ссылке из QR-кода (`?k=…`) и запоминается —
+   дальше телефон открывают из закладки или с главного экрана без него.
+   Без ключа комп не пускает телефон из сети (29.09): иначе любой в том же
+   Wi-Fi мог снять экран и прочитать заметки.
+   Функция, а не переменная: `connect()` зовётся при загрузке выше по
+   тексту, и `let` здесь ещё не был бы объявлен — связь не поднималась
+   вовсе (поймано проверкой в браузере 29.09). */
+function ключПривязки() {
+  let изСсылки = '';
+  try { изСсылки = new URLSearchParams(location.search).get('k') || ''; } catch (e) {}
+  try {
+    if (изСсылки) localStorage.setItem('ключ', изСсылки);
+    return изСсылки || localStorage.getItem('ключ') || '';
+  } catch (e) {
+    return изСсылки;
+  }
+}
+var needKey = false;
+
 function connect() {
-  socket = new WebSocket('ws://' + location.host + '/ws');
+  const phoneKey = ключПривязки();
+  const ключ = phoneKey ? '?k=' + encodeURIComponent(phoneKey) : '';
+  socket = new WebSocket('ws://' + location.host + '/ws' + ключ);
   socket.binaryType = 'arraybuffer';
 
   socket.onopen = () => {
@@ -2864,14 +2885,26 @@ function connect() {
       playAt = 0;
     } else if (msg.type === 'version') {
       if (FRESH && msg.value !== PAGE_VERSION) reloadSoon();
+    } else if (msg.type === 'need_key') {
+      needKey = true;
     }
   };
 
   socket.onclose = () => {
-    offline.textContent = 'нет связи с компом, переподключаюсь...';
-    offline.style.display = 'block';
     setState('off');
     edgeDictation(false);
+    if (needKey) {
+      /* Не «нет связи»: связь есть, но комп этот телефон не знает. Пробовать
+         каждые полторы секунды незачем — ключ сам не появится. */
+      offline.textContent = 'телефон не привязан: открой в пульте «Настройки → Телефон» '
+        + 'и наведи камеру на QR-код';
+      offline.style.display = 'block';
+      needKey = false;
+      setTimeout(connect, 15000);
+      return;
+    }
+    offline.textContent = 'нет связи с компом, переподключаюсь...';
+    offline.style.display = 'block';
     setTimeout(connect, 1500);
   };
 
