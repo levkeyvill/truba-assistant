@@ -57,8 +57,8 @@ MEMO = config.DATA_DIR / "replay_state.json"
 
 # Заводское сочетание NVIDIA «включить/выключить повтор».
 DEFAULT_TOGGLE = [0x12, 0x10, 0x79]  # Alt+Shift+F10
-# Процесс Codex, который прячет окно от записи. Пока он жив, NVIDIA
-# повтор не даст — включать бессмысленно, выключит снова.
+# Процесс Codex, который прячет окно от записи, — когда журнал не назвал
+# номер процесса. Номер известен — ждём только его (см. `blocker_running`).
 BLOCKER_NAMES = ("codex-computer-use",)
 
 
@@ -76,7 +76,9 @@ class Status:
         if self.on:
             return "включён"
         if self.auto_off:
-            return f"выключила NVIDIA: мешал {self.blocker_app or 'защищённый экран'}"
+            # 30.09, хозяин: «выключила NVIDIA: мешал Codex» — два двоеточия
+            # подряд после «Мгновенный повтор NVIDIA:» читались как ошибка.
+            return f"выключен из-за {self.blocker_app or 'защищённого экрана'}"
         return "выключен вручную"
 
 
@@ -144,19 +146,29 @@ def status(log: Path = LOG, old: Path = OLD, memo: Path | None = MEMO) -> Status
 
 
 def blocker_running(pid_hint: int | None = None) -> bool:
-    """Жив ли ещё тот, кто прячет окно от записи."""
+    """Жив ли ещё тот, кто прячет окно от записи.
+
+    Если журнал назвал процесс — ждём только его. 30.09: повтор выключил
+    процесс 1012 в 22:19 и давно закрылся, а сторож до ночи ждал
+    `codex-computer-use-swift` — фоновый помощник Codex, который живёт всё
+    время, пока Codex открыт. Повтор так и не включался. Если NVIDIA снова
+    выключит его — сторож заметит и включит с отступом (`Guard.BACKOFF`).
+    """
     import psutil
 
-    for proc in psutil.process_iter(["name"]):
-        name = (proc.info.get("name") or "").lower()
-        if any(b in name for b in BLOCKER_NAMES):
-            return True
-    if pid_hint and psutil.pid_exists(pid_hint):
+    if pid_hint:
+        if not psutil.pid_exists(pid_hint):
+            return False
         try:
             exe = psutil.Process(pid_hint).exe() or ""
         except (psutil.Error, OSError):
             return False
+        # Номер процесса Windows отдаёт заново — чужой с тем же номером не в счёт.
         return "cua_node" in exe or "Codex" in exe
+    for proc in psutil.process_iter(["name"]):
+        name = (proc.info.get("name") or "").lower()
+        if any(b in name for b in BLOCKER_NAMES):
+            return True
     return False
 
 

@@ -151,8 +151,8 @@ class TableTests(unittest.TestCase):
     def test_ids_are_the_ones_voice_loop_knows(self):
         self.assertEqual(
             {spec.id for spec in commands.COMMANDS},
-            {"screenshot", "moment", "volume", "launch", "close",
-             "youtube", "note", "search"},
+            {"screenshot", "moment", "layout", "media", "pc_volume", "volume",
+             "launch", "close", "youtube", "note", "search", "folder"},
         )
 
 

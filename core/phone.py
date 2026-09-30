@@ -259,6 +259,11 @@ class PhoneServer:
         self._thread: threading.Thread | None = None
         self._ready = threading.Event()
 
+        # Источники последней карточки поиска. По номеру из этого списка
+        # телефон просит открыть источник на компьютере — адрес он не
+        # присылает и прислать не может (см. `send_search_result`).
+        self.last_sources: list[dict] = []
+
         # Обновление погоды. Заполняется при старте, см. `_start_weather`.
         self._weather = None
 
@@ -398,6 +403,21 @@ class PhoneServer:
             return FileResponse(
                 web / "icon.svg", media_type="image/svg+xml", headers=NO_CACHE
             )
+
+        @app.get("/search_hum.wav")
+        async def search_hum_wav():
+            """Звук фона поиска для телефона.
+
+            Без ключа, как иконка: это просто звук, в нём ничего нет, что
+            стоило бы прятать от чужого в сети.
+            """
+            from core import search_hum
+
+            данные = search_hum.wav_bytes()
+            if данные is None:
+                # Файла звука нет — телефон просто промолчит.
+                return PlainTextResponse("нет звука", status_code=404)
+            return Response(content=данные, media_type="audio/wav", headers=NO_CACHE)
 
         @app.get("/fonts/{name}")
         async def font(name: str):
@@ -1690,6 +1710,45 @@ class PhoneServer:
                 return _fail(exc)
             return JSONResponse(res)
 
+        # --- Напоминания и таймеры: что стоит и чем отменить ---------------
+        # Только с компа (`_local`) — как заметки: расписание хозяина видно
+        # всему, кто знает адрес пульта, а телефон лежит в сети.
+        #
+        # Ставит их модель голосом; здесь только чтение и отмена. Никаких
+        # регулярок времени: `due` уезжает ISO-строкой с поясом, а «через
+        # N мин» пульт считает у себя.
+
+        @app.get("/api/reminders")
+        async def api_reminders(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                res = await asyncio.to_thread(rt.reminders_list)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res, headers=NO_CACHE)
+
+        @app.post("/api/reminders/cancel")
+        async def api_reminders_cancel(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("нужен JSON-объект")
+                res = await asyncio.to_thread(rt.reminders_cancel, body)
+            except ValueError as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
         @app.websocket("/ws")
         async def socket(ws: WebSocket):
             self._emit("ws_attempt", None)
@@ -1944,14 +2003,28 @@ class PhoneServer:
         self._broadcast(lambda ws: ws.send_text(payload))
 
     def send_search_result(
-        self, query: str, answer: str, sources: list | None = None
+        self, query: str, answer: str, sources: list | None = None,
+        asked: str = "",
     ) -> None:
-        """Ответ кнопке поиска: запрос, сказанное вслух и откуда."""
+        """Карточка поиска на телефоне: запрос, сказанное вслух и откуда.
+
+        `query` — то, что реально ушло в поисковик (запросы пишет модель
+        сама), `asked` — слова хозяина. Телефон открывает в браузере `query`,
+        а без него показывает `asked`: касание строки должно приводить к тому
+        же поиску, что и сделала она.
+
+        Список источников запоминаем: по нему телефон потом просит открыть
+        источник **по номеру** (`open_source`) — адрес с телефона не принимаем,
+        иначе он заставил бы комп открыть что угодно (см. `WebRuntime`).
+        """
+        список = [s for s in (sources or []) if isinstance(s, dict)]
+        self.last_sources = список
         payload = json.dumps({
             "type": "search_result",
             "query": query,
+            "asked": asked or query,
             "answer": answer,
-            "sources": list(sources or []),
+            "sources": список,
         })
         self._broadcast(lambda ws: ws.send_text(payload))
 
@@ -1971,6 +2044,17 @@ class PhoneServer:
         Сами звуки телефон синтезирует на месте, файлов не нужно.
         """
         payload = json.dumps({"type": "sound", "name": name})
+        self._broadcast(lambda ws: ws.send_text(payload))
+
+    def send_search_hum(self, on: bool, gain: float = 1.0) -> None:
+        """Тихий фон, пока она ищет в интернете.
+
+        Телефон играет его у себя по кругу, пока не придёт `on: false`:
+        держать соединение ради звука незачем, а сам звук он уже скачал
+        (`GET /search_hum.wav`). Громкость — как у её голоса.
+        """
+        payload = json.dumps({"type": "search_hum", "on": bool(on),
+                              "gain": float(gain)})
         self._broadcast(lambda ws: ws.send_text(payload))
 
     def send_dictation(self, on: bool) -> None:

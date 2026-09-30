@@ -15,10 +15,12 @@ import threading
 import unittest
 from collections import deque
 from types import SimpleNamespace as NS
+from unittest import mock
 
 import numpy as np
 
 import config
+from core import web
 from core.brain import NOT_TO_ME_NAME, Brain
 from core.voice_loop import VoiceLoop
 
@@ -117,7 +119,10 @@ class НаборИнструментовTests(unittest.TestCase):
         # Человек нажал «найти» и сказал, чего хочет: молчать тут незачем.
         config.WEB_SEARCH = True
         brain = _мозг([_чан("Вот что нашёл.")])
-        list(brain.reply("найди курс доллара", search=True, named=True))
+        # Без сети: быстрый поиск ищет до модели, а запросы пишет модель.
+        brain._search_queries = lambda text, query: [query]
+        with mock.patch.object(web, "run_tool", return_value='{"query": "q", "results": []}'):
+            list(brain.reply("найди курс доллара", search=True, named=True))
         self.assertNotIn(NOT_TO_ME_NAME, _имён(brain))
 
     def test_the_first_talk_has_no_tools_at_all(self):

@@ -137,9 +137,12 @@ class EndpointTests(unittest.TestCase):
 
     def test_it_matches_what_the_guide_function_gives(self):
         # Страница и эндпоинт не должны разойтись: эндпоинт только отдаёт.
+        # «skills» — второй блок «понимает по смыслу», он приходит оттуда же.
         body = self.client.get("/api/commands").json()
         гайд = commands.commands_guide()
-        self.assertEqual({key: body[key] for key in ("window", "commands", "apps")}, гайд)
+        self.assertEqual(
+            {key: body[key] for key in ("window", "commands", "skills", "apps")},
+            гайд)
 
 
 def _тело(скрипт: str, имя: str) -> str:

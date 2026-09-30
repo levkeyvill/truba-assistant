@@ -232,11 +232,17 @@ class СловаСудьи(unittest.TestCase):
 
     def test_five_actions_are_judged(self):
         # Запуск, закрытие, YouTube — с 27.09; снимок и взгляд добавлены
-        # 28.09 после взгляда без просьбы. Момент сюда не входит: клип
+        # 28.09 после взгляда без просьбы. Папка — 30.09: открытая папка
+        # это окно на экране, ровно как у запуска программы. Документы —
+        # 30.09, по правилу снимка экрана: наружу уходит сам текст файла,
+        # и спросить «правда ли просил» дешевле, чем отдать хозяину чужой
+        # документ. Поиск файла по названию — 30.09: открытый файл тоже окно на
+        # экране, а сам файл хозяина чужой. Момент сюда не входит: клип
         # повтора никуда наружу не уходит.
         self.assertEqual(hands.JUDGED, frozenset(
             {hands.NAME, hands.CLOSE_NAME, hands.YT_NAME,
-             hands.SHOT_NAME, hands.LOOK_NAME}))
+             hands.SHOT_NAME, hands.LOOK_NAME, hands.FOLDER_NAME,
+             hands.DOC_NAME, hands.FIND_NAME}))
         self.assertNotIn(hands.MOMENT_NAME, hands.JUDGED)
 
     def test_an_action_is_named_in_words(self):

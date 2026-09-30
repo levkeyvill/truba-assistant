@@ -92,6 +92,21 @@ NOT_TO_ME_TOOL = {
 }
 # Что сказать, пока ищем, если сама она молчит: иначе секунды тишины.
 FILLERS = ("Секунду, гляну.", "Щас посмотрю.", "Погоди, гляну в интернете.")
+# Быстрый поиск: вопрос человека — в запросы для поисковика (как у
+# Perplexica и Open WebUI). 29.09 «нейросети, которые недавно вышли, топ-5»
+# как есть приносило рейтинги 2025 года; модель пишет «новые нейросети
+# сентябрь 2026». Замер: 1.4–2.9 с.
+REWRITE_ASK = (
+    "Сегодня {today}. Недавний разговор:\n{talk}\n\n"
+    "Человек попросил голосом найти в интернете: «{text}».\n"
+    "Составь {n} коротких поисковых запроса ключевыми словами, не предложениями: "
+    "вместе они должны найти ответ. Местоимения замени тем, о чём шла речь. "
+    "Если спрашивают про новое, недавнее или «сейчас» — добавь месяц и год. "
+    'Ответ строго JSON: {{"queries": ["…", "…"]}}'
+)
+REWRITE_TOKENS = 120
+# Дольше не ждём: ищем по фразе как есть.
+REWRITE_TIMEOUT = 4.0
 # Кнопка поиска на телефоне. Человек не сказал вслух «найди» — он нажал
 # кнопку, поэтому ворот по словам (ASKS, FRESH) тут не сработал бы никогда.
 # Слова нужны сильные: 28.09 в 21:25 на фразу с кнопки она ответила
@@ -259,6 +274,25 @@ def _host_of(url: str) -> str:
         return ""
 
 
+def _search_wait() -> float:
+    """Сколько быстрый поиск ждёт поисковик — страховка от зависания.
+
+    Сроки у самих поисков свои; этот — чуть больше самого долгого пути в
+    выбранном режиме. 29.09 он был один на всех, 17 с, и платный поиск
+    (до 25 с) обрывался раньше, чем успевал ответить.
+    """
+    from core import web
+
+    # Бесплатно: запросы от модели, поисковики, чтение страниц — подряд.
+    free = REWRITE_TIMEOUT + web.SEARCH_DEADLINE + web.READ_DEADLINE + 2.0
+    mode = getattr(config, "WEB_SEARCH_MODE", "free")
+    if mode == "paid":
+        return web.PAID_TIMEOUT + 3.0
+    if mode == "auto":
+        return free + web.PAID_TIMEOUT
+    return free
+
+
 def _attach_found(messages: list[dict], query: str, result: str, ok: bool = True) -> None:
     """Итог быстрого поиска — к реплике человека, только в этот запрос.
 
@@ -276,7 +310,8 @@ def _attach_found(messages: list[dict], query: str, result: str, ok: bool = True
         return
     if ok:
         last["content"] += (
-            f"\n\n[Ты уже поискала в интернете по запросу «{query}». Найдено:]\n{result}\n"
+            f"\n\n[Ты уже поискала в интернете по запросу «{query}». Найдено "
+            f"(results — выдача, pages — тексты верхних страниц):]\n{result}\n"
             "[Ответь по найденному коротко и своими словами, для голоса: без ссылок "
             "и без списков. Если ответа в найденном нет — так и скажи.]"
         )
@@ -739,6 +774,15 @@ class Brain:
         # Источники последнего ответа — что реально пришло из интернета.
         # Их показывает кнопка поиска на телефоне.
         self.last_sources: list[dict] = []
+        # Ходила ли она в этом ответе в интернет. По этому признаку телефон
+        # показывает карточку поиска после **любого** такого ответа, а не
+        # только после кнопки «Найти» (30.09, хозяин: «после любого поиска,
+        # с касанием»).
+        self.searched: bool = False
+        # Запросы, которые реально ушли в поисковик: их пишет модель сама
+        # (`web_queries`), и карточка на телефоне должна открыть в браузере
+        # именно этот запрос, а не слова хозяина.
+        self.last_queries: list[str] = []
         # Когда в этом ответе уходили в модель и когда от неё пришло первое
         # слово и первое готовое предложение — по каждому кругу инструментов.
         # Считает только perf_counter, голосовой цикл берёт это для замера
@@ -1025,6 +1069,30 @@ class Brain:
         # диктовки целиком. Порядок набора не меняется — на нём кеш запроса.
         if callable((getattr(self, "actions", None) or {}).get("dictation")):
             tools.append(hands.DICTATE_TOOL)
+        # Раскладка, музыка и звук компьютера — сразу за диктовкой, тоже
+        # всегда и тем же набором: их не от чего включать, они не зависят ни от
+        # apps.json, ни от настроек голоса. Порядок набора не меняется — на
+        # нём держится кеш запроса.
+        tools.extend(hands.PC_TOOLS)
+        # Стандартные папки — сразу за раскладкой, музыкой и звуком и тоже
+        # всегда: они есть у каждого, и «открывай загрузки» не должно уходить
+        # в облако. Порядок набора не меняется — на нём держится кеш.
+        tools.append(hands.FOLDER_TOOL)
+        # Напоминания и таймеры — сразу за папками, тоже всегда и одним
+        # блоком: «напомни через двадцать минут» не должно уходить в облако
+        # на уточнение, а набор их не зависит ни от apps.json, ни от
+        # настроек голоса. Порядок набора не меняется — на нём держится кеш.
+        tools.extend(hands.REMINDER_TOOLS)
+        # Документы — сразу за напоминаниями, тоже всегда и тем же набором:
+        # «перескажи последний скачанный PDF» — длинная фраза, и уводить её в
+        # облако на уточнение незачем, а набор их не зависит ни от apps.json, ни
+        # от настроек голоса. Порядок набора не меняется — на нём держится кеш.
+        tools.append(hands.DOC_TOOL)
+        # Поиск и открытие файла по названию — сразу за документами, тоже всегда
+        # и тем же набором: файлы у хозяина есть всегда, а «открой на диске ц
+        # документ договор» — длинная фраза. Порядок набора не меняется — на нём
+        # держится кеш запроса.
+        tools.append(hands.FIND_TOOL)
         tools.extend(hands.action_tools(getattr(self, "actions", None) or {}))
         if self._tools_on() and (search or wants_web(text) or follow_up):
             tools.extend(web.TOOLS)
@@ -1038,6 +1106,27 @@ class Brain:
         if named:
             tools.append(NOT_TO_ME_TOOL)
         return tools
+
+    def _run_pc(self, call: dict) -> str:
+        """Раскладка, музыка или звук компьютера по вызову модели.
+
+        Отдельным методом, а не строкой в круге: у всех трёх один и тот же
+        хвост — звать `core/pc_control.py` и положить одну понятную строку в
+        журнал («раскладка: английская», «музыка: пауза», «звук компьютера:
+        30 %»). Само действие и его честный текст — внутри `pc_control`.
+        """
+        from core import pc_control
+
+        import json
+
+        answer = pc_control.run_tool(call["name"], call["args"])
+        try:
+            строка = str(json.loads(answer).get("journal") or "")
+        except (TypeError, ValueError):
+            строка = ""
+        if строка:
+            self._tell("pc", строка)
+        return answer
 
     def _searched_just_now(self) -> bool:
         """Прошлый ответ — по поиску, и был он недавно."""
@@ -1146,6 +1235,10 @@ class Brain:
         self.ended = False
         self.not_to_me = False
         self.last_sources = []
+        # Только про этот ответ: телефон показывает карточку поиска по тем
+        # запросам и источникам, что были в нём, а не в прошлом.
+        self.searched = False
+        self.last_queries = []
         # Быстрый поиск (29.09, хозяин: «YouTube она открывает сразу, а поиск
         # долго думает»). Раньше первый поход к модели нужен был только
         # затем, чтобы она сформулировала запрос, — а запрос и так известен:
@@ -1227,9 +1320,13 @@ class Brain:
 
         def run() -> None:
             try:
+                box["queries"] = self._search_queries(user_text, query)
+                # Сразу с текстами верхних страниц: по обрывкам из выдачи
+                # на вопрос вроде «топ-5 нейросетей» ответить нечем.
                 box["result"] = web.run_tool(
-                    "web_search", json.dumps({"query": query}, ensure_ascii=False),
-                    self.on_event)
+                    "web_search",
+                    json.dumps({"queries": box["queries"]}, ensure_ascii=False),
+                    self.on_event, read_pages=web.READ_TOP)
             except Exception as exc:
                 box["result"] = json.dumps(
                     {"error": f"{type(exc).__name__}: {exc}"}, ensure_ascii=False)
@@ -1242,12 +1339,74 @@ class Brain:
             except Exception:
                 pass
         yield random.choice(FILLERS)
-        поиск.join(timeout=float(getattr(config, "WEB_SEARCH_BUDGET", TOOL_BUDGET)) + 5.0)
+        поиск.join(timeout=_search_wait())
         result = str(box.get("result") or '{"error": "поиск не ответил"}')
         ok = not result.startswith('{"error"')
         if ok:
             _collect_sources("web_search", result, self.last_sources)
-        return {"ok": ok, "query": query, "result": result}
+        # Запросы, что ушли в поисковик: карточка на телефоне откроет именно
+        # их. Список пустой, когда поисковики не ответили, — тогда телефон
+        # покажет слова хозяина (см. `VoiceLoop._send_search`).
+        if ok:
+            self.searched = True
+            self.last_queries = [str(q) for q in (box.get("queries") or []) if str(q).strip()]
+        return {"ok": ok, "query": "; ".join(box.get("queries") or [query]),
+                "result": result}
+
+    def _search_queries(self, user_text: str, query: str) -> list[str]:
+        """Вопрос человека — в запросы для поисковика (REWRITE_ASK).
+
+        Не ответила за REWRITE_TIMEOUT или ответила криво — ищем по фразе
+        как есть. Платный поиск запрос составляет сам — там не переписываем.
+        Последние реплики — чтобы «а найди про него подробнее» стало
+        запросом про то, о чём говорили.
+        """
+        import json
+
+        from core import web
+
+        if getattr(config, "WEB_SEARCH_MODE", "free") == "paid":
+            return [query]
+        recent = [t for t in list(self._history)[-4:] if t.get("role") in ("user", "assistant")]
+        talk = "\n".join(
+            ("Человек: " if t["role"] == "user" else "Ты: ") + str(t.get("content") or "")[:300]
+            for t in recent
+        )
+        ask = REWRITE_ASK.format(today=datetime.now().strftime("%d.%m.%Y"),
+                                 talk=talk or "(его не было)", text=user_text,
+                                 n=web.MAX_QUERIES)
+        started = time.monotonic()
+        box: dict = {}
+
+        def rewrite() -> None:
+            try:
+                box["answer"] = self._ask_plainly(ask, REWRITE_TOKENS, json_mode=True,
+                                                  note="поиск", timeout=REWRITE_TIMEOUT)
+            except Exception as exc:
+                box["error"] = exc
+
+        # Срок — снаружи, потоком. `timeout` запроса — это срок между байтами,
+        # а облако, пока думает, шлёт пустые байты, чтобы связь не рвалась:
+        # 29.09 такой запрос висел больше 20 с при сроке в 4.
+        переписка = threading.Thread(target=rewrite, daemon=True, name="search-queries")
+        переписка.start()
+        переписка.join(REWRITE_TIMEOUT)
+        try:
+            if "error" in box:
+                raise box["error"]
+            if "answer" not in box:
+                raise TimeoutError(f"не ответила за {REWRITE_TIMEOUT:.0f} с")
+            text = (box["answer"].choices[0].message.content or "").strip()
+            data = json.loads(text[text.find("{"):text.rfind("}") + 1])
+            queries = [" ".join(str(q).split()) for q in data.get("queries") or []
+                       if isinstance(q, str) and q.strip()][:web.MAX_QUERIES]
+        except Exception as exc:
+            self._tell("web_queries", {"queries": [query], "took": round(time.monotonic() - started, 2),
+                                       "error": f"{type(exc).__name__}: {exc}"})
+            return [query]
+        self._tell("web_queries", {"queries": queries or [query],
+                                   "took": round(time.monotonic() - started, 2)})
+        return queries or [query]
 
     def _reply_rounds(
         self,
@@ -1384,6 +1543,49 @@ class Brain:
                 elif call["name"] == hands.DICTATE_NAME:
                     results.append(hands.run_dictation(
                         call["args"], getattr(self, "actions", None) or {}))
+                elif call["name"] == hands.FOLDER_NAME:
+                    # Стандартная папка. Ответ — тот же словарь, что у голосовой
+                    # команды, и строка в журнал из него же: хозяин видит одно
+                    # и то же в обоих путях («папка: Загрузки»).
+                    results.append(hands.run_folder(call["args"], self.on_event))
+                elif call["name"] in hands.PC_NAMES:
+                    # Раскладка, музыка и звук компьютера. Ответ — тот же
+                    # словарь, что у голосовой команды, и строка в журнал из
+                    # него же: хозяин должен видеть одно и то же в обоих
+                    # путях («раскладка: английская», «звук компьютера: 30 %»).
+                    results.append(self._run_pc(call))
+                elif call["name"] == hands.SET_REM_NAME:
+                    # Напоминание или таймер. Время к этому моменту уже
+                    # посчитано моделью (у неё часы в каждом запросе) и
+                    # пришло готовым — здесь только храним и будим.
+                    results.append(
+                        hands.run_set_reminder(call["args"], self.on_event))
+                elif call["name"] == hands.LIST_REM_NAME:
+                    # Список того, что стоит. В `LOCAL` его нет намеренно:
+                    # модель перескажет хозяину своими словами.
+                    results.append(
+                        hands.run_list_reminders(call["args"], self.on_event))
+                elif call["name"] == hands.CANCEL_REM_NAME:
+                    results.append(
+                        hands.run_cancel_reminder(call["args"], self.on_event))
+                elif call["name"] == hands.DOC_NAME:
+                    # Документ. Ответ — тот же словарь, что у голосовой команды,
+                    # и строка в журнал из `core/documents.py`: имя, страницы и
+                    # знаки. Сам текст в журнал не уходит и в историю тоже — он
+                    # только в этом ответе, оттуда модель перескажет хозяину.
+                    # При `mode: aloud` читает голосовой цикл (действие
+                    # `read_aloud`), и текст в ответе уже пустой: наружу уходит
+                    # только готовая фраза, второй круг ей не нужен.
+                    results.append(hands.run_document(
+                        call["args"], self.on_event,
+                        getattr(self, "actions", None) or {},
+                    ))
+                elif call["name"] == hands.FIND_NAME:
+                    # Поиск файла по названию. Ответ — имена, пути и папки (путь
+                    # без имени пользователя), а при `open` — ещё и готовая
+                    # фраза; строки в журнал из `core/files.py`.
+                    results.append(hands.run_find_file(
+                        call["args"], self.on_event))
                 elif call["name"] in hands.KEY_OF:
                     results.append(
                         hands.run_action(
@@ -1406,6 +1608,14 @@ class Brain:
                 if not results[-1].startswith('{"error"'):
                     # В пометку истории — только то, что правда нашлось.
                     queries.append(_query_of(call))
+                    if call["name"] == "web_search":
+                        # Поход в интернет состоялся, и телефон должен знать
+                        # какой: карточка показывает запрос, по которому
+                        # хозяин откроет этот поиск в браузере (30.09).
+                        self.searched = True
+                        запрос = _query_of(call)
+                        if запрос:
+                            self.last_queries.append(запрос)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call["id"],
@@ -1433,8 +1643,12 @@ class Brain:
             # Взгляд на экран сюда не попадает: там модель нужен снимок, и
             # интернет тоже — там нужен живой ответ из сети.
             if (not searched and not shots and not late
-                    and all(call["name"] in hands.CONFIRM for call in ordered)
+                    and all(hands.confirm_forms(call) for call in ordered)
                     and not any(r.startswith('{"error"') for r in results)):
+                # Формы — по `confirm_forms`, а не по имени: у `read_document`
+                # при `mode: aloud` второй круг не нужен (текст документа в
+                # облако не уходит, а модель получила готовую фразу), а при
+                # `retell` — нужен, и без него она не перескажет.
                 line = hands.confirm(ordered, results=results)
                 if line:
                     spoken = f"{spoken} {line}".strip()
@@ -1817,6 +2031,19 @@ class Brain:
         """
         with self._reply_lock:
             self._add_turn(user_text, reply)
+
+    def announce(self, note: str, reply: str) -> None:
+        """Её собственная реплика в историю — как заход первой.
+
+        Так в историю ложится сработавшее напоминание (core/reminders.py):
+        сказанного хозяином тут ничего, а без пометки она через пару реплик
+        забыла бы, что напоминание вообще было. Пометка `first` — та же, что
+        у проактивности: в разговор такая строка идёт как её собственная
+        мысль, а не как реплика хозяина, и в память о нём (`own_turns`) не
+        попадает.
+        """
+        with self._reply_lock:
+            self._add_turn(str(note or ""), str(reply or ""), first_turn=True)
 
     def _add_turn(self, user_text: str, reply: str, voice: float | None = None,
                   searched: list[str] | None = None,

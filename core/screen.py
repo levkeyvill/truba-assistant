@@ -33,15 +33,19 @@ class _Guid(ctypes.Structure):
     ]
 
 
-def pictures_dir() -> Path:
-    """Папка «Изображения» так, как её знает сама Windows.
+def known_folder(folder_id: str, fallback: Path) -> Path:
+    """Папка Known Folders по её опознавателю — так, как её знает сама Windows.
 
-    Спрашиваем систему, а не склеиваем путь руками: папку могли перенести
-    на другой диск, и тогда снимки уехали бы в никуда.
+    Спрашиваем систему, а не склеиваем путь руками: любую из этих папок могли
+    перенести на другой диск, и тогда наш путь вёл бы в никуда. `fallback` —
+    на случай, если система не ответила (в тестах Known Folders подменяют).
+
+    Общая функция одна на всё: `core/folders.py` спрашивает здесь же, своими
+    копиями вызовов Windows со временем разъехались бы.
     """
     try:
         guid = _Guid()
-        ctypes.windll.ole32.CLSIDFromString(_FOLDERID_PICTURES, ctypes.byref(guid))
+        ctypes.windll.ole32.CLSIDFromString(folder_id, ctypes.byref(guid))
         out = ctypes.c_wchar_p()
         if ctypes.windll.shell32.SHGetKnownFolderPath(
             ctypes.byref(guid), 0, None, ctypes.byref(out)
@@ -49,7 +53,12 @@ def pictures_dir() -> Path:
             return Path(out.value)
     except Exception:
         pass
-    return Path.home() / "Pictures"
+    return Path(fallback)
+
+
+def pictures_dir() -> Path:
+    """Папка «Изображения» так, как её знает сама Windows."""
+    return known_folder(_FOLDERID_PICTURES, Path.home() / "Pictures")
 
 
 def shots_dir() -> Path:

@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+import time
 import unittest
 from collections import deque
 from types import SimpleNamespace as NS
@@ -424,6 +425,179 @@ class SearchModeTests(unittest.TestCase):
         kwargs = client.responses.create.call_args.kwargs
         self.assertEqual(kwargs["tools"][0]["type"], "web_search")
         self.assertEqual(kwargs["model"], web.PAID_MODEL)
+        # 29.09: без предела широкий вопрос искался 41 с и обрывался.
+        self.assertEqual(kwargs["max_tool_calls"], web.PAID_SEARCHES)
+
+    def test_paid_without_the_limit_when_the_service_refuses_it(self):
+        import httpx
+        from openai import BadRequestError
+
+        def refuse(**body):
+            if "max_tool_calls" in body:
+                request = httpx.Request("POST", "https://api.example/v1")
+                raise BadRequestError(
+                    "Unknown parameter: 'max_tool_calls'",
+                    response=httpx.Response(400, request=request), body=None)
+            return NS(output_text="Курс — 84 рубля.", output=[])
+
+        client = NS(responses=NS(create=mock.Mock(side_effect=refuse)))
+        with mock.patch("openai.OpenAI", return_value=client), \
+                mock.patch("core.settings.get_api_key", return_value="sk-test"):
+            results, _ = web.search_paid("курс доллара")
+        self.assertEqual(results[0]["snippet"], "Курс — 84 рубля.")
+        последний = client.responses.create.call_args.kwargs
+        self.assertNotIn("max_tool_calls", последний)
+        # Отказ из-за предела не считается отказом «без размышлений».
+        self.assertEqual(последний["reasoning"], {"effort": "none"})
+
+    # --- Верхние страницы выдачи для быстрого поиска ----------------------
+
+    RESULTS = [{"title": f"Сайт {n}", "url": f"https://site{n}.ru/a", "snippet": "…"}
+               for n in range(5)]
+
+    def test_top_pages_are_read_in_the_order_of_the_results(self):
+        прочитано = []
+
+        def read(url, limit):
+            прочитано.append(url)
+            if url.startswith("https://site1."):
+                raise RuntimeError("на странице не нашлось текста")
+            return f"текст {url} " * 30
+
+        with mock.patch.object(web, "read_page", side_effect=read):
+            pages = web.read_top(self.RESULTS)
+        # Только три верхние; не открывшаяся — без неё, порядок как в выдаче.
+        self.assertEqual(sorted(прочитано), [r["url"] for r in self.RESULTS[:3]])
+        self.assertEqual([p["url"] for p in pages],
+                         ["https://site0.ru/a", "https://site2.ru/a"])
+
+    def test_a_stub_page_is_not_a_page(self):
+        with mock.patch.object(web, "read_page", return_value="Включите JavaScript."):
+            self.assertEqual(web.read_top(self.RESULTS), [])
+
+    def test_a_slow_page_is_not_waited_for(self):
+        отпустить = threading.Event()
+        self.addCleanup(отпустить.set)
+
+        def read(url, limit):
+            if url.startswith("https://site0."):
+                отпустить.wait(5)
+            return "текст " * 100
+
+        начало = time.monotonic()
+        with mock.patch.object(web, "read_page", side_effect=read):
+            pages = web.read_top(self.RESULTS, deadline=0.3)
+        self.assertLess(time.monotonic() - начало, 2.0)
+        self.assertEqual([p["url"] for p in pages],
+                         ["https://site1.ru/a", "https://site2.ru/a"])
+
+    def test_the_search_tool_adds_pages_only_when_asked_and_free(self):
+        страницы = [{"url": "https://site0.ru/a", "text": "текст"}]
+        for backend, просили, ждём in (("yahoo", 3, True), ("yahoo", 0, False),
+                                       ("openai", 3, False)):
+            with self.subTest(backend=backend, просили=просили), \
+                    mock.patch.object(web, "search", return_value=(self.RESULTS, backend)), \
+                    mock.patch.object(web, "read_top", return_value=страницы) as read:
+                found = json.loads(web.run_tool("web_search", '{"query": "q"}',
+                                                read_pages=просили))
+            self.assertEqual("pages" in found, ждём)
+            self.assertEqual(read.called, ждём)
+
+    # --- Несколько запросов разом (search_many) ----------------------------
+
+    @staticmethod
+    def _выдача(*адреса):
+        return [{"title": a, "url": f"https://{a}/", "snippet": "…"} for a in адреса]
+
+    def _искать(self, ответы, mode="free", read_pages=0, pages=()):
+        """search_many с подменённым поиском: {(запрос, режим): выдача | исключение}."""
+        спросили = []
+
+        def search(query, max_results=web.RESULTS, mode=None):
+            спросили.append((query, mode))
+            ответ = ответы[(query, mode)]
+            if isinstance(ответ, Exception):
+                raise ответ
+            return ответ
+
+        with mock.patch.object(config, "WEB_SEARCH_MODE", mode, create=True), \
+                mock.patch.object(web, "search", side_effect=search), \
+                mock.patch.object(web, "read_top", return_value=list(pages)) as read:
+            found = json.loads(web.search_many(["a", "b"], read_pages=read_pages))
+        return found, спросили, read
+
+    def test_results_are_merged_by_place_without_repeats(self):
+        found, _, _ = self._искать({
+            ("a", "free"): (self._выдача("1.ru", "2.ru", "3.ru"), "yahoo"),
+            ("b", "free"): (self._выдача("x.ru", "2.ru", "y.ru"), "bing"),
+        })
+        self.assertEqual(found["query"], "a; b")
+        self.assertEqual([r["url"] for r in found["results"]],
+                         ["https://1.ru/", "https://x.ru/", "https://2.ru/",
+                          "https://3.ru/", "https://y.ru/"])
+
+    def test_one_failed_query_does_not_spoil_the_other(self):
+        found, _, _ = self._искать({
+            ("a", "free"): RuntimeError("поисковики не ответили"),
+            ("b", "free"): (self._выдача("x.ru"), "bing"),
+        })
+        self.assertEqual([r["url"] for r in found["results"]], ["https://x.ru/"])
+
+    def test_all_failed_is_an_error(self):
+        found, _, _ = self._искать({
+            ("a", "free"): RuntimeError("раз"), ("b", "free"): RuntimeError("два"),
+        })
+        self.assertIn("раз", found["error"])
+        self.assertIn("два", found["error"])
+
+    def test_a_slow_query_is_not_waited_for_once_one_answered(self):
+        отпустить = threading.Event()
+        self.addCleanup(отпустить.set)
+
+        def search(query, max_results=web.RESULTS, mode=None):
+            if query == "b":
+                отпустить.wait(5)
+                raise RuntimeError("поисковики не ответили")
+            return self._выдача("1.ru"), "yahoo"
+
+        начало = time.monotonic()
+        with mock.patch.object(config, "WEB_SEARCH_MODE", "free", create=True), \
+                mock.patch.object(web, "MERGE_GRACE", 0.2), \
+                mock.patch.object(web, "search", side_effect=search):
+            found = json.loads(web.search_many(["a", "b"]))
+        self.assertLess(time.monotonic() - начало, 2.0)
+        self.assertEqual([r["url"] for r in found["results"]], ["https://1.ru/"])
+
+    def test_auto_pays_once_not_per_query(self):
+        found, спросили, _ = self._искать({
+            ("a", "free"): RuntimeError("нет"), ("b", "free"): RuntimeError("нет"),
+            ("a", "paid"): (self._выдача("openai.com"), "openai"),
+        }, mode="auto")
+        self.assertEqual(sorted(спросили), [("a", "free"), ("a", "paid"), ("b", "free")])
+        self.assertEqual(found["results"][0]["url"], "https://openai.com/")
+
+    def test_pages_are_read_for_free_results_only(self):
+        страницы = [{"url": "https://1.ru/", "text": "текст"}]
+        found, _, read = self._искать({
+            ("a", "free"): (self._выдача("1.ru"), "yahoo"),
+            ("b", "free"): (self._выдача("2.ru"), "yahoo"),
+        }, read_pages=3, pages=страницы)
+        self.assertEqual(found["pages"], страницы)
+        self.assertEqual(read.call_args.kwargs.get("count"), 3)
+
+        found, _, read = self._искать({
+            ("a", "paid"): (self._выдача("openai.com"), "openai"),
+            ("b", "paid"): (self._выдача("openai.com"), "openai"),
+        }, mode="paid", read_pages=3, pages=страницы)
+        self.assertNotIn("pages", found)
+        read.assert_not_called()
+
+    def test_the_tool_takes_a_list_of_queries(self):
+        with mock.patch.object(web, "search_many", return_value='{"ok": 1}') as many:
+            self.assertEqual(web.run_tool("web_search", '{"queries": ["a", "b"]}',
+                                          read_pages=2), '{"ok": 1}')
+        self.assertEqual(many.call_args[0][0], ["a", "b"])
+        self.assertEqual(many.call_args[0][2], 2)
 
     def test_paid_without_key_explains(self):
         with mock.patch("core.settings.get_api_key", return_value=""):

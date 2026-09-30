@@ -144,6 +144,42 @@ def _сек(value) -> str:
     return f"{float(value):.2f}"
 
 
+def _reminder_item(record: dict) -> dict:
+    """Запись напоминания для Панели: ровно те поля, что рисует строка.
+
+    `say` сюда не идёт намеренно: это фраза, которую она произнесёт, а
+    Панели она не нужна и показывать её незачем. Время — строкой ISO с
+    поясом, как в файле: браузер разбирает такой формат сам, а часовой
+    пояс у пульта и у будильника один.
+    """
+    return {
+        "id": str(record.get("id", "")),
+        "due": str(record.get("due", "")),
+        "text": str(record.get("text", "") or ""),
+        "kind": str(record.get("kind", "") or ""),
+        "minutes": int(record.get("minutes") or 0),
+    }
+
+
+def _reminder_line(record: dict, что: str) -> str:
+    """Строка в журнал: «напоминание отменено: 17:00 — вытащить пиццу».
+
+    Тот же вид, что у `core/hands.py::journal_line`, но со своим глаголом:
+    там «напоминание: …» — это поставили, здесь «отменено» — сняли.
+    """
+    from core import reminders
+
+    try:
+        when = reminders.parse(record.get("due")).strftime("%H:%M")
+    except ValueError:
+        when = "?"
+    if str(record.get("kind") or "") == reminders.KIND_TIMER:
+        return f"таймер {что}: {when}"
+    text = str(record.get("text") or "").strip()
+    return f"напоминание {что}: {when} — {text}" if text else \
+        f"напоминание {что}: {when}"
+
+
 def _local_error(provider: str, base_url: str, exc: Exception) -> Exception:
     """Ошибка связи с локальным сервером — понятная хозяину, а не из сокета.
 
@@ -267,10 +303,87 @@ class WebRuntime:
         self.replay_guard = replay.Guard(self._on_replay)
         self._bg(self.replay_guard.check)
         self.replay_guard.start()
+        # Напоминания и таймеры — будильник поднимается вместе с пультом, а
+        # не с голосом: напоминание должно позвать и при выключенном голосе
+        # (телефон с тостом и журнал остаются в любом случае). Гасится в
+        # `close`. Сработавшее, пока пульт был выключен, будильник отдаст
+        # сразу же при старте — с пометкой опоздания.
+        from core import reminders
+
+        self.alarm = reminders.Alarm(self._on_reminder)
+        self.alarm.start()
         # Закладки Firefox могли добавиться, пока пульт был закрыт. Здесь
         # перечитываем насильно: в фоне, чтобы не тянуть старт окна.
         self._bg(self._refresh_bookmarks)
         self._bg(self._check_updates_soon)
+
+    def _on_reminder(self, record: dict, late: float) -> None:
+        """Сработавшее напоминание: телефон, журнал и голос.
+
+        Порядок здесь один на все три выхода, и порядок важен: строка в
+        журнал идёт **первой**, потому что журнал — то, что хозяин увидит
+        и в ленте, и в файле, даже если телефон выключен.
+
+        `late` — на сколько секунд опоздали. Больше `reminders.MISSED_AFTER`
+        означает «пока меня не было» (пульт был выключен), и тогда фраза
+        начинается с извинения: иначе «Напоминаю: пицца» через три часа
+        после обеда звучало бы как издевательство.
+        """
+        from core import reminders
+
+        late = float(late or 0.0)
+        try:
+            what = str(record.get("text") or "").strip()
+            timer = str(record.get("kind") or "") == reminders.KIND_TIMER
+        except Exception:
+            return
+        if timer:
+            line = "таймер вышел"
+        else:
+            line = f"напоминание: {what}" if what else "напоминание"
+        self._remember("reminder_fired", line)
+        missed = late >= reminders.MISSED_AFTER
+        if missed:
+            # Пропущенное, пока пульт был выключен, срабатывает через секунду
+            # после старта — телефон ещё не подключился, голос не поднялся, и
+            # тост со звуком ушли бы в пустоту. Звучит так: «Пока я была
+            # выключена, вышел таймер» / «…пропустила напоминание: пицца».
+            words = ("Пока я была выключена, вышел таймер." if timer else
+                     f"Пока я была выключена, пропустила напоминание: {what}."
+                     if what else "Пока я была выключена, пропустила напоминание.")
+        else:
+            words = reminders.phrase(record)
+        threading.Thread(target=self._say_reminder, args=(words, missed),
+                         daemon=True, name="reminder-say").start()
+
+    # Сколько пропущенное напоминание ждёт голос после старта пульта.
+    REMINDER_WAIT_VOICE = 90.0
+
+    def _say_reminder(self, words: str, missed: bool) -> None:
+        """Телефон (звук и тост) и голос — своим потоком, не держа будильник."""
+        if missed:
+            deadline = time.monotonic() + self.REMINDER_WAIT_VOICE
+            while time.monotonic() < deadline:
+                voice = self.voice
+                if voice is not None and getattr(voice, "running", False):
+                    break
+                time.sleep(1.0)
+        try:
+            self.server.send_sound("moment")
+        except Exception:
+            pass
+        # Тост — коротко и по делу: телефон стоит сбоку, хозяин смотрит в
+        # монитор, и ему нужно понять, что это она позвала.
+        try:
+            self.server.send_toast(words)
+        except Exception:
+            pass
+        # Голос — только если он включён. `announce` сам дождётся свободного
+        # хода и не перебьёт хозяина.
+        voice = self.voice
+        if voice is None or not getattr(voice, "running", False):
+            return
+        voice.announce(words)
 
     def _check_updates_soon(self) -> None:
         """Проверить обновления через 20 секунд после старта пульта.
@@ -379,6 +492,11 @@ class WebRuntime:
             # начать запись, и на «сделаешь заметку?» она отвечала словами
             # «диктуй», а записывать было некому.
             actions["dictation"] = lambda hint="": self.voice.begin_dictation(hint)
+            # Чтение вслух — тем же путём: без голоса читать некому, и модель
+            # должна получить честный отказ, а не обещание.
+            actions["read_aloud"] = (
+                lambda text=None, name="", resume=False: self.voice.read_aloud(
+                    text, name, resume))
             self.brain.actions = actions
             # Локальный мозг появляется в журнале с честной пометкой: с Трубой
             # он не проверялся, и хозяин должен знать об этом сразу.
@@ -553,6 +671,41 @@ class WebRuntime:
             return ["память: разобрала разговор, нового о тебе нет"]
         if kind == "note":
             return [f"заметка: {payload}"]
+        if kind == "reminder_fired":
+            # Строка уже с названием: «напоминание: вытащить пиццу» или
+            # «таймер вышел». Журнал — то, что хозяин увидит и без телефона.
+            return [str(payload or "напоминание")]
+        if kind == "reminder_cancel":
+            # Отмена из Панели: строка уже готовая, как у сработавшего.
+            return [str(payload or "напоминание отменено")]
+        if kind in ("folder", "folder_failed"):
+            # Стандартная папка: строка уже готова в core/folders.py —
+            # «папка: Загрузки».
+            return [f"{'папка' if kind == 'folder' else 'папка не открылась'}: "
+                    f"{payload}"]
+        if kind in ("file_found", "file_opened", "file_missing"):
+            # Поиск файла по названию: строки готовые, как у папок и
+            # документов. В журнал идёт имя файла и папка, но не текст
+            # самого файла: его тут быть не должно.
+            надпись = {"file_found": "файл найден",
+                       "file_opened": "файл открыт",
+                       "file_missing": "файл не найден"}[kind]
+            return [f"{надпись}: {payload}"]
+        if kind in ("document", "document_failed"):
+            # Документ: строка уже готова в core/documents.py — «отчёт.pdf,
+            # 12 стр., 8400 знаков». Текст документа в журнал не уходит
+            # никогда: журнал хозяин читает сам, без телефона.
+            return [f"{'документ' if kind == 'document' else 'документ не прочитан'}: "
+                    f"{payload}"]
+        if kind in ("document_aloud", "document_stopped"):
+            # Чтение вслух: строки уже готовые — «документ вслух: отчёт.pdf» и
+            # «чтение остановлено на 14 из 80». Текст документа и здесь не
+            # уходит: в журнале его быть не должно.
+            return [str(payload or "")] if payload else []
+        if kind == "pc":
+            # Раскладка, музыка, звук компьютера: строка уже готова в
+            # core/pc_control.py — «звук компьютера: 30 %».
+            return [str(payload)] if payload else []
         if kind == "command":
             return [f"команда голосом [{data.get('action', '?')}]: {data.get('text', '')}"]
         if kind == "replay_waiting":
@@ -568,6 +721,14 @@ class WebRuntime:
             return [f"поиск в интернете [{data.get('backend', '?')}, "
                     f"{float(data.get('took', 0)):.1f} с, найдено {data.get('found', 0)}]: "
                     f"{str(data.get('query', ''))[:120]}"]
+        if kind == "web_queries":
+            # Что модель сделала из его фразы для поисковика — иначе в журнале
+            # видны только запросы и непонятно, откуда они взялись.
+            запросы = "; ".join(str(q) for q in data.get("queries") or [])[:200]
+            if data.get("error"):
+                return [f"запросы для поиска не составила ({float(data.get('took', 0)):.1f} с, "
+                        f"{str(data.get('error'))[:80]}) — ищу как сказано: {запросы}"]
+            return [f"запросы для поиска ({float(data.get('took', 0)):.1f} с): {запросы}"]
         if kind == "web_page":
             return [f"прочитала страницу ({data.get('chars', 0)} знаков, "
                     f"{float(data.get('took', 0)):.1f} с): {str(data.get('url', ''))[:160]}"]
@@ -576,6 +737,16 @@ class WebRuntime:
         if kind == "interrupted":
             return [f"перебили на полуслове (громкость {float(data.get('peak', 0)):.3f}): "
                     f"{str(data.get('text', ''))[:60]}"]
+        if kind == "barge":
+            return [f"перебил сразу: его голос {float(data.get('level', 0)):.3f} "
+                    f"при фоне эха {float(data.get('floor', 0)):.3f}"]
+        if kind == "barge_false":
+            return [f"перебивание было ложным (голос {float(data.get('level', 0)):.3f} "
+                    f"при фоне {float(data.get('floor', 0)):.3f}): "
+                    f"{str(data.get('text', ''))[:60]}"]
+        if kind == "echo_level":
+            return [f"эхо во время речи: фон {float(data.get('floor', 0)):.3f}, "
+                    f"пик {float(data.get('peak', 0)):.3f}"]
         if kind == "launch":
             return [f"телефон попросил открыть программу: {data.get('id', '')}"]
         if kind in ("menu_done", "menu_failed", "action_done", "action_failed"):
@@ -826,6 +997,15 @@ class WebRuntime:
                 self._phone_volume(payload)
                 return
             self._remember(kind, payload)
+            return
+        if kind in ("open_search", "open_source"):
+            # Касания карточки поиска: это действия с компьютера, обрабатываем
+            # здесь (пульт живёт всё время), а в ленту «Голоса» они не идут.
+            # Сами напишем в журнал тем, что вышло (см. `_open_source`).
+            if kind == "open_search":
+                self._open_search(payload)
+            else:
+                self._open_source(payload)
             return
         self._remember(kind, payload)
         if kind == "connected":
@@ -1438,6 +1618,115 @@ class WebRuntime:
 
         self._bg(run)
 
+    def _open_search(self, payload) -> None:
+        """Телефон попросил открыть запрос из карточки: `{"type": "open_search",
+        "query": …}`.
+
+        Адрес строит сервер: телефон присылает только сам запрос. Поисковик —
+        `config.SEARCH_OPEN_URL` (строка с `{q}`, чтобы сменить на Яндекс,
+        достаточно поменять одну строку в config).
+
+        Касание не должно уводить телефон из карточки молча: ждём открытия в
+        браузере и говорим хозяину в тост и в журнал.
+        """
+        import config
+        from urllib.parse import quote_plus
+
+        data = payload if isinstance(payload, dict) else {}
+        запрос = " ".join(str(data.get("query") or "").split())[:200]
+        if not запрос:
+            self._browser_fail("пустой запрос")
+            return
+        try:
+            url = str(getattr(config, "SEARCH_OPEN_URL", "") or "").replace(
+                "{q}", quote_plus(запрос))
+        except Exception as exc:
+            self._browser_fail(f"{type(exc).__name__}: {exc}")
+            return
+        if not url.startswith(("http://", "https://")):
+            self._browser_fail("неправильный адрес поисковика")
+            return
+
+        def run() -> None:
+            from core import launcher
+
+            try:
+                ok, what = launcher.open_web(url)
+            except Exception as exc:
+                ok, what = False, f"{type(exc).__name__}: {exc}"
+            self.log_message(f"поиск открыт в браузере: {запрос}" if ok
+                             else f"поиск не открылся: {what}")
+            try:
+                self.server.send_toast("Открыла на компе" if ok else what, ok=ok)
+            except Exception:
+                pass
+
+        self._bg(run)
+
+    def _open_source(self, payload) -> None:
+        """Телефон попросил открыть источник из карточки: `{"type":
+        "open_source", "index": N}`.
+
+        Только **номер** в последнем отправленном списке, не адрес. Иначе
+        страница с телефона заставила бы комп открыть что угодно — свой
+        пульт, файловый адрес, скрипт. Адрес берём из того списка, который
+        сам же телефону отправили (`PhoneServer.send_search_result`), и
+        открываем только `http(s)` — `launcher.open_web` проверяет.
+
+        Номер за пределами списка — отказ, а не «последний источник»: иначе
+        опечатка на телефоне открыла бы не то.
+        """
+        data = payload if isinstance(payload, dict) else {}
+        try:
+            номер = int(data.get("index"))
+        except (TypeError, ValueError):
+            self._browser_fail("нет такого источника")
+            return
+        # Дробный номер — тоже мусор: `int(1.5)` молча стал бы 1 и открыл бы
+        # чужой источник. Настоящий номер — целый (как в `_action`).
+        try:
+            if float(data.get("index")) != номер:
+                self._browser_fail("нет такого источника")
+                return
+        except (TypeError, ValueError):
+            self._browser_fail("нет такого источника")
+            return
+        источники = list(getattr(self.server, "last_sources", None) or [])
+        if not 0 <= номер < len(источники):
+            self._browser_fail("нет такого источника")
+            return
+        источник = источники[номер]
+        if not isinstance(источник, dict):
+            self._browser_fail("нет такого источника")
+            return
+        адрес = str(источник.get("url") or "")
+        сайт = str(источник.get("host") or "")
+
+        def run() -> None:
+            from core import launcher
+
+            try:
+                ok, what = launcher.open_web(адрес)
+            except Exception as exc:
+                ok, what = False, f"{type(exc).__name__}: {exc}"
+            self.log_message(f"источник открыт: {сайт or адрес}" if ok
+                             else f"источник не открылся: {сайт or адрес} — {what}")
+            try:
+                self.server.send_toast("Открыла на компе" if ok else what, ok=ok)
+            except Exception:
+                pass
+
+        self._bg(run)
+
+    def _browser_fail(self, text: str) -> None:
+        """Касание карточки, которому открыть нечего: говорим честно."""
+        self.log_message(f"с телефона: {text}")
+        try:
+            self.server.send_toast(text, ok=False)
+            self.server.send_sound("fail")
+        except Exception:
+            pass
+
     def _search_fail(self, text: str) -> None:
         """Поиск не вышел: сказать об этом телефону и в журнал."""
         self._remember("search_fail", text)
@@ -2025,8 +2314,9 @@ class WebRuntime:
                 else:
                     to_save[key] = val.strip()
         for key in ("require_name_when_noisy", "voice_app_guard", "owner_only",
-                    "web_search", "replay_guard", "voice_autostart", "higgs_gentle",
-                    "proactive_look", "hedge", "update_check", "first_run_done"):
+                    "barge_instant", "web_search", "search_sound", "replay_guard",
+                    "voice_autostart", "higgs_gentle", "proactive_look", "hedge",
+                    "update_check", "first_run_done"):
             if key in payload:
                 if not isinstance(payload[key], bool):
                     errors.append(f"{key}: нужно true/false")
@@ -2394,6 +2684,43 @@ class WebRuntime:
             target.mkdir(parents=True, exist_ok=True)
         os.startfile(str(target))
         return {"ok": True, "path": str(target)}
+
+    # --- Напоминания и таймеры для Панели ---------------------------------
+    #
+    # Только чтение и отмена. Ставит напоминание модель голосом
+    # (`core/hands.py::set_reminder`), и пульт не должен подменять её: время
+    # понимает она, а не код. Панели нужен список, чтобы хозяин видел, что
+    # стоит, и «✕», чтобы снять не заходя в разговор.
+    #
+    # `due` уходит ISO-строкой с часовым поясом, а «через N мин» пульт
+    # считает у себя: его часы и часы будильника — одни и те же, а разбирать
+    # время здесь было бы тем же регулярками, которых в проекте нет.
+
+    def reminders_list(self) -> dict:
+        from core import reminders
+
+        items = [_reminder_item(one) for one in reminders.pending()]
+        return {"ok": True, "items": items}
+
+    def reminders_cancel(self, body: dict) -> dict:
+        from core import reminders
+
+        body = body if isinstance(body, dict) else {}
+        what = str(body.get("id", "")).strip()
+        # Только id вида `r1`. «all» — это команда голоса («отмени всё»), и
+        # пусть бы кнопка «✕» на одной строке сносила весь список: одно
+        # нажатие не должно уносить то, чего хозяин не видел.
+        if not re.fullmatch(r"r\d+", what):
+            raise ValueError("нужен id напоминания вида r1")
+        gone = reminders.cancel(what)
+        if not gone:
+            # Честный отказ: пустой список — это «уже не отменено», а не
+            # «отменила». Молчаливое «готово» хозяин бы поверил.
+            raise ValueError(f"нечего отменять: нет напоминания {what}")
+        for one in gone:
+            self._remember("reminder_cancel", _reminder_line(one, "отменено"))
+        return {"ok": True, "items": [_reminder_item(one)
+                                      for one in reminders.pending()]}
 
     def _drop_audio(self) -> None:
         """Звук поднимется заново при следующем включении голоса."""
@@ -2796,10 +3123,18 @@ class WebRuntime:
             seen.add(app_id)
             if not isinstance(title, str) or not title.strip() or len(title) > 80:
                 return {"ok": False, "error": "у кнопки нужен title до 80"}
-            if kind not in ("app", "url", "store"):
-                return {"ok": False, "error": f"вид бывает app/url/store: {app_id}"}
+            if kind not in launcher.APP_KINDS:
+                return {"ok": False, "error": f"вид бывает app/url/store/folder: {app_id}"}
             item = {"id": app_id, "title": title.strip(), "kind": kind}
-            if kind == "url":
+            if kind == "folder":
+                # Своя папка хозяина: у неё, как у программы, есть только путь,
+                # и открывается она проводником. Без пути кнопка была бы
+                # кнопкой, которая ничего не открывает.
+                path = entry.get("path", "")
+                if not isinstance(path, str) or not path.strip() or len(path) > 500:
+                    return {"ok": False, "error": f"у {app_id} нужен путь к папке"}
+                item["path"] = path.strip()
+            elif kind == "url":
                 url = entry.get("url", "")
                 if not isinstance(url, str):
                     return {"ok": False, "error": f"у {app_id} нужна ссылка"}
@@ -3264,6 +3599,15 @@ class WebRuntime:
             self.replay_guard.stop()
         except Exception:
             pass
+        # Будильник напоминаний — вместе с пультом. Пока он жив, закрытие
+        # окна оставило бы фоновый поток, который через секунду после ухода
+        # хозяина всё равно позвонил бы ему в спикер.
+        alarm = getattr(self, "alarm", None)
+        if alarm is not None:
+            try:
+                alarm.stop()
+            except Exception:
+                pass
         try:
             self.server.detach(self.handle_event)
         except Exception:

@@ -209,10 +209,24 @@ class ToolSetTests(unittest.TestCase):
         # YouTube стоит сразу после close_app и всегда: ролики и каналы
         # запускаются голосом, а не кнопкой, и от `apps.json` он не зависит.
         # Заметки — сразу за ним: их тоже не бывает, если в apps.json пусто.
+        # Раскладка, музыка и звук компьютера — сразу за чтением заметок: тоже
+        # всегда и тоже ни от чего внешнего не зависят. Папки — сразу за ними:
+        # стандартные папки Windows есть у каждого, и «открывай загрузки» не
+        # должно уходить в облако. Напоминания и таймеры — сразу за папками, тем
+        # же блоком и всегда: «напомни через двадцать минут» тоже не должно
+        # уходить в облако на уточнение.
+        # Документы — сразу за ними: файлы у хозяина есть всегда, а
+        # «перескажи последний скачанный PDF» — длинная фраза, которой
+        # незачем идти в облако на уточнение. Поиск файла по названию — сразу за
+        # документами: он тоже всегда, и «открой на диске ц документ» — длинная
+        # фраза, которой незачем идти в облако.
         self.assertEqual(
             names, [hands.NAME, hands.CLOSE_NAME, hands.YT_NAME, hands.NOTE_NAME,
-                    hands.READ_NAME, hands.SHOT_NAME, hands.MOMENT_NAME,
-                    hands.LOOK_NAME]
+                    hands.READ_NAME, hands.LAYOUT_NAME, hands.MEDIA_NAME,
+                    hands.PCVOL_NAME, hands.FOLDER_NAME, hands.SET_REM_NAME,
+                    hands.LIST_REM_NAME, hands.CANCEL_REM_NAME,
+                    hands.DOC_NAME, hands.FIND_NAME, hands.SHOT_NAME,
+                    hands.MOMENT_NAME, hands.LOOK_NAME]
         )
         self.assertEqual(self._names_for("а ты можешь снять скрин?"), names)
 
@@ -338,9 +352,11 @@ class WiringTests(unittest.TestCase):
         loop._server = None
         loop._wire_brain()
         # «Диктовка» — тоже действие: без него у модели нет способа начать
-        # запись заметки (27.09 — слова «диктуй» без режима).
+        # запись заметки (27.09 — слова «диктуй» без режима). И чтение вслух:
+        # без него модель на «прочитай вслух» не знала бы, что читать некому.
         self.assertEqual(sorted(brain.actions),
-                         ["dictation", "look", "moment", "screenshot"])
+                         ["dictation", "look", "moment", "read_aloud",
+                          "screenshot"])
         self.assertEqual(len(hands.action_tools(brain.actions)), 3)
 
     def test_voice_loop_without_a_brain_survives(self):
@@ -358,12 +374,14 @@ class WiringTests(unittest.TestCase):
         pult = object.__new__(WebRuntime)
         pult.brain = brain
         pult.server = None
-        pult.voice = NS(begin_dictation=mock.Mock(return_value=True))
+        pult.voice = NS(begin_dictation=mock.Mock(return_value=True),
+                        read_aloud=mock.Mock(return_value=(True, "отчёт.txt")))
         pult._remember = lambda kind, payload: None
         pult._wire_brain()
         # Чат пульта ходит в тот же мозг: действия те же, что и голосом.
         self.assertEqual(sorted(brain.actions),
-                         ["dictation", "look", "moment", "screenshot"])
+                         ["dictation", "look", "moment", "read_aloud",
+                          "screenshot"])
         self.assertIsNotNone(brain.on_event)
 
 

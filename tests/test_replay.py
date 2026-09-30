@@ -107,6 +107,44 @@ class GuardTests(unittest.TestCase):
         self.run_check(off, turned_on=False).assert_not_called()
 
 
+class BlockerTests(unittest.TestCase):
+    """30.09: процесс из журнала давно закрылся, а фоновый помощник Codex
+    живёт всё время, пока Codex открыт, — повтор так и не включался."""
+
+    class _Proc:
+        def __init__(self, name):
+            self.info = {"name": name}
+
+    def running(self, pid_hint, alive, exe="", names=("codex-computer-use-swift.exe",)):
+        import psutil
+
+        process = mock.Mock()
+        process.exe.return_value = exe
+        with mock.patch.object(psutil, "pid_exists", return_value=alive), \
+                mock.patch.object(psutil, "Process", return_value=process), \
+                mock.patch.object(psutil, "process_iter",
+                                  return_value=[self._Proc(n) for n in names]):
+            return replay.blocker_running(pid_hint)
+
+    def test_named_process_gone_means_free_even_with_codex_open(self):
+        self.assertFalse(self.running(1012, alive=False))
+
+    def test_named_process_alive_waits(self):
+        self.assertTrue(self.running(1012, alive=True, exe=r"C:\x\Codex\resources\cua_node\node.exe"))
+
+    def test_reused_pid_of_another_program_is_not_codex(self):
+        self.assertFalse(self.running(1012, alive=True, exe=r"C:\Windows\notepad.exe"))
+
+    def test_without_pid_falls_back_to_names(self):
+        self.assertTrue(self.running(None, alive=False))
+        self.assertFalse(self.running(None, alive=False, names=("explorer.exe",)))
+
+    def test_auto_off_text_is_one_readable_line(self):
+        text = replay.Status(on=False, auto_off=True, blocker_app="Codex (управление компьютером)").text
+        self.assertEqual(text, "выключен из-за Codex (управление компьютером)")
+        self.assertNotIn(":", text)
+
+
 class ToggleSafetyTests(unittest.TestCase):
     def test_never_presses_blind(self):
         for state in (replay.Status(on=True), replay.Status(on=None)):

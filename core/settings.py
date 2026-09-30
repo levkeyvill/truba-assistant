@@ -65,6 +65,7 @@ DEFAULTS = {
     "max_tokens": config.MAX_TOKENS,
     "history_turns": config.HISTORY_TURNS,
     "web_search": config.WEB_SEARCH,
+    "search_sound": config.SEARCH_SOUND,
     "web_search_mode": config.WEB_SEARCH_MODE,
     "web_search_budget": config.WEB_SEARCH_BUDGET,
     # Страховка от заминок облака. Выключена по умолчанию: при заминке
@@ -97,6 +98,10 @@ DEFAULTS = {
     # Подбирается замером голоса во вкладке «Проверка»: заводские 0.12
     # оказались выше, чем говорит человек, и перебить её было нельзя.
     "barge_in_level": config.BARGE_IN_LEVEL,
+    # Замолкать ли, как только он заговорил поверх неё. Без этого приходилось
+    # ждать конца её фразы плюс распознавания, и за всё время не случилось ни
+    # одного перебивания.
+    "barge_instant": config.BARGE_INSTANT,
     "require_name_when_noisy": config.REQUIRE_NAME_WHEN_NOISY,
     "voice_app_guard": config.VOICE_APP_GUARD,
     "owner_only": config.OWNER_ONLY,
@@ -428,6 +433,7 @@ def apply_to_config() -> dict:
     config.MAX_TOKENS = values["max_tokens"]
     config.HISTORY_TURNS = values["history_turns"]
     config.WEB_SEARCH = bool(values["web_search"])
+    config.SEARCH_SOUND = bool(values["search_sound"])
     config.WEB_SEARCH_MODE = values["web_search_mode"]
     config.WEB_SEARCH_BUDGET = float(values["web_search_budget"])
     config.HEDGE = bool(values["hedge"])
@@ -451,6 +457,7 @@ def apply_to_config() -> dict:
     config.VOICE_VOLUME = int(values["voice_volume"])
     config.DUCK_LEVEL = values["duck_level"]
     config.BARGE_IN_LEVEL = values["barge_in_level"]
+    config.BARGE_INSTANT = bool(values["barge_instant"])
     config.REQUIRE_NAME_WHEN_NOISY = values["require_name_when_noisy"]
     config.VOICE_APP_GUARD = bool(values["voice_app_guard"])
     config.OWNER_ONLY = values["owner_only"]

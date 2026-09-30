@@ -425,6 +425,28 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
    галочки и «Настроить →» стояли столбиком друг под другом. */
 .панель-возможности .повтор-следить { min-width: 104px; }
 
+/* «Напоминания» — список того, что скоро позовёт, с «✕» на каждое. Блок
+   появляется только когда есть активные, и рисуется теми же classes, что
+   «Возможности». Время янтарём: оно и есть главное в строке, а зелёного в
+   оформлении пульта нет (см. тест страницы «Команды»). */
+.панель-напоминания .панель-блок-шапка { margin-bottom: 6px; }
+.напоминания-строки { display: flex; flex-direction: column; }
+.напоминание-строка {
+  display: flex; align-items: baseline; gap: 10px;
+  font-size: 13px; color: var(--приглушён);
+}
+.напоминание-строка + .напоминание-строка {
+  border-top: 1px solid var(--линия);
+  padding-top: 6px; margin-top: 6px;
+}
+.напоминание-текст { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.напоминание-отмена {
+  flex: none; width: 22px; height: 22px; padding: 0; cursor: pointer;
+  background: transparent; border: 1px solid var(--линия); border-radius: 6px;
+  color: var(--тусклый); font: inherit; font-size: 11px; line-height: 1;
+}
+.напоминание-отмена:hover { color: var(--тревога); border-color: var(--тревога); }
+
 /* Низ Панели — «Разговор» и «Последние события» рядом в две колонки.
    «Расход» живёт строкой выше, во всю ширину: его три столбца с суммами
    в половине окна ломали подписи и заголовки. */

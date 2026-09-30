@@ -284,6 +284,135 @@ function блокВозможностей() {
   return блок;
 }
 
+/* ---------- Напоминания и таймеры на Панели ----------
+
+   Список приходит из `/api/reminders`, а ставит его модель голосом — пульт
+   не разбирает время и не притворяется будильником. Ему нужен только
+   список, чтобы хозяин видел, что стоит, и «✕» на каждой строке, чтобы
+   снять не заходя в разговор.
+
+   `due` приходит ISO-строкой с поясом, и «через N мин» считается здесь
+   часами браузера: они те же, что у будильника, поэтому расхождение
+   показать негде. */
+let напоминанияКэш = [];
+let напоминанияКогда = 0;
+let напоминанияТаймер = null;
+
+/* Раз в 30 с: цифра «через N мин» меняется медленно, а таймер на каждую
+   строку — это десяток setInterval на Панели, которой может и не быть. Один
+   таймер на весь блок, и живёт он только пока блок на экране (снимается в
+   `нарисоватьПанель` и при уходе с Панели). */
+const НАПОМИНАНИЯ_ПАУЗА = 30000;
+
+async function спроситьНапоминания(срочно) {
+  if (!срочно && Date.now() - напоминанияКогда < 15000) return;
+  напоминанияКогда = Date.now();
+  try {
+    const ответ = await fetch('/api/reminders', { cache: 'no-store' });
+    const данные = await ответ.json();
+    if (!ответ.ok || !данные || !данные.ok) return;
+    напоминанияКэш = Array.isArray(данные.items) ? данные.items : [];
+    if (текущий === 'панель') нарисоватьПанель();
+  } catch (e) {
+    /* Молчим: блок останется с прежним списком. */
+  }
+}
+
+/* «17:00 · через 23 мин — вытащить пиццу». У таймера без слов хвост —
+   «таймер»: иначе строка была бы «17:05 · через 4 мин — » и обрывалась
+   бы на тире. */
+function напоминаниеФраза(запись) {
+  const момент = new Date(запись && запись.due);
+  if (Number.isNaN(момент.getTime())) return 'напоминание';
+  const часы = String(момент.getHours()).padStart(2, '0')
+    + ':' + String(момент.getMinutes()).padStart(2, '0');
+  const минут = Math.max(0, Math.round((момент.getTime() - Date.now()) / 60000));
+  const через = минут > 0 ? 'через ' + минут + ' мин' : 'меньше минуты';
+  const оЧем = String((запись && запись.text) || '').trim()
+    || ((запись && запись.kind) === 'timer' ? 'таймер' : 'напоминание');
+  return часы + ' · ' + через + ' — ' + оЧем;
+}
+
+async function напоминаниеОтменить(id) {
+  // Строку убираем сразу: отмена локальная и почти всегда проходит. Если
+  // сервер откажет — вернём список и покажем всё как было, иначе на экране
+  // остался бы «✕», который ничего не снял.
+  напоминанияКэш = напоминанияКэш.filter((одна) => одна.id !== id);
+  if (текущий === 'панель') нарисоватьПанель();
+  try {
+    const ответ = await fetch('/api/reminders/cancel', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id }),
+    });
+    const данные = await ответ.json().catch(() => ({}));
+    if (!ответ.ok || !данные || !данные.ok) спроситьНапоминания(true);
+  } catch (e) {
+    спроситьНапоминания(true);
+  }
+}
+
+function напоминаниеСтрока(запись) {
+  const строка = document.createElement('div');
+  строка.className = 'напоминание-строка';
+  const текст = document.createElement('span');
+  текст.className = 'напоминание-текст';
+  текст.textContent = напоминаниеФраза(запись);
+  строка.appendChild(текст);
+  const отмена = document.createElement('button');
+  отмена.type = 'button';
+  отмена.className = 'напоминание-отмена';
+  отмена.textContent = '✕';
+  отмена.title = 'Отменить';
+  // Без confirm: это не удаление данных, а снятие будильника. Спрашивать
+  // подтверждение там, где ничего не пропадёт, только раздражает.
+  отмена.addEventListener('click', () => напоминаниеОтменить(запись.id));
+  строка.appendChild(отмена);
+  return строка;
+}
+
+function напоминанияТаймерСнять() {
+  if (напоминанияТаймер === null) return;
+  clearInterval(напоминанияТаймер);
+  напоминанияТаймер = null;
+}
+
+/* Блок виден, только когда есть активные: пустое «НАПОМИНАНИЯ» занимало бы
+   место на Панели и обещало бы, что список сломан. */
+function блокНапоминаний() {
+  if (!напоминанияКэш.length) {
+    напоминанияТаймерСнять();
+    return null;
+  }
+  const блок = document.createElement('section');
+  блок.className = 'панель-блок панель-напоминания';
+  блок.appendChild(шапкаБлока('Напоминания'));
+  const список = document.createElement('div');
+  список.className = 'напоминания-строки';
+  for (const запись of напоминанияКэш) {
+    список.appendChild(напоминаниеСтрока(запись));
+  }
+  блок.appendChild(список);
+  if (напоминанияТаймер === null) {
+    напоминанияТаймер = setInterval(() => {
+      // Панель могли закрыть, а таймер — остаться: снять себя здесь же.
+      if (текущий !== 'панель') {
+        напоминанияТаймерСнять();
+        return;
+      }
+      нарисоватьПанель();
+    }, НАПОМИНАНИЯ_ПАУЗА);
+  }
+  return блок;
+}
+
+/* Напоминание поставили, сняли или оно сработало — список надо перечитать.
+   События те же, что идут в журнал (`reminder`, `reminder_cancel`,
+   `reminder_fired`), Панель узнаёт о них из ленты `/api/runtime`. */
+function напоминаниеСобытие(событие) {
+  return !!событие && ['reminder', 'reminder_cancel', 'reminder_fired']
+    .includes(событие.kind);
+}
+
 /* Расход: /api/usage отдаёт три периода, курс и откуда цены. Раз в 15 с —
    сумма меняется медленно, а сервер читает журнал расхода целиком. */
 let расходКэш = null;
@@ -581,6 +710,13 @@ function нарисоватьПанель() {
      самые ходовые настройки из всех: включить и выключить их хозяин должен
      не заходя в Настройки. Данные — из /state, как у «Записи игры». */
   лист.appendChild(блокВозможностей());
+
+  /* «Напоминания» — рядом с «Возможностями»: тоже то, о чём хозяин должен
+     знать, не заходя ни в разговор, ни в Настройки. Блок возвращает null,
+     когда напоминаний нет, — тогда на Панели ничего не лишнего. */
+  const напоминания = блокНапоминаний();
+  if (напоминания) лист.appendChild(напоминания);
+  спроситьНапоминания();
 
   /* «Расход» — отдельной строкой во всю ширину: три столбца с суммами и
      токенами в половине окна разваливались. Данные приходят отдельным
@@ -1054,6 +1190,7 @@ async function опроситьРантайм() {
     const обзорБыл = JSON.stringify(голосОбзор);
     if (данные.overview && typeof данные.overview === 'object') голосОбзор = данные.overview;
     let записали = false;
+    let напомнили = false;
     if (Array.isArray(данные.events) && данные.events.length > 0) {
       for (const событие of данные.events) {
         голосСобытия.push(событие);
@@ -1061,6 +1198,7 @@ async function опроситьРантайм() {
           голосПоследний = событие.id;
         }
         if (заметкиНоваяЗапись(событие)) записали = true;
+        if (напоминаниеСобытие(событие)) напомнили = true;
       }
       if (голосСобытия.length > 300) голосСобытия = голосСобытия.slice(-300);
     }
@@ -1069,6 +1207,10 @@ async function опроситьРантайм() {
     // Труба только что записала мысль: список на странице «Заметки» уже
     // устарел, а перечитывать его без события было бы незачем.
     if (текущий === 'заметки' && записали) заметкиЗагрузить(true);
+    // Напоминание поставили, сняли или оно сработало — «Напоминания» на
+    // Панели показывают старое. Здесь узнаём об этом раньше всех: список
+    // ведь не в /state.
+    if (напомнили) спроситьНапоминания(true);
   } catch (e) {
     /* Молчим: общий опрос /state уже показывает связь. */
   }
@@ -1551,7 +1693,8 @@ const НАСТР_НАЗВАНИЯ = {
   max_tokens: ['Максимум текста', 'Предел длины одного ответа'],
   history_turns: ['Контекст разговора', 'Сколько последних реплик учитывает'],
   web_search: ['Поиск в интернете', 'Сама ищет свежее: новости, цены, курсы, погоду. Каждый поиск виден в Логах'],
-  web_search_mode: ['Где искать', 'Бесплатно — Yahoo, Brave, DuckDuckGo и Яндекс, иногда отказывают минут на десять. Платно — поиск OpenAI, надёжнее'],
+  search_sound: ['Звук во время поиска', 'Тихий фон, пока она ищет в интернете. Без него — тишина до ответа'],
+  web_search_mode: ['Где искать', 'Бесплатно — Yahoo, Brave, DuckDuckGo, Яндекс и Bing, иногда отказывают минут на десять. Платно — поиск OpenAI, надёжнее'],
   web_search_budget: ['Ждать поиск, с', 'Сколько секунд она может искать, прежде чем ответить тем, что нашла'],
   proactive: ['Заговаривать первой', 'Только когда ты за компом, не в созвоне Discord и не заглушил её кругом. Каждый заход — запрос в облако'],
   proactive_look: ['Иногда смотреть на экран', 'Снимок уходит в облачную модель. Личное на экране она не описывает'],
@@ -1567,6 +1710,7 @@ const НАСТР_НАЗВАНИЯ = {
   higgs_gentle: ['Бережно к видеокарте', 'Higgs готовит речь чуть впереди звука, а не вдвое быстрее — меньше лагов в играх'],
   duck_level: ['Приглушение фона', 'Как тихо становится остальное, пока говорит'],
   barge_in_level: ['Порог перебивания', 'Ниже — легче перебить её голосом'],
+  barge_instant: ['Перебивать сразу', 'Замолкает, как только ты начинаешь говорить поверх неё. Выключи, если она сама себя обрывает'],
   listen_mode: ['Когда слушает', 'Всегда, по имени или выкл'],
   follow_up_window: ['Окно разговора', 'Сколько секунд после реплики ждёт продолжения'],
   require_name_when_noisy: ['Имя при шуме', 'В шуме отзывается только на имя'],
@@ -1983,6 +2127,7 @@ function заполнитьНастройки(данные) {
   эл.max_tokens.value = s.max_tokens ?? '';
   эл.history_turns.value = s.history_turns ?? '';
   эл.web_search.checked = s.web_search !== false;
+  эл.search_sound.checked = s.search_sound !== false;
   эл.web_search_mode.value = s.web_search_mode ?? 'free';
   if (эл.web_search_mode.selectedIndex < 0) эл.web_search_mode.selectedIndex = 0;
   эл.web_search_budget.value = s.web_search_budget ?? 12;
@@ -2040,6 +2185,8 @@ function заполнитьНастройки(данные) {
   // некогда.
   эл.proactive_look.disabled = эл.proactive.value === 'never';
   эл.require_name_when_noisy.checked = !!s.require_name_when_noisy;
+  // По умолчанию включено: без этого перебивания не было вовсе.
+  эл.barge_instant.checked = s.barge_instant !== false;
   эл.voice_app_guard.checked = s.voice_app_guard !== false;
   эл.owner_only.checked = !!s.owner_only;
   эл.voice_autostart.checked = s.voice_autostart !== false;
@@ -2182,6 +2329,7 @@ async function сохранитьНастройки() {
     max_tokens: настрЧислоИли(эл.max_tokens, 'max_tokens', true, ошибки),
     history_turns: настрЧислоИли(эл.history_turns, 'history_turns', true, ошибки),
     web_search: эл.web_search.checked,
+    search_sound: эл.search_sound.checked,
     web_search_mode: эл.web_search_mode.value,
     web_search_budget: настрЧислоИли(эл.web_search_budget, 'web_search_budget', false, ошибки),
     hedge: эл.hedge.checked,
@@ -2202,6 +2350,7 @@ async function сохранитьНастройки() {
     higgs_gentle: эл.higgs_gentle.checked,
     duck_level: настрЧислоИли(эл.duck_level, 'duck_level', false, ошибки),
     barge_in_level: настрЧислоИли(эл.barge_in_level, 'barge_in_level', false, ошибки),
+    barge_instant: эл.barge_instant.checked,
     follow_up_window: настрЧислоИли(эл.follow_up_window, 'follow_up_window', false, ошибки),
     require_name_when_noisy: эл.require_name_when_noisy.checked,
     voice_app_guard: эл.voice_app_guard.checked,
@@ -3218,7 +3367,7 @@ function настрПоляПоиска() {
   if (!настрЭлементы) return;
   const эл = настрЭлементы;
   const вкл = эл.web_search.checked;
-  for (const поле of [эл.web_search_mode, эл.web_search_budget]) поле.closest('.настр-ряд').hidden = !вкл;
+  for (const поле of [эл.web_search_mode, эл.web_search_budget, эл.search_sound]) поле.closest('.настр-ряд').hidden = !вкл;
   эл.проверитьПоиск.disabled = !вкл;
 }
 
@@ -3906,6 +4055,8 @@ function построитьНастройки(куда, страница) {
   const поиск = настрСекция(содержимое, 'поиск', 'Поиск');
   const web_search = настрГалочка(true);
   настрПоле(поиск, 'web_search', web_search);
+  const search_sound = настрГалочка(true);
+  настрПоле(поиск, 'search_sound', search_sound);
   const web_search_mode = настрВыбор([
     ['free', 'Бесплатно'],
     ['auto', 'Бесплатно, не вышло — платно'],
@@ -4209,6 +4360,8 @@ function построитьНастройки(куда, страница) {
   const barge_in_level = настрЧислоПоле('');
   настрПоле(голосСекция, 'barge_in_level', barge_in_level);
   настрПолзунок(barge_in_level, 0.01, 0.3, 0.01);
+  const barge_instant = настрГалочка(true);
+  настрПоле(голосСекция, 'barge_instant', barge_instant);
   /* «Твой компьютер» уехал наверх секции, к «Способу озвучивания» (см. выше):
      сразу видно, какую модель качать можно, и не листать до конца. */
   const послушатьПробуКнопка = document.createElement('button');
@@ -4476,7 +4629,7 @@ function построитьНастройки(куда, страница) {
   статус.textContent = '…';
   низ.appendChild(статус);
   корень.appendChild(низ);
-  настрЭлементы = { раздел, пояснение, секции: [мозг, поиск, первая, характер, память, голосСекция, слух, расп, звук, телефон, система], provider, локальноеПредупреждение, local_url, local_urlРяд, рядКлюча, model, списокМоделей, обновитьМодели, моделиСтатус, номерЗагрузкиМоделей: 0, провайдеры: {}, моделиВПравке: {}, ключиВПравке: {}, сохранённыеКлючи: {}, ключНамёк, ключПоказать, api_key, temperature, max_tokens, history_turns, web_search, web_search_mode, web_search_budget, hedge, проверитьПоиск: проверитьПоискКнопка, проверитьСвязь: проверитьСвязьКнопка, proactive, proactive_look, persona, memory, отменитьХарактер, отменитьПамять, забыть, очистить, tts_engine, silero_speaker, silero_model, образецБлок, voice_name, образецОписание, образецИграть, образецУдалить, образецФайл, образецФайлИнфо, образецРучной, образецНачало, образецДлина, образецКусок, образецДобавить, образецШаг, tts_speed, tts_nfe, tts_gap, voice_volume, higgs_gentle, duck_level, barge_in_level, послушатьПробу: послушатьПробуКнопка, плеерПроба, follow_up_window, require_name_when_noisy, voice_app_guard, owner_only, voice_autostart, owner_threshold, владелец, хозяинЗаписать, хозяинЗакончить, хозяинСтатус, хозяинТекст, хозяинИтог, stt_model, stt_quantization, распПояснение, распПроверить, распСтатус, распИтог, output, mic_name, mic_channel, mic_channelРяд, уровень, уровеньFill, уровеньПодпись, speaker_name, звукПроверить, звукСтатус, железоБлок, железоГолоса, железоГолосаСтатус, железоКарточка, железоКнопка, железоТело, железоИтог, железоСтрелка, погГород, погГородСохранено: '', погШирота: null, погДолгота: null, погЧерновик: null, погВвод, погНайти, погСписок, погБез, погСтатус, autostart, theme, адреса, телАдрес, телКопировать, телСтатус, телКод, неГаситьОбновить, сохранить, статус };
+  настрЭлементы = { раздел, пояснение, секции: [мозг, поиск, первая, характер, память, голосСекция, слух, расп, звук, телефон, система], provider, локальноеПредупреждение, local_url, local_urlРяд, рядКлюча, model, списокМоделей, обновитьМодели, моделиСтатус, номерЗагрузкиМоделей: 0, провайдеры: {}, моделиВПравке: {}, ключиВПравке: {}, сохранённыеКлючи: {}, ключНамёк, ключПоказать, api_key, temperature, max_tokens, history_turns, web_search, search_sound, web_search_mode, web_search_budget, hedge, проверитьПоиск: проверитьПоискКнопка, проверитьСвязь: проверитьСвязьКнопка, proactive, proactive_look, persona, memory, отменитьХарактер, отменитьПамять, забыть, очистить, tts_engine, silero_speaker, silero_model, образецБлок, voice_name, образецОписание, образецИграть, образецУдалить, образецФайл, образецФайлИнфо, образецРучной, образецНачало, образецДлина, образецКусок, образецДобавить, образецШаг, tts_speed, tts_nfe, tts_gap, voice_volume, higgs_gentle, duck_level, barge_in_level, barge_instant, послушатьПробу: послушатьПробуКнопка, плеерПроба, follow_up_window, require_name_when_noisy, voice_app_guard, owner_only, voice_autostart, owner_threshold, владелец, хозяинЗаписать, хозяинЗакончить, хозяинСтатус, хозяинТекст, хозяинИтог, stt_model, stt_quantization, распПояснение, распПроверить, распСтатус, распИтог, output, mic_name, mic_channel, mic_channelРяд, уровень, уровеньFill, уровеньПодпись, speaker_name, звукПроверить, звукСтатус, железоБлок, железоГолоса, железоГолосаСтатус, железоКарточка, железоКнопка, железоТело, железоИтог, железоСтрелка, погГород, погГородСохранено: '', погШирота: null, погДолгота: null, погЧерновик: null, погВвод, погНайти, погСписок, погБез, погСтатус, autostart, theme, адреса, телАдрес, телКопировать, телСтатус, телКод, неГаситьОбновить, сохранить, статус };
   // Форма новая — прошлые списки устройств, таймер уровня и отметка о железе
   // не про неё. Раньше первого показа раздела: иначе только что пришедшие
   // списки микрофонов тут же сбрасывались бы.
@@ -4640,7 +4793,7 @@ function прогРазобратьАргументы(строка) {
 }
 function прогНорма(п, индекс) {
   const app = (п && typeof п === 'object') ? п : {};
-  const kind = app.kind === 'url' || app.kind === 'store' ? app.kind : 'app';
+  const kind = ['url', 'store', 'folder'].includes(app.kind) ? app.kind : 'app';
   const out = {
     id: String(app.id === undefined || app.id === null ? 'app-' + (индекс + 1) : app.id).trim(),
     title: String(app.title === undefined || app.title === null ? '' : app.title),
@@ -4666,6 +4819,10 @@ function прогНорма(п, индекс) {
        LaunchCodex.exe, а живёт ChatGPT.exe — 28.09 поле потерялось при
        «Сохранить», и «закрой ChatGPT» перестало работать. */
     out.process = String(app.process || '');
+  } else if (kind === 'folder') {
+    /* Своя папка хозяина: у неё, как у программы, только путь. Значок оболочка
+       умеет и у папки (core/app_icons.py), поэтому источник тот же. */
+    out.path = String(app.path === undefined || app.path === null ? '' : app.path);
   } else if (kind === 'url') { out.url = String(app.url === undefined || app.url === null ? '' : app.url);
   } else { out.app_id = String(app.app_id === undefined || app.app_id === null ? '' : app.app_id); }
   return out;
@@ -4705,7 +4862,7 @@ function прогПоле(сетка, имя, ярлык, тип, значени
   if (тип === 'select') {
     ввод = document.createElement('select');
     let варианты = [['shell', 'обычный'], ['direct', 'прямой']];
-    if (имя === 'kind') варианты = [['app', 'программа'], ['url', 'ссылка'], ['store', 'приложение Windows']];
+    if (имя === 'kind') варианты = [['app', 'программа'], ['url', 'ссылка'], ['store', 'приложение Windows'], ['folder', 'папка']];
     else if (имя === 'icon_source') варианты = [['drawn', 'рисованный'], ['exe', 'из программы'], ['file', 'свой файл']];
     for (const [з, т] of варианты) {
       const оп = document.createElement('option');
@@ -4730,7 +4887,9 @@ function прогПоле(сетка, имя, ярлык, тип, значени
    «из самой программы» — три разных блока, и видно должен быть ровно один из
    них. Сам блок «значок» виден всегда — в нём переключатель. */
 function прогПрименитьЗначок(строкаEl) {
-  const вид = прогВзять(строкаEl, 'kind') === 'app' ? 'app' : 'ссылка';
+  /* У папки значок тоже берётся из оболочки — у неё есть свой путь, и
+     core/app_icons.py отдаёт значок папки так же, как значок программы. */
+  const вид = ['app', 'folder'].includes(прогВзять(строкаEl, 'kind')) ? 'app' : 'ссылка';
   const поле = строкаEl.querySelector('[data-поле="icon_source"]');
   const ист = поле ? поле.value : 'drawn';
   let тек = ист === 'exe' || ист === 'file' ? ист : 'drawn';
@@ -4759,7 +4918,12 @@ function прогПрименитьЗначок(строкаEl) {
 function прогПрименитьВид(строкаEl) {
   const sel = строкаEl.querySelector('[data-поле="kind"]');
   const вид = sel ? sel.value : 'app';
-  for (const имя of ['path', 'how', 'args']) {
+  /* Путь есть и у программы, и у папки — это единственное, что нужно обеим.
+     Способ запуска и параметры — только программе: папку проводник открывает
+     сам, запускать её нечем. */
+  const обPath = строкаEl.querySelector('[data-поле-обёртка="path"]');
+  if (обPath) обPath.hidden = !['app', 'folder'].includes(вид);
+  for (const имя of ['how', 'args']) {
     const об = строкаEl.querySelector('[data-поле-обёртка="' + имя + '"]');
     if (об) об.hidden = вид !== 'app';
   }
@@ -4767,6 +4931,10 @@ function прогПрименитьВид(строкаEl) {
   if (обUrl) обUrl.hidden = вид !== 'url';
   const обStore = строкаEl.querySelector('[data-поле-обёртка="app_id"]');
   if (обStore) обStore.hidden = вид !== 'store';
+  /* Подпись поля меняется по виду: у папки это «папка», а не «файл
+     программы», и хозяин должен видеть, что вписывает. */
+  const ярPath = обPath ? обPath.querySelector('span') : null;
+  if (ярPath) ярPath.textContent = вид === 'folder' ? 'папка' : 'файл программы';
 }
 function прогВзять(строкаEl, имя) {
   const el = строкаEl.querySelector('[data-поле="' + имя + '"]');
@@ -4790,7 +4958,7 @@ function прогСобратьСтроку(строкаEl, индекс) {
       && /^#[0-9a-f]{6}$/i.test(цвет)) п.color = цвет;
   else delete п.color;
   const вид = прогВзять(строкаEl, 'kind');
-  п.kind = вид === 'url' || вид === 'store' ? вид : 'app';
+  п.kind = ['url', 'store', 'folder'].includes(вид) ? вид : 'app';
   delete п.path; delete п.args; delete п.how; delete п.url; delete п.app_id;
   if (п.kind === 'app') {
     п.path = прогВзять(строкаEl, 'path');
@@ -4798,6 +4966,11 @@ function прогСобратьСтроку(строкаEl, индекс) {
     const разбор = прогРазобратьАргументы(прогВзять(строкаEl, 'args'));
     if (!разбор.ok) return { ошибка: 'Строка ' + (индекс + 1) + ': аргументы — ' + разбор.ошибка + '. Пример: --incognito "C:\\Мои файлы\\x.txt"' };
     п.args = разбор.args;
+  } else if (п.kind === 'folder') {
+    /* Путь папки — это и есть всё, что нужно: проводник откроет его сам.
+       Имя процесса у папки ни к чему — закрыть её нечем. */
+    п.path = прогВзять(строкаEl, 'path').trim();
+    delete п.process;
   } else if (п.kind === 'url') { п.url = прогВзять(строкаEl, 'url').trim();
   } else { п.app_id = прогВзять(строкаEl, 'app_id').trim(); }
   п.menu = прогСобратьМеню(строкаEl);
@@ -6180,6 +6353,8 @@ function прогГотовое(п) {
   } else if (п.kind === 'url') {
     const адрес = String(п.url || '').trim();
     б.url = адрес && !адрес.includes('://') ? 'https://' + адрес : адрес;
+  } else if (п.kind === 'folder') {
+    б.path = String(п.path || '').trim();
   }
   else { б.app_id = String(п.app_id || '').trim(); }
   if (Array.isArray(п.aliases) && п.aliases.length) б.aliases = п.aliases.map((a) => String(a));
@@ -6610,6 +6785,33 @@ function нарисоватьПрограммы() {
       id: прогСвободныйId('link'), title: '', kind: 'url', url: '',
       icon: 'browser', icon_source: 'drawn',
     }, 'title')],
+    /* Своя папка: «открой проект» голосом и плитка на телефоне. Значок —
+       из оболочки, как у программы (core/app_icons.py умеет и папку). */
+    ['Папка…', async () => {
+      const api = window.pywebview && window.pywebview.api;
+      let путь = '';
+      if (api && api.pick_folder) {
+        добавить.disabled = true;
+        try {
+          const ответ = await api.pick_folder('');
+          if (текущий !== 'программы' || !корень.isConnected || ответ.cancelled) return;
+          if (!ответ.ok) throw new Error(ответ.error || 'папка не выбрана');
+          путь = String(ответ.path || '').trim();
+        } catch (e) {
+          прогСказать(статус, 'Не получилось выбрать папку: ' + (e && e.message ? e.message : e), true);
+          return;
+        } finally { добавить.disabled = false; }
+      } else {
+        /* В обычном браузере проводника нет — путь строкой. */
+        путь = String(window.prompt('Полный путь к папке', '') || '').trim();
+      }
+      if (!путь) return;
+      const имя = путь.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || путь;
+      прогДобавитьСтроку(ctx, {
+        id: прогСвободныйId('folder'), title: имя.slice(0, 60), kind: 'folder', path: путь,
+        icon: 'app', icon_source: 'exe',
+      }, 'title');
+    }],
     ['Вручную', () => прогДобавитьСтроку(ctx, {
       id: прогСвободныйId('app'), title: '', kind: 'app', path: '', args: [],
       how: 'shell', icon: 'app', icon_source: 'exe',
@@ -8073,6 +8275,29 @@ function комКарточка(команда, программы) {
   return карточка;
 }
 
+/* Карточка «понимает по смыслу». Отдельная функция, а не `комКарточка` с
+   флагом: у навыка нет `arg` и никогда не будет списка программ, а лишнее
+   условие внутри общей карточки со временем выросло бы в третью разновидность
+   того же кода. Вёрстка — ровно та же, что у мгновенных команд. */
+function комНавык(навык) {
+  const карточка = document.createElement('article');
+  карточка.className = 'ком-карточка';
+  const имя = document.createElement('h3');
+  имя.textContent = навык.title;
+  карточка.appendChild(имя);
+  const что = document.createElement('p');
+  что.className = 'ком-что';
+  что.textContent = навык.does;
+  карточка.appendChild(что);
+  const примеры = document.createElement('div');
+  примеры.className = 'ком-примеры';
+  for (const пример of (навык.examples || [])) {
+    примеры.appendChild(комПлашка(пример));
+  }
+  карточка.appendChild(примеры);
+  return карточка;
+}
+
 async function нарисоватьКоманды() {
   лист.classList.remove('компьютерный');
   лист.classList.remove('чатовый');
@@ -8140,6 +8365,18 @@ async function нарисоватьКоманды() {
   }
   мгновенные.appendChild(сетка);
 
+  // Второй блок — то, что модель делает инструментами сама. Тот же класс
+  // `ком-сетка` и те же карточки: разница только в том, откуда пришли данные.
+  const поСмыслу = комСекция(корень, 'Понимает по смыслу — длинными фразами',
+    'Слова те же, а форма произвольная: «слушай, переключи-ка на английский». '
+    + 'Такое уходит в облако и делается её инструментами.');
+  const сеткаСмысла = document.createElement('div');
+  сеткаСмысла.className = 'ком-сетка';
+  for (const навык of (данные.skills || [])) {
+    сеткаСмысла.appendChild(комНавык(навык));
+  }
+  поСмыслу.appendChild(сеткаСмысла);
+
   const остальное = комСекция(корень, 'Всё остальное — своими словами');
   const абзац = document.createElement('p');
   абзац.className = 'ком-текст';
@@ -8178,6 +8415,10 @@ function открыть(имя) {
     логиТаймер = null;
     логиЭлементы = null;
   }
+  // Таймер «через N мин» живёт только пока блок на Панели: ушли на другую
+  // вкладку — снимаем, вернёмся — поставит снова `блокНапоминаний`.
+  if (имя !== 'панель') напоминанияТаймерСнять();
+  if (имя === 'панель') спроситьНапоминания(true);
 
   меню.querySelectorAll('.пункт').forEach((el) => {
     el.classList.toggle('активный', el.dataset.раздел === имя);

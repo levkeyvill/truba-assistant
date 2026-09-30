@@ -579,6 +579,27 @@
     display: flex; flex-direction: column; gap: 8px;
   }
   #find .q { color: var(--dim); font-size: 12px; }
+  /* Строка запроса и источники — кнопки: по ним открывается поиск на компе.
+     Подпись «↗» говорит, что это не чтение, а переход туда. */
+  #find .qrow { display: flex; flex-direction: column; gap: 2px; }
+  #find .qhint { color: var(--muted); font-size: 12px; }
+  /* Строки, которые нажимаются, — с подложкой: без неё они выглядели
+     подписью, а не кнопкой (30.09, предпросмотр). */
+  #find .qrow, #find .src .srow {
+    background: rgba(255, 255, 255, 0.05); border-radius: 10px;
+    padding: 6px 10px; margin-left: -10px; margin-right: -10px;
+  }
+  #find .src .srow {
+    display: flex; flex-direction: column; gap: 1px; margin-top: 4px;
+  }
+  #find .src .st { color: var(--text); }
+  #find .src .sh { color: var(--muted); font-size: 12px; }
+  /* Крестик в углу карточки — как у остальных оверлеев телефона. */
+  #find .x {
+    position: absolute; top: 6px; right: 10px;
+    color: var(--muted); font-size: 18px; padding: 2px 8px;
+  }
+  #find .card { position: relative; }
   #find .a {
     color: var(--text); font-size: 26px; font-weight: 600; line-height: 1.25;
     /* Четыре строки, дальше многоточие: длинный ответ на этом экране
@@ -1173,10 +1194,14 @@
 </div>
 <div id="find">
   <div class="card">
-    <div class="q"></div>
+    <div class="x">✕</div>
+    <div class="qrow">
+      <div class="q"></div>
+      <div class="qhint">открыть поиск на компе ↗</div>
+    </div>
     <div class="a"></div>
     <div class="src"></div>
-    <div class="cap">коснись, чтобы убрать</div>
+    <div class="cap">коснись ✕ или пустого места, чтобы убрать</div>
   </div>
 </div>
 <div id="wxcard">
@@ -1774,30 +1799,81 @@ function closeWeather() {
 wxBox.addEventListener('click', showWeather);
 wxCard.addEventListener('click', closeWeather);
 
-/* ---------- Поиск ---------- */
+/* ---------- Поиск ----------
+   Карточка приходит после любого поиска: и после кнопки «Найти», и после
+   того, как она сходила в интернет сама (30.09, хозяин: «после любого поиска,
+   с касанием»). Строки в ней не текст для чтения, а кнопки: по запросу и по
+   источнику открывается браузер на компьютере — телефон знает только номер
+   источника, адрес берёт сервер. */
 let findTimer = null;
+/* Запрос, по которому открывать: тот, что реально ушёл в поисковик
+   (`query`), а если его нет — слова хозяина (`asked`). */
+let findQuery = '';
+const FIND_HIDE_MS = 60000;
+
+function closeFind() {
+  clearTimeout(findTimer);
+  findTimer = null;
+  findBox.classList.remove('on');
+}
+
+/* Касание строки карточку не закрывает, а продлевает: хозяин читает
+   источники и тыкает, времени нужно больше, чем на чтение ответа. */
+function armFind() {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(closeFind, FIND_HIDE_MS);
+}
 
 function showSearch(msg) {
   const card = findBox.querySelector('.card');
-  card.querySelector('.q').textContent = String(msg.query || '').slice(0, 120);
+  findQuery = String(msg.query || msg.asked || '').slice(0, 200);
+  card.querySelector('.q').textContent = findQuery.slice(0, 120);
   card.querySelector('.a').textContent = String(msg.answer || '').slice(0, 600);
   const sources = card.querySelector('.src');
   sources.innerHTML = '';
-  (Array.isArray(msg.sources) ? msg.sources : []).slice(0, 3).forEach((source) => {
+  (Array.isArray(msg.sources) ? msg.sources : []).slice(0, 3).forEach((source, номер) => {
     const row = document.createElement('div');
+    row.className = 'srow';
     /* Текст ставим текстом, а не разметкой: заголовки из интернета
        приходят чужими и не должны уметь ничего разметить. */
-    row.textContent = [source.host, source.title].filter(Boolean).join(' — ');
+    const title = document.createElement('div');
+    title.className = 'st';
+    title.textContent = String(source.title || source.host || '').slice(0, 160);
+    const host = document.createElement('div');
+    host.className = 'sh';
+    host.textContent = String(source.host || '');
+    row.appendChild(title);
+    row.appendChild(host);
+    row.addEventListener('click', (event) => {
+      event.stopPropagation();
+      /* Только номер: телефон не присылает адрес и не может заставить
+         комп открыть произвольную ссылку. */
+      send({ type: 'open_source', index: номер });
+      armFind();
+    });
     sources.appendChild(row);
   });
   findBox.classList.add('on');
-  clearTimeout(findTimer);
-  findTimer = setTimeout(() => findBox.classList.remove('on'), 25000);
+  armFind();
 }
 
-findBox.addEventListener('click', () => {
-  clearTimeout(findTimer);
-  findBox.classList.remove('on');
+findBox.querySelector('.qrow').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (!findQuery) return;
+  send({ type: 'open_search', query: findQuery });
+  armFind();
+});
+
+findBox.querySelector('.x').addEventListener('click', (event) => {
+  event.stopPropagation();
+  closeFind();
+});
+
+/* Закрывает только пустое место вокруг карточки: касание самой карточки —
+   это касание строки, и оно должно открывать, а не убирать её. */
+findBox.addEventListener('click', (event) => {
+  if (event.target.closest('.card')) return;
+  closeFind();
 });
 
 /* ---------- Заметки ----------
@@ -2568,6 +2644,67 @@ function playSound(name) {
   }
 }
 
+/* ---------- Фон во время поиска ----------
+   Пока она ходит в интернет, звучит тихий круг — иначе секунды ожидания
+   не отличить от зависания. Файл один раз приходит с компа, дальше крутится
+   на телефоне по кругу, пока не придёт `search_hum false`.
+
+   Всё, что нужно `connect()`, — функцией или `var`: `connect()` зовётся при
+   загрузке выше по тексту, и `let` на его месте ещё не был бы объявлен. */
+var humХочу = false, humБуфер = null, humИсточник = null, humГромкость = null,
+    humГрузится = false;
+
+function searchHum(on, gain) {
+  humХочу = !!on;
+  if (!audioCtx) return;
+  /* Браузер телефона усыпляет звук, когда гаснет экран, — как в playSound. */
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+  if (on) {
+    /* Уже играет — второй раз нечего. */
+    if (humИсточник) return;
+    if (!humБуфер) {
+      if (humГрузится) return;
+      humГрузится = true;
+      fetch('/search_hum.wav')
+        .then((r) => r.arrayBuffer())
+        .then((data) => audioCtx.decodeAudioData(data))
+        .then((buf) => {
+          humБуфер = buf;
+          humГрузится = false;
+          /* Пока грузили, мог прийти `false` — тогда не включаем вовсе. */
+          if (humХочу) searchHum(true, gain);
+        })
+        .catch(() => { humГрузится = false; });
+      return;
+    }
+    const src = audioCtx.createBufferSource();
+    src.buffer = humБуфер;
+    src.loop = true;
+    const vol = audioCtx.createGain();
+    vol.gain.value = 0.0001;
+    src.connect(vol);
+    /* Мимо анализатора: иначе кружок дёргается весь ответ. */
+    vol.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    vol.gain.setValueAtTime(0.0001, now);
+    vol.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain), now + 0.4);
+    src.start(now);
+    humИсточник = src;
+    humГромкость = vol;
+    return;
+  }
+  humХочу = false;
+  if (!humИсточник) return;
+  const src = humИсточник, vol = humГромкость;
+  humИсточник = null;
+  humГромкость = null;
+  const now = audioCtx.currentTime;
+  vol.gain.cancelScheduledValues(now);
+  vol.gain.setValueAtTime(Math.max(vol.gain.value, 0.0001), now);
+  vol.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
+  try { src.stop(now + 0.35); } catch (e) {}
+}
+
 /* Щелчок под палец. Вешаем одним обработчиком на всю страницу: кнопки
    создаются на лету, а подписываться на каждую — забыть половину.
    pointerdown, а не click: отклик должен прийти на касание, а не после
@@ -2577,8 +2714,9 @@ document.addEventListener(
   (event) => {
     if (!audioCtx) return;
     /* Заметки — те же кнопки под палец: 28.09 хозяин заметил, что «✕»
-       закрывает их молча. */
-    if (event.target.closest('.act, .app, .mode, #orb, #expand, #s-wx, #язычок, .гром-шаг, .nclose, .nrec, .ntopic')) {
+       закрывает их молча. Строки карточки поиска — тоже: там касание
+       открывает браузер на компьютере, и хозяин ждёт отклика. */
+    if (event.target.closest('.act, .app, .mode, #orb, #expand, #s-wx, #язычок, .гром-шаг, .nclose, .nrec, .ntopic, #find .qrow, #find .srow, #find .x')) {
       playSound('tap');
     }
   },
@@ -2870,6 +3008,7 @@ function connect() {
     else if (msg.type === 'shot') showShot(msg.image, msg.caption, msg.hide);
     else if (msg.type === 'toast') showToast(msg.text, msg.ok);
     else if (msg.type === 'sound') playSound(msg.name);
+    else if (msg.type === 'search_hum') searchHum(!!msg.on, Number(msg.gain) || 1);
     else if (msg.type === 'dictation') edgeDictation(!!msg.on);
     else if (msg.type === 'notes') drawNotes(msg.sections);
     else if (msg.type === 'note_topic') drawNoteTopic(msg);
@@ -2950,6 +3089,9 @@ async function schedule(data, epoch) {
      опустевшую очередь, счёт не сходился, и микрофон включался только
      по запасному таймеру — на секунды позже, чем она замолчала. */
   if (epoch !== stopEpoch) return;
+  /* Страховка: пошёл её голос — фон гасим, даже если комп не успел прислать
+     `search_hum false` (связь могла вернуться с задержкой). */
+  searchHum(false);
   /* Комп не шлёт куски, пока мы не сказали `audio ready`, так что это
      страховка на случай гонки. Играть нечем — кусок тихо выбрасываем, и
      отчёта не шлём: его ждёт счётчик на компе, и лишний «played» сбил бы

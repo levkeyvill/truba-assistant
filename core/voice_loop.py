@@ -30,6 +30,7 @@ import config
 from core import proactive
 from core.brain import FILLERS
 from core.ducking import Ducker, VoiceAppMeter
+from core.search_hum import _ТИШИНА, SearchHum
 
 Event = Callable[[str, object], None]
 
@@ -169,6 +170,29 @@ CLOUD_DOWN_WORDS = (
 # Через сколько после неудачи всё же попробовать снова. Молчать нужно, но и
 # молчать навсегда нельзя: иначе о вернувшейся связи никто не узнает.
 CLOUD_RETRY = 60.0
+# Сколько ждать свободного хода, прежде чем сказать своё (`announce`).
+# Хватает самому длинному ответу с облаком; не дождались — лучше промолчать,
+# чем перебить хозяина на полуслове.
+ANNOUNCE_WAIT = 20.0
+# --- Чтение вслух ---------------------------------------------------------
+#
+# Хозяин: «прочитай вслух отчёт». Текст из файла идёт прямо в её синтез на
+# компьютере, в облако не уходит: в мозг уходят только слова «прочитай вслух».
+# Читает она сама, по предложениям, и всё время чтения — обычная её речь:
+# телефон или колонки, её громкость, `speech_text.for_speech` внутри синтеза.
+#
+# Останавливается чтение всем тем же, чем её речь: `shut_up` — «хватит»,
+# «стоп», касание круга на телефоне. Место остановки помнится в памяти
+# процесса (`_reading`), и «продолжи читать» начинает с него же. Замок хода
+# `_turn` на всё чтение не берём намеренно: пока она читает, хозяин может
+# сказать «хватит» или перебить вопросом, и его фраза обязана дойти до ответа
+# (см. `read_aloud`).
+# Сколько ждать хода перед очередным предложением. Не дождались — читать
+# дальше нельзя, иначе она заговорит поверх хозяина.
+READ_ALOUD_WAIT = 20.0
+# Пауза между предложениями: так текст звучит речью, а не залпом. Здесь же
+# проверяется флаг остановки.
+READ_ALOUD_GAP = 0.35
 # Признаки обрыва связи в тексте ошибки. `APIConnectionError` и
 # `APITimeoutError` в это попадают по имени класса.
 NETWORK_MARKS = (
@@ -467,6 +491,14 @@ class VoiceLoop:
     # это в `/api/stt`, поэтому здесь всё, что он показывает.
     _stt_loading = False
     _stt_error = ""
+    # Чтение вслух: что читаем (предложения), с какого и имя файла. `None` —
+    # не читает. Помнится и после остановки: «продолжи читать» начинает с
+    # `_reading["at"]`. Пустым он становится только когда дочитал всё.
+    _reading: dict | None = None
+    # Флаг остановки текущего чтения. `None` — читает нечего обрывать.
+    # Отдельное поле, а не поле в `_reading`: остановку поднимает `shut_up`,
+    # который ничего про словарь чтения не знает.
+    _read_stop: threading.Event | None = None
     # Какая модель и с каким сжатием реально работают сейчас.
     _stt_name = ""
     _stt_quant = None
@@ -484,6 +516,10 @@ class VoiceLoop:
     # до этого момента, кнопкой не запрошена: хозяин говорил сам с собой и
     # нажал посреди фразы. 0.0 — кнопку в этом цикле ещё не жали.
     _armed_at = 0.0
+    # Фон во время поиска. Настоящий — в `__init__`, а здесь молчалка: цикл,
+    # собранный вручную (тесты, подмены), отвечает «искать нечего», а не падает
+    # на отсутствующем поле.
+    _hum = _ТИШИНА
 
     def __init__(
         self, brain, on_event: Event, server=None, handle_phone_events: bool = True
@@ -502,6 +538,9 @@ class VoiceLoop:
         self._listener = None
         self._server = None
         self._fallback = None
+        # Тихий фон на время ожидания ответа из интернета. Сервера ещё нет —
+        # он поднимется позже, к первому «секунду, гляну».
+        self._hum = SearchHum(send_phone=self._send_hum)
 
         # Кнопки запуска — для разбора «запусти такое-то». Читаются один раз.
         self._apps: list[dict] | None = None
@@ -560,6 +599,9 @@ class VoiceLoop:
         self._speaking_text = ""
         # Когда она договорила. Эхо доезжает уже после этого мига.
         self._spoke_at = 0.0
+        # Чем мы её перебили (уровень и фон) — ждёт разбора фразы: если она
+        # окажется её эхом или чужим голосом, перебивание было ложным.
+        self._barged: dict | None = None
 
         self._ducker = Ducker(level=config.DUCK_LEVEL, enabled=config.DUCK_ENABLED)
         # Кто из голосовых программ звучал из колонок, по времени. Поднимается
@@ -602,11 +644,22 @@ class VoiceLoop:
 
         Мало оборвать звук: модель продолжает писать ответ, а синтезатор —
         озвучивать. Поднимаем флаг, по которому цикл бросает и то и другое.
+
+        Чтение вслух обрывается здесь же: «хватит», «стоп», касание круга на
+        телефоне и любое перебивание голосом одинаково обрывают и её речь, и
+        документ. Место остаётся в `_reading` — «продолжи читать» его найдёт.
         """
+        self._stop_reading_flag()
         self._interrupt.set()
         for speaker in (self._speaker, self._fallback):
             if speaker is not None:
                 speaker.interrupt()
+
+    def _stop_reading_flag(self) -> None:
+        """Поднять флаг остановки чтения, если она идёт."""
+        стоп = getattr(self, "_read_stop", None)
+        if стоп is not None:
+            стоп.set()
 
     # --- Загрузка ---------------------------------------------------------
 
@@ -675,6 +728,11 @@ class VoiceLoop:
         # ради одного: знать, когда началась речь. Фраза, начатая в открытом
         # окне, держит окно до своего конца.
         self._listener.on_voice = self._mic_voice
+        # Перебивание — сразу, по началу его речи, а не после конца её фразы.
+        # Раньше ждать приходилось 1.15 с тишины плюс распознавание, и к тому
+        # моменту она давно договорила: за всё время в журнале не было ни
+        # одного «перебили на полуслове».
+        self._listener.on_barge = self._mic_barge
         # Замер громкости Discord и Telegram — с этой минуты, а не с первой
         # фразы: первые секунды разговора он всё равно не увидит.
         self._voice_meter.start()
@@ -812,12 +870,17 @@ class VoiceLoop:
 
         «Диктовка» тут тоже: без неё у модели нет способа начать запись, и на
         «сделаешь заметку небольшую?» она отвечала словами, а режим не включала.
+
+        «Чтение вслух» — третьим: без него модель на «прочитай вслух отчёт»
+        не знала бы, что читать некому и чем кончится, а текст документа в
+        облако отдавать нельзя.
         """
         from core import hands
 
         if self._brain is not None:
             actions = hands.actions_for(self._emit, self._phone_server)
             actions["dictation"] = self.begin_dictation
+            actions["read_aloud"] = self.read_aloud
             self._brain.actions = actions
 
     def _run_command(self, order, text: str) -> bool:
@@ -890,6 +953,29 @@ class VoiceLoop:
                 # Не запись, а начало диктовки: мысль он ещё говорит.
                 return self._start_dictation(order, text)
 
+            elif order.action == "folder":
+                # Стандартная папка живёт в core/folders.py. Ответ приходит
+                # оттуда уже готовой фразой («Открыла загрузки.»), и в журнал
+                # идёт та же строка, что у инструмента модели: хозяин видит
+                # одно и то же в обоих путях.
+                from core import folders
+
+                what = folders.open_folder(order.target)
+                title = folders.title_of(order.target)
+                self._emit("folder" if what.get("ok") else "folder_failed", title)
+                said = what.get("text") or "Открыла."
+                self._say_back(said)
+                self._remember(text, said)
+                return True
+
+            elif order.action in ("layout", "media", "pc_volume"):
+                # Раскладка, музыка и звук компьютера живут в core/pc_control.py.
+                # Ответ приходит оттуда уже готовой фразой: «Нажала паузу.»,
+                # «Теперь английская раскладка.», «Звук компьютера — тридцать
+                # процентов.» Проговариваем именно её, а не order.reply, —
+                # там честнее, чем «сделала», и та же строка идёт в журнал.
+                return self._do_pc(order, text)
+
             elif order.action == "volume":
                 # Отвечает уже новой громкостью, поэтому слова считаем
                 # после её применения — иначе «Так тише?» прозвучало бы
@@ -906,7 +992,188 @@ class VoiceLoop:
         self._remember(text, order.reply)
         return True
 
-    # --- Диктовка заметки ----------------------------------------------
+    # --- Чтение вслух ------------------------------------------------------
+
+    def read_aloud(self, text: str | None = None, name: str = "",
+                   resume: bool = False) -> tuple:
+        """Читает документ вслух — её голосом, на компьютере, без облака.
+
+        Возвращает `(True, имя)` или `(False, причина)`. Предложения уходят в
+        синтез **своим потоком** и сразу: инструмент модели ждёт только начала
+        чтения, а не конца документа. Текст приходит сюда из `core/documents.py`
+        и уходит в синтез на этом же компьютере — в облако он не идёт никуда.
+
+        `resume` — продолжить с места остановки («продолжи читать»). Файл при
+        этом не трогаем: его текст уже в памяти процесса (`_reading`), и
+        продолжать нечего, если она не читала.
+
+        Голос выключен — честный отказ: читать некому, и «прочитала» было бы
+        враньём. Замок хода `_turn` на всё чтение не берём — см. `READ_ALOUD_*`
+        и поток ниже: хозяин может сказать «хватит» или перебить вопросом, и его
+        фраза должна дойти до ответа, а не висеть в очереди до конца документа.
+        """
+        if not (self.running and self.ready) or self._voice is None:
+            return False, "голос выключен, читать нечем"
+        if resume:
+            было = self._reading
+            if not было or было["at"] >= len(было["предложения"]):
+                return False, "я ничего не читала — нечего продолжать"
+            состояние = было
+        else:
+            from core import documents
+
+            # Новый документ — прежнее чтение в сторону: два голоса разом
+            # звучат мусором, а хозяин просил один.
+            self._stop_reading_flag()
+            предложения = documents.sentences(
+                documents.plain_for_speech(str(text or "")))
+            if not предложения:
+                return False, "в документе нет текста — читать нечего"
+            состояние = {"имя": str(name or "документ"),
+                         "предложения": предложения, "at": 0, "активно": True}
+            self._reading = состояние
+        # Свой флаг остановки, а не `self._interrupt`: тот `_turn_body`
+        # сбрасывает на каждой новой фразе хозяина, и остановка потерялась бы
+        # как раз тогда, когда нужнее всего.
+        стоп = threading.Event()
+        состояние["стоп"] = стоп
+        состояние["активно"] = True
+        self._read_stop = стоп
+        self._open_conversation()
+        # Строку «документ вслух: отчёт.pdf, 12 стр.» в журнал отдаёт
+        # `hands.run_document`: там есть и страницы, и имя, а отсюда шла бы
+        # вторая, без них. Место остановки помнит сам голосовой цикл: он один
+        # знает, где остановился, и «продолжи читать» придёт к нему же.
+        self._remember_reading(состояние["имя"])
+        поток = threading.Thread(
+            target=self._read_aloud, args=(состояние,), daemon=True)
+        поток.start()
+        return True, состояние["имя"]
+
+    def _read_aloud(self, состояние: dict) -> None:
+        """Один документ — по предложениям, с остановкой между ними.
+
+        Замок хода берётся на каждое предложение и отпускается сразу: между
+        предложениями хозяин может вклиниться, и его фраза (`_handle` →
+        `_should_answer` → `shut_up`) обрывает чтение тем же флагом, что и
+        «хватит». Дальше его фраза обрабатывается как обычно.
+        """
+        стоп = состояние["стоп"]
+        предложения = состояние["предложения"]
+        всего = len(предложения)
+        speaker = None
+        try:
+            for номер in range(состояние["at"], всего):
+                if стоп.is_set() or self._stop.is_set():
+                    break
+                # Замок на одно предложение, а не на весь документ: хозяин
+                # может перебить, и тогда его ход берёт его первым.
+                if not self._turn_lock().acquire(timeout=READ_ALOUD_WAIT):
+                    self._emit("error",
+                               "чтение вслух: не дождался свободного хода")
+                    break
+                try:
+                    if стоп.is_set() or self._stop.is_set():
+                        break
+                    if speaker is None:
+                        speaker = self._output()
+                        if speaker is None:
+                            break
+                    if not self._say_reading(предложения[номер], speaker):
+                        break
+                finally:
+                    self._turn_lock().release()
+                состояние["at"] = номер + 1
+                # Пауза между предложениями; попутно проверяется остановка.
+                if стоп.wait(READ_ALOUD_GAP):
+                    break
+        except Exception as exc:
+            self._emit("error", f"чтение вслух: {type(exc).__name__}: {exc}")
+        finally:
+            self._finish_reading(состояние, всего)
+
+    def _say_reading(self, фраза: str, speaker) -> bool:
+        """Одно предложение документа — тем же путём, что реплика ответа.
+
+        Тот же синтез, та же громкость (`_sound_of`), тот же телефон и те же
+        события. Отличие одно: микрофон наглушается не на всё чтение, а на одно
+        предложение — иначе «хватит» посреди документа не услышали бы.
+        """
+        if self._stop.is_set():
+            return False
+        self._ducker.duck()
+        if self._listener is not None:
+            # Слушаем и во время чтения, но только громкое: иначе перебить
+            # можно было бы лишь посреди паузы между предложениями.
+            if config.ALLOW_BARGE_IN:
+                self._listener.listen_while_speaking(config.BARGE_IN_LEVEL)
+            else:
+                self._listener.mute()
+        self._speaking_text = фраза
+        self._tell_phone(state="speaking")
+        try:
+            parts, streamed = self._sound_of(фраза, speaker)
+            try:
+                for wave, rate in parts:
+                    if self._stop.is_set():
+                        break
+                    speaker.say(wave, rate, gap=not streamed)
+            finally:
+                close = getattr(parts, "close", None)
+                if close is not None:
+                    close()
+            if streamed:
+                speaker.pause(config.TTS_GAP)
+        except Exception as exc:
+            self._emit("error", f"синтез: {exc}")
+            return False
+        finally:
+            self._ducker.restore()
+        self._spoke_at = time.monotonic()
+        self._emit("sentence", фраза)
+        self._tell_phone(who="bot", text=фраза)
+        return True
+
+    def _finish_reading(self, состояние: dict, всего: int) -> None:
+        """Чтение кончилось — дочитали или остановились. Строка в журнал.
+
+        Остановленное место остаётся в `_reading`: «продолжи читать» начнёт с
+        него. Строка — с номером предложения и без текста документа: журнал
+        хозяин читает сам, без телефона.
+        """
+        было = self._reading is состояние
+        состояние["активно"] = False
+        стоп = состояние.get("стоп")
+        if self._read_stop is стоп:
+            self._read_stop = None
+        if self._stop.is_set():
+            return
+        if состояние["at"] >= всего:
+            # Дочитали: продолжать нечего, и «продолжи читать» вправе честно
+            # сказать, что читать было нечего.
+            if было:
+                self._reading = None
+            self._open_conversation()
+            return
+        if not было:
+            return
+        self._emit("document_stopped",
+                   f"чтение остановлено на {состояние['at'] + 1} из {всего}")
+        # Окно держим открытым: «продолжи читать» — обычная фраза в разговоре,
+        # и имя звать не надо.
+        self._open_conversation()
+
+    def _remember_reading(self, имя: str) -> None:
+        """В историю отсюда ничего не пишем.
+
+        Чтение запускает инструмент модели внутри хода, и ход сам ложится в
+        историю: его «прочитай вслух …» и её «Читаю «отчёт.pdf».». Своя строка
+        здесь легла бы раньше этого хода и с пустым ответом — часть облаков
+        пустой ответ в истории не принимает (30.09, поймано на ревью). Текст
+        документа в историю не идёт никогда: оттуда он ушёл бы в облако.
+        """
+        return None
+
 
     def begin_dictation(self, hint: str = "") -> bool:
         """Включает режим диктовки заметки. Ничего не говорит.
@@ -1139,6 +1406,28 @@ class VoiceLoop:
         finally:
             self._turn_lock().release()
 
+    def _do_pc(self, order, text: str) -> bool:
+        """Раскладка, музыка или звук компьютера — и голосом, и по-разному.
+
+        Одно место на три команды: разница только в том, что именно зовётся
+        в `core/pc_control.py`, а слова и строка в журнал приходят оттуда
+        одни и те же. Намёк «И так английская» или «раскладки в системе нет»
+        проговаривается как есть — выдумывать успех там нельзя.
+        """
+        from core import pc_control
+
+        if order.action == "layout":
+            what = pc_control.switch_layout(order.kind)
+        elif order.action == "media":
+            what = pc_control.media(order.kind)
+        else:
+            what = pc_control.pc_volume(order.kind, level=order.level)
+        self._emit("pc", what.get("journal", ""))
+        said = what.get("text") or "Не получилось."
+        self._say_back(said)
+        self._remember(text, said)
+        return True
+
     def _do_volume(self, order, text: str) -> bool:
         """Меняет громкость её голоса и сохраняет настройку.
 
@@ -1210,6 +1499,52 @@ class VoiceLoop:
                 self._listener.unmute(keep_seconds=0.2)
             self._ducker.restore()
             self._tell_phone(state=self._idle_state())
+
+    def announce(self, text: str) -> None:
+        """Произносит фразу сама, дождавшись свободного хода.
+
+        Так говорят сработавшие напоминания (core/reminders.py). Отличие от
+        `_say_back` — **ждёт хода**: замок `_turn` берётся до двадцати
+        секунд, и если она сейчас говорит или думает, мы молчим и пробуем
+        позже, а не перебиваем на полуслове. Хозяин в этот момент может
+        говорить с кем-то в комнате, и влезть в его реплику — худшее, что
+        можно сделать.
+
+        Голос выключен — метод молча выходит: напоминание всё равно услышат
+        телефон и журнал пульта, а без синтеза говорить нечем.
+
+        `config.LISTEN_MODE == "off"` (слух выключен) **не мешает**: режим
+        означает «не слушай микрофон», а напоминание он сам просил. Это
+        ровно тот случай, где «не слушает» не значит «молчи».
+        """
+        words = str(text or "").strip()
+        if not words:
+            return
+        if self._voice is None or self._stop.is_set():
+            return
+        lock = self._turn_lock()
+        if not lock.acquire(timeout=ANNOUNCE_WAIT):
+            # Занята целый цикл: хозяин говорит. Лучше промолчать сейчас,
+            # чем влезть в его реплику — пусть напишет, если захочет.
+            self._emit("announce_skipped", words[:80])
+            return
+        try:
+            self._say_back(words)
+            # В историю — так же, как заход первой: не его реплика, а её
+            # собственная, поэтому в память о нём такая строка не идёт
+            # (`Brain.announce` → `_add_turn(first_turn=True)`). Без этой
+            # пометки она через пару реплик забыла бы, что напоминание
+            # вообще сработало.
+            brain = self._brain
+            if brain is not None:
+                try:
+                    brain.announce("(напоминание сработало)", words)
+                except Exception:
+                    pass
+        except Exception as exc:
+            self._emit("error", f"напоминание: {exc}")
+        finally:
+            lock.release()
 
     def _idle_state(self) -> str:
         """Что показать на телефоне, пока она молчит и ждёт."""
@@ -1487,8 +1822,15 @@ class VoiceLoop:
         на 51-й секунде диктовки, телефон пикнул «закрыто», и кружок погас
         вместе со звуком. Диктовка кончается своим сторожем, а `_write_note`
         открывает разговор заново.
+
+        То же и для чтения вслух: документ она читает сама, и «хватит» или
+        «продолжи читать» — обычные фразы в разговоре, а имя звать для них
+        незачем. Само чтение открывает разговор и в конце.
         """
         if self._dictation is not None:
+            return
+        if getattr(self, "_reading", None) is not None and self._reading.get(
+                "активно"):
             return
         if not (self._open and not self.in_conversation):
             return
@@ -1528,6 +1870,77 @@ class VoiceLoop:
                 self._speech_from = time.monotonic()
         else:
             self._speech_from = None
+
+    def _mic_barge(self, level: float = 0.0, floor: float = 0.0) -> None:
+        """Слушатель: его голос поверх её речи — пора замолчать.
+
+        Приходит из потока нарезки фраз, поэтому коротко, без исключений
+        наружу и без тяжёлого: всё, что нужно, — оборвать её речь и записать
+        в журнал, по чему решение принято.
+
+        Галочка «Перебивать сразу» выключена — не обрываем. Пока в Discord
+        или Telegram говорят — тоже: там микрофон слышит чужие голоса, и мы
+        обрывали бы её на чужой реплике.
+        """
+        if not config.BARGE_INSTANT:
+            return
+        if self._talking_app_now():
+            return
+        # Помечаем до `shut_up`: фраза, собирающаяся после обрыва, придёт
+        # в `_should_answer`, и там надо знать, что мы её перебили.
+        self._barged = {"level": float(level), "floor": float(floor)}
+        self.shut_up()
+        self._emit("barge", {"level": float(level), "floor": float(floor)})
+
+    def _barge_settled(self, his: bool, text: str) -> None:
+        """Фраза после перебивания разобрана: его или нет.
+
+        Отметка живёт до разбора фразы: обрыв сам по себе ничего не значит —
+        важно, чья это была речь. Не его — пишем `barge_false` с той же
+        строкой, что у `ignored`: по журналу подбирается `BARGE_RATIO`.
+        """
+        barged = getattr(self, "_barged", None)
+        self._barged = None
+        if not barged or his:
+            return
+        self._emit("barge_false", {
+            "text": str(text)[:60],
+            "level": barged["level"],
+            "floor": barged["floor"],
+        })
+
+    def _talking_app_now(self) -> bool:
+        """Звучит ли сейчас из колонок Discord, Telegram или браузер.
+
+        Отдельный метод, а не переиспользование `_talking_app`: там промежуток
+        берётся по длине уже распознанной фразы, а здесь речи ещё нет — нужно
+        «прямо сейчас», коротким окном в полторы секунды.
+        """
+        meter = getattr(self, "_voice_meter", None)
+        if meter is None or not getattr(meter, "available", False):
+            return False
+        end = time.perf_counter()
+        if meter.share_during(end - 1.5, end, config.VOICE_APP_LEVEL) < config.VOICE_APP_SHARE:
+            return False
+        return bool(meter.loudest_app(end - 1.5, end, config.VOICE_APP_LEVEL))
+
+    def _log_echo(self) -> None:
+        """Строка замера по её речи: во сколько обошёлся фон эха.
+
+        Раз в реплику: по этим числам подбираются `BARGE_RATIO` и
+        `BARGE_MS` на живых цифрах, а не назначаются на глаз — ровно на
+        этом уже обожглись с порогом отбора по голосу.
+        """
+        if self._listener is None:
+            return
+        try:
+            floor, peak = self._listener.echo_measure()
+        except Exception:
+            return
+        if floor <= 0.0 and peak <= 0.0:
+            # Микрофон на её речи не слышал ничего — замерять нечего.
+            return
+        self._emit("echo_level", {"floor": floor, "peak": peak})
 
     def _started_in_window(self, phrase, heard_at) -> bool:
         """Началась ли фраза, пока окно разговора было открыто.
@@ -2068,19 +2481,29 @@ class VoiceLoop:
             self._emit("no_phone", None)
         return self._fallback
 
-    def _send_search(self, query: str, answer: str) -> None:
-        """Отдаёт телефону ответ кнопки поиска: запрос, сказанное и откуда.
+    def _send_search(self, asked: str, answer: str) -> None:
+        """Отдаёт телефону карточку поиска: запрос, сказанное и откуда.
 
-        Источники берём у мозга (`last_sources`) — это ровно то, что пришло
-        из интернета в этом ответе. Голосом ответ уже сказан, телефон
-        покажет его текстом и списком ссылок.
+        Зовётся после **любого** ответа, в котором она ходила в интернет, а
+        не только после кнопки «Найти»: хозяин просил показывать, что она
+        нашла, и тыкать на запрос (30.09).
+
+        Источники и запросы берём у мозга (`last_sources`, `last_queries`) —
+        это ровно то, что пришло из интернета в этом ответе. Запросы в
+        поисковик пишет модель сама, поэтому карточка показывает их, а если
+        их нет (поиск не вышел) — слова хозяина. Голосом ответ уже сказан,
+        телефон покажет его текстом и списком ссылок.
         """
         server = self._server or getattr(self, "_external_server", None)
         if server is None:
             return
         sources = list(getattr(self._brain, "last_sources", None) or [])
+        запросы = [str(q).strip() for q in
+                   (getattr(self._brain, "last_queries", None) or [])
+                   if str(q).strip()]
         try:
-            server.send_search_result(query, answer, sources)
+            server.send_search_result(
+                "; ".join(запросы)[:200] or asked, answer, sources, asked=asked)
         except Exception:
             pass
 
@@ -2113,6 +2536,16 @@ class VoiceLoop:
             return
         try:
             server.send_dictation(bool(on))
+        except Exception:
+            pass
+
+    def _send_hum(self, on: bool, gain: float) -> None:
+        """Фон поиска — телефону. Сервера может не быть: тогда фон в колонках."""
+        server = getattr(self, "_server", None)
+        if server is None:
+            return
+        try:
+            server.send_search_hum(bool(on), float(gain))
         except Exception:
             pass
 
@@ -2218,7 +2651,12 @@ class VoiceLoop:
         # обращение по имени она обязана ответить, закрыть их нельзя.
         was_open = self.in_conversation
         if not self._should_answer(text, phrase, heard_at):
+            # Мы её перебили, а фраза оказалась не его: по журналу видно,
+            # что порог перебивания ниже или отношение к фону меньше.
+            # Её речь не возобновляем — она замолчала, и это правильно.
+            self._barge_settled(False, text)
             return
+        self._barge_settled(True, text)
 
         # Недоговорённая фраза — не отвечаем, а ждём продолжения.
         #
@@ -2237,6 +2675,12 @@ class VoiceLoop:
         # неблокирующе) не влез в его речь. Отпускаем в `finally`: путь
         # отсюда один, а выходов три, и забытый на одном повесил бы голос
         # до перезапуска.
+        #
+        # Чтение вслух обрываем здесь, а не в `shut_up`: между предложениями
+        # динамик молчит, `shut_up` не сработает, и фраза встала бы в очередь
+        # за чтением вместо того, чтобы её прервать. Дальше её ждёт обычный
+        # ответ, а «продолжи читать» вернёт чтение с места.
+        self._stop_reading_flag()
         self._turn_lock().acquire()
         # Ответил — отступ за молчание сбрасывается (он копится, когда на
         # заход первой не ответили), и флажок ожидания снимается.
@@ -2513,6 +2957,10 @@ class VoiceLoop:
                     # Тогда динамик прежний, и говорить в него уже некому.
                     if self._stop.is_set() or self._interrupt.is_set():
                         break
+                if sentence not in FILLERS:
+                    # Пошёл настоящий ответ — фон гаснет, иначе он лезет в
+                    # речь. Фильтром он не считается.
+                    self._hum.stop()
                 parts, streamed = self._sound_of(sentence, speaker)
                 try:
                     for index, (wave, rate) in enumerate(parts):
@@ -2552,7 +3000,16 @@ class VoiceLoop:
                     break
                 if streamed:
                     speaker.pause(config.TTS_GAP)
+                if sentence in FILLERS:
+                    # «Секунду, гляну» сказано — пусть фон встанет следом и
+                    # держит тишину, пока ответ не готов.
+                    from core.phone import PhoneSpeaker
+
+                    self._hum.start(speaker, to_phone=isinstance(speaker, PhoneSpeaker))
         except Exception as exc:
+            # Фон гасим до слов об ошибке: говорить о поломке на фоне
+            # «секунду, гляну» — значит оставить его играть и дальше.
+            self._hum.stop()
             self._emit("error", f"{type(exc).__name__}: {exc}")
             # Молчание в ответ непонятно: не услышала, думает или сломалась.
             # 25 сентября так и сидел: VPN отвалился, а она просто молчала.
@@ -2577,6 +3034,10 @@ class VoiceLoop:
                     else:
                         sentences += self._say_plainly(_trouble_words(exc), speaker)
 
+        # Ответ кончился — любым путём: обычным, ошибкой или тем, что её
+        # перебили. Фон должен уйти здесь, а не остаться до следующего раза.
+        self._hum.stop()
+
         # Модель ответила — связь есть. Снимаем отметку, чтобы следующая фраза
         # снова шла в облако, а не молчала до конца минуты.
         if from_model:
@@ -2591,14 +3052,18 @@ class VoiceLoop:
         # Хвост на затухание эха в комнате, если слушаешь колонками.
         time.sleep(0.25)
         self._ducker.restore()
+        # Замер её речи — до сброса слушателя: дальше фон уже пустой.
+        self._log_echo()
         self._listener.stop_listening_loudly()
         # После телефона в очереди может лежать её последний слог. Раньше
         # сохраняли целую секунду, и он доезжал до STT как новая фраза.
         self._listener.unmute(keep_seconds=0.25)
         self._tell_phone(state="listening")
 
-        # Кнопка поиска: телефон ждал ответа с источниками — отдаём его.
-        if search:
+        # Карточка поиска: телефон ждал ответа с источниками — и после любого
+        # ответа, где она ходила в интернет сама (30.09, хозяин: «после любого
+        # поиска, с касанием»). Без поиска карточка не нужна.
+        if search or getattr(self._brain, "searched", False):
             self._send_search(text, " ".join(spoken))
 
         # Модель решила, что имя прозвучало, а говорили не с ней, и молчала.

@@ -120,7 +120,9 @@ class CloseCommandTests(unittest.TestCase):
             self.assertEqual(got.reply, f"Закрываю {title}.")
 
     def test_without_a_program_it_is_not_a_command(self):
-        for фраза in ("закрой разговор", "выключи голос", "выключи звук",
+        # «выключи звук» из списка убрано: это теперь команда `pc_volume`
+        # (звук компьютера), а не попытка закрыть программу по имени.
+        for фраза in ("закрой разговор", "выключи голос",
                       "выключи свет", "закрой дверь"):
             self.assertIsNone(commands.understand(фраза, APPS), фраза)
 
@@ -411,8 +413,8 @@ class _FakePhone:
         self.results = []
         self.failed = []
 
-    def send_search_result(self, query, answer, sources=None):
-        self.results.append((query, answer, list(sources or [])))
+    def send_search_result(self, query, answer, sources=None, asked=""):
+        self.results.append((query, answer, list(sources or []), asked))
 
     def send_search_fail(self, text):
         self.failed.append(text)
@@ -621,9 +623,23 @@ class SearchButtonTests(unittest.TestCase):
         loop._brain = NS(last_sources=[{"title": "Курс", "host": "cbr.ru",
                                         "url": "https://cbr.ru/x"}])
         loop._send_search("курс доллара", "Девяносто два")
-        query, answer, sources = phone.results[0]
+        query, answer, sources, asked = phone.results[0]
         self.assertEqual((query, answer), ("курс доллара", "Девяносто два"))
+        self.assertEqual(asked, "курс доллара")
         self.assertEqual(sources[0]["host"], "cbr.ru")
+
+    def test_the_query_shown_is_the_one_that_reached_the_search_engine(self):
+        # Запросы пишет модель сама: телефон должен открыть в браузере тот
+        # поиск, который сделала она, а не слова хозяина (30.09).
+        phone = _FakePhone()
+        loop = object.__new__(VoiceLoop)
+        loop._server = phone
+        loop._external_server = None
+        loop._brain = NS(last_sources=[], last_queries=["курс доллара на сегодня"])
+        loop._send_search("ну сколько там доллар", "Девяносто два")
+        query, _answer, _sources, asked = phone.results[0]
+        self.assertEqual(query, "курс доллара на сегодня")
+        self.assertEqual(asked, "ну сколько там доллар")
 
     def test_no_brain_means_no_sources_but_still_an_answer(self):
         phone = _FakePhone()
@@ -658,7 +674,11 @@ class SearchModeTests(unittest.TestCase):
         with mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
             said = list(brain.reply("сколько стоит доллар", search=True))
         self.assertEqual(поиск.call_args[0][0], "web_search")
-        self.assertIn('"query": "сколько стоит доллар"', поиск.call_args[0][1])
+        # Модель запросов не дала (здесь она отвечает «да») — ищем фразу как есть.
+        self.assertEqual(json.loads(поиск.call_args[0][1]),
+                         {"queries": ["сколько стоит доллар"]})
+        # Сразу с текстами верхних страниц: по обрывкам ответить нечем.
+        self.assertEqual(поиск.call_args.kwargs.get("read_pages"), web.READ_TOP)
         # Один запрос к модели, без инструментов и без требования их звать.
         self.assertEqual(len(brain._client.bodies), 1)
         self.assertEqual(_names(brain), [])
@@ -674,7 +694,82 @@ class SearchModeTests(unittest.TestCase):
         brain = _brain([[_chunk("Девяносто два рубля.")]])
         with mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
             list(brain.reply("найди в инете курс доллара", search=True))
-        self.assertIn('"query": "курс доллара"', поиск.call_args[0][1])
+        self.assertEqual(json.loads(поиск.call_args[0][1]), {"queries": ["курс доллара"]})
+
+    # --- Запросы для поисковика пишет модель (как у Perplexica) ------------
+
+    def _переписала(self, ответ):
+        brain = _brain([[_chunk("Вот что нашла.")]])
+        просили = []
+
+        def ask(prompt, *a, **k):
+            просили.append((prompt, k))
+            return NS(choices=[NS(message=NS(content=ответ))])
+
+        brain._ask_plainly = ask
+        return brain, просили
+
+    def test_the_model_writes_the_queries(self):
+        brain, просили = self._переписала(
+            '{"queries": ["новые нейросети сентябрь 2026", "релизы ИИ 2026", "лишний"]}')
+        brain._history.append({"role": "user", "content": "а что там с нейросетями"})
+        with mock.patch.object(config, "WEB_SEARCH_MODE", "free", create=True), \
+                mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
+            list(brain.reply("найди нейросети, которые недавно вышли", search=True))
+        self.assertEqual(json.loads(поиск.call_args[0][1]),
+                         {"queries": ["новые нейросети сентябрь 2026", "релизы ИИ 2026"]})
+        prompt, k = просили[0]
+        # Сегодняшняя дата и разговор — иначе «недавно» и «про него» не понять.
+        self.assertIn(time.strftime("%d.%m.%Y"), prompt)
+        self.assertIn("а что там с нейросетями", prompt)
+        self.assertEqual(k.get("timeout"), brain_module.REWRITE_TIMEOUT)
+        # В истории — что искала на самом деле.
+        ответ = [t for t in brain._history if t["role"] == "assistant"][-1]
+        self.assertEqual(ответ.get("searched"),
+                         ["новые нейросети сентябрь 2026; релизы ИИ 2026"])
+
+    def test_a_broken_rewrite_searches_the_phrase(self):
+        for ответ in ("не json", '{"queries": []}', '{"queries": [5]}'):
+            with self.subTest(ответ=ответ):
+                brain, _ = self._переписала(ответ)
+                with mock.patch.object(config, "WEB_SEARCH_MODE", "free", create=True), \
+                        mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
+                    list(brain.reply("курс доллара", search=True))
+                self.assertEqual(json.loads(поиск.call_args[0][1]),
+                                 {"queries": ["курс доллара"]})
+
+    def test_a_hanging_rewrite_is_not_waited_for(self):
+        # 29.09: облако слало пустые байты, и срок запроса не срабатывал —
+        # поиск ждал больше 20 с. Срок держим снаружи.
+        brain = _brain([[_chunk("Вот что нашла.")]])
+        отпустить = threading.Event()
+        self.addCleanup(отпустить.set)
+        brain._ask_plainly = lambda *a, **k: (отпустить.wait(5), None)[1]
+        начало = time.monotonic()
+        with mock.patch.object(brain_module, "REWRITE_TIMEOUT", 0.2), \
+                mock.patch.object(config, "WEB_SEARCH_MODE", "free", create=True), \
+                mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
+            list(brain.reply("курс доллара", search=True))
+        self.assertLess(time.monotonic() - начало, 2.0)
+        self.assertEqual(json.loads(поиск.call_args[0][1]), {"queries": ["курс доллара"]})
+
+    def test_the_journal_shows_what_the_model_made_of_the_phrase(self):
+        строки = WebRuntime._log_messages("web_queries", {
+            "queries": ["новые нейросети сентябрь 2026", "релизы ИИ 2026"], "took": 2.5})
+        self.assertEqual(строки, ["запросы для поиска (2.5 с): "
+                                  "новые нейросети сентябрь 2026; релизы ИИ 2026"])
+        строки = WebRuntime._log_messages("web_queries", {
+            "queries": ["курс доллара"], "took": 4.0, "error": "TimeoutError: не ответила"})
+        self.assertIn("ищу как сказано: курс доллара", строки[0])
+
+    def test_paid_search_needs_no_rewrite(self):
+        # Платный поиск OpenAI составляет запросы сам: лишние 2 с ни к чему.
+        brain, просили = self._переписала('{"queries": ["x"]}')
+        with mock.patch.object(config, "WEB_SEARCH_MODE", "paid", create=True), \
+                mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
+            list(brain.reply("курс доллара", search=True))
+        self.assertEqual(просили, [])
+        self.assertEqual(json.loads(поиск.call_args[0][1]), {"queries": ["курс доллара"]})
 
     def test_found_text_stays_out_of_the_history(self):
         brain = _brain([[_chunk("Девяносто два рубля.")]])
@@ -684,6 +779,17 @@ class SearchModeTests(unittest.TestCase):
         self.assertEqual(реплика["content"], "сколько стоит доллар")
         ответ = [t for t in brain._history if t["role"] == "assistant"][-1]
         self.assertEqual(ответ.get("searched"), ["сколько стоит доллар"])
+
+    def test_the_wait_covers_the_paid_search(self):
+        # 29.09: быстрый поиск ждал 17 с, платный отвечает до 25 — обрывался.
+        for режим in ("free", "paid", "auto"):
+            with self.subTest(режим=режим), \
+                    mock.patch.object(config, "WEB_SEARCH_MODE", режим, create=True):
+                ждёт = brain_module._search_wait()
+                if режим != "free":
+                    self.assertGreater(ждёт, web.PAID_TIMEOUT)
+                else:
+                    self.assertLess(ждёт, web.PAID_TIMEOUT)
 
     # --- Поисковики не ответили — сразу честный ответ, без второй попытки ---
 

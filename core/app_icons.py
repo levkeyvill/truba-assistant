@@ -204,9 +204,14 @@ def read_any(path: Path):
     значок чему угодно, включая испорченный png, — но это пустой лист
     бумаги. Молча подсунуть его вместо выбранной картинки хуже, чем
     честно сказать, что файл не читается.
+
+    Папка — тоже: значок у неё свой, оболочка рисует его так же, как рисует
+    для программы, а расширения у папки нет и в `PROGRAMS` её не ждёт.
     """
     if not path.exists():
         return None
+    if path.is_dir():
+        return _from_program(path)
     if path.suffix.lower() in PROGRAMS:
         return _from_program(path)
     return _from_picture(path)

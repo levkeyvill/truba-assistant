@@ -16,8 +16,14 @@ OpenRouter, — мы выполняем вызов и возвращаем ре�
                      первым оживает yandex (5–8 с)
 
 То есть бесплатные поисковики быстро начинают отказывать одному адресу.
-Поэтому спрашиваем всех четверых разом и берём первый непустой ответ:
-обычно это yahoo или brave за секунду, а под блокировкой — yandex.
+Поэтому спрашиваем всех разом и берём первый непустой ответ: обычно это
+yahoo или brave за секунду, а под блокировкой — yandex или bing.
+
+29.09, после дня проверок: yahoo, brave, duckduckgo, google, mojeek —
+«No results found» (так выглядит их блокировка), yandex — 11 с, bing —
+3–6 с и с ответом. Bing добавлен пятым: спрашиваем разом, так что
+быстрее он ничего не делает медленнее. SearXNG («свой поисковик») этого
+не лечит — он опрашивает те же поисковики с того же адреса.
 Общий предел — SEARCH_DEADLINE: дольше молчать в голосовом разговоре нельзя.
 
 Платный поиск — встроенный поиск OpenAI (Responses API, модель
@@ -48,9 +54,12 @@ from urllib.parse import urljoin, urlparse
 
 import config
 
-BACKENDS = ("yahoo", "brave", "duckduckgo", "yandex")
+BACKENDS = ("yahoo", "brave", "duckduckgo", "yandex", "bing")
 SEARCH_TIMEOUT = 6
-SEARCH_DEADLINE = 7.0
+# Без блокировки первый ответ приходит за секунду, и предел не играет.
+# Под блокировкой отвечают только yandex и bing — за 4–9 с (29.09), и с
+# прежними 7 с поиск падал, хотя ответ был в пути.
+SEARCH_DEADLINE = 10.0
 MODES = ("free", "paid", "auto")
 # Платный поиск. Модель «Луна» — у OpenAI поиск стоит $10 за тысячу
 # вызовов плюс прочитанное по цене модели, а у неё это $0.10 за миллион.
@@ -63,6 +72,28 @@ MODES = ("free", "paid", "auto")
 PAID_MODEL = "gpt-6-luna"
 PAID_TOOL = {"type": "web_search", "search_context_size": "low"}
 PAID_TIMEOUT = 25.0
+# Сколько раз она ищет за один вопрос. Без предела на широком вопросе
+# («нейросети, которые недавно вышли, топ-5») она искала раз за разом —
+# 41 с, дольше PAID_TIMEOUT, и ответа не было вовсе (29.09). С пределом —
+# 10 с, ответ того же качества.
+PAID_SEARCHES = 1
+# Быстрый поиск читает верхние страницы выдачи сам (`read_top`). Замер
+# 29.09: три страницы параллельно — 1–2 с. Три по 3000 знаков — около
+# двух тысяч токенов, у «Луны» это копейки.
+READ_TOP = 3
+READ_CHARS = 3000
+READ_DEADLINE = 4.0
+# Меньше — это не статья, а заглушка («включите JavaScript», куки,
+# 288 знаков анонса у vc.ru вместо статьи — 29.09).
+READ_MIN = 500
+# Сколько запросов искать разом (`search_many`). У Perplexica до трёх; у
+# нас два: каждый запрос — это все поисковики из BACKENDS сразу, и третий
+# быстрее подводил бы к блокировке, чем добавлял найденного.
+MAX_QUERIES = 2
+# Сколько результатов слитой выдачи отдаём модели.
+MERGED = 8
+# Сколько ждать остальные запросы, когда один уже принёс выдачу.
+MERGE_GRACE = 1.5
 RESULTS = 5
 PAGE_TIMEOUT = 8.0
 # Больше этого со страницы в модель не идёт: каждый знак — это деньги и
@@ -183,7 +214,7 @@ def _ask(backend: str, query: str, max_results: int) -> list[dict]:
 
 
 def search_free(query: str, max_results: int = RESULTS) -> tuple[list[dict], str]:
-    """Бесплатно: все четыре поисковика разом, первый непустой ответ."""
+    """Бесплатно: все поисковики из BACKENDS разом, первый непустой ответ."""
     from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 
     deadline = min(SEARCH_DEADLINE, max(3.0, float(getattr(config, "WEB_SEARCH_BUDGET", 12)) - 1))
@@ -218,14 +249,22 @@ def search_paid(query: str) -> tuple[list[dict], str]:
                     timeout=PAID_TIMEOUT, max_retries=0)
     ask = ("Найди в интернете и перескажи по-русски только факты, 3–6 предложений, "
            f"с датами и числами: {query}")
+    def ask_once(effort: str):
+        body = {"model": PAID_MODEL, "tools": [PAID_TOOL], "input": ask,
+                "reasoning": {"effort": effort}}
+        try:
+            return client.responses.create(**body, max_tool_calls=PAID_SEARCHES)
+        except BadRequestError as exc:
+            if "max_tool_calls" not in str(exc):
+                raise
+        # Сервис ограничения не знает — ищем без него, просто дольше.
+        return client.responses.create(**body)
+
     answer = None
     # Без размышлений быстрее; если модель так не умеет — с короткими.
     for effort in ("none", "low"):
         try:
-            answer = client.responses.create(
-                model=PAID_MODEL, tools=[PAID_TOOL], input=ask,
-                reasoning={"effort": effort},
-            )
+            answer = ask_once(effort)
             break
         except BadRequestError:
             if effort == "low":
@@ -309,15 +348,146 @@ def read_page(url: str, limit: int = PAGE_CHARS) -> str:
     return text
 
 
-def run_tool(name: str, arguments: str, on_event: Event | None = None) -> str:
-    """Выполняет вызов модели. Всегда возвращает строку для сообщения tool."""
+def read_top(results: list[dict], on_event: Event | None = None, count: int = READ_TOP,
+             limit: int = READ_CHARS, deadline: float = READ_DEADLINE) -> list[dict]:
+    """Тексты первых страниц выдачи — все разом, что успело за `deadline`.
+
+    Поисковики отдают обрывки по паре строк, и на вопрос вроде «топ-5
+    нейросетей» по ним ответить нечем (29.09: «подтвердить не получится»).
+    Читаем сами, не дожидаясь, пока модель попросит: страница — это 1–2 с,
+    а лишний круг к модели — столько же плюс её раздумья. Не открылась или
+    пустая — просто без неё. Порядок — как в выдаче.
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
+
+    urls = [str(r.get("url") or "") for r in results if r.get("url")][:count]
+    if not urls:
+        return []
+    texts: dict[str, str] = {}
+    started = time.perf_counter()
+    pool = ThreadPoolExecutor(max_workers=len(urls))
+    try:
+        jobs = {pool.submit(read_page, url, limit): url for url in urls}
+        try:
+            for job in as_completed(jobs, timeout=deadline):
+                try:
+                    text = job.result()
+                except Exception:
+                    continue
+                if len(text) >= READ_MIN:
+                    url = jobs[job]
+                    texts[url] = text
+                    _emit(on_event, "web_page", {"url": url, "chars": len(text),
+                                                 "took": round(time.perf_counter() - started, 2)})
+        except TimeoutError:
+            pass
+    finally:
+        # Не ждём медленных: что успело — то и берём.
+        pool.shutdown(wait=False, cancel_futures=True)
+    return [{"url": url, "text": texts[url]} for url in urls if url in texts]
+
+
+def search_many(queries: list[str], on_event: Event | None = None,
+                read_pages: int = 0) -> str:
+    """Несколько запросов разом, выдачи — вместе. Строка JSON, как у `run_tool`.
+
+    Так ищут Perplexica и Open WebUI: вопрос человека модель переписывает
+    в пару запросов ключевыми словами (`Brain._search_queries`), каждый
+    ищется параллельно. Выдачи сливаются по местам — первые места всех
+    запросов раньше вторых, — повторы по адресу убираются.
+
+    «Сначала бесплатно» здесь — на все запросы сразу: бесплатно не ответил
+    ни один — один платный поиск по первому запросу, а не платный на каждый.
+    """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    queries = list(dict.fromkeys(" ".join(str(q or "").split())[:200] for q in queries))
+    queries = [q for q in queries if q][:MAX_QUERIES]
+    if not queries:
+        return json.dumps({"error": "пустой запрос"}, ensure_ascii=False)
+    mode = getattr(config, "WEB_SEARCH_MODE", "free")
+
+    def one(query: str, how: str) -> tuple[list[dict], str, str]:
+        started = time.perf_counter()
+        try:
+            results, backend = search(query, mode=how)
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            _emit(on_event, "web_failed", {"tool": "web_search", "args": {"query": query},
+                                           "error": error})
+            return [], "", error
+        _emit(on_event, "web_search", {"query": query, "found": len(results), "backend": backend,
+                                       "took": round(time.perf_counter() - started, 2)})
+        return results, backend, ""
+
+    how = "free" if mode == "auto" else mode
+    # Всех не ждём: пришла первая выдача — остальным ещё MERGE_GRACE. 29.09
+    # один запрос ответил за 1.7 с, а второй висел до предела в 10 с, и
+    # ответ ждал его.
+    got: dict[str, tuple[list[dict], str, str]] = {}
+    pool = ThreadPoolExecutor(max_workers=len(queries))
+    try:
+        jobs = {pool.submit(one, query, how): query for query in queries}
+        pending = set(jobs)
+        until = None
+        while pending:
+            left = None if until is None else max(0.0, until - time.monotonic())
+            done, pending = wait(pending, timeout=left, return_when=FIRST_COMPLETED)
+            if not done:
+                break
+            for job in done:
+                got[jobs[job]] = job.result()
+                if got[jobs[job]][0] and until is None:
+                    until = time.monotonic() + MERGE_GRACE
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
+    answers = [got[query] for query in queries if query in got]
+    if mode == "auto" and not any(results for results, _, _ in answers):
+        answers = [one(queries[0], "paid")]
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    for place in range(max(len(results) for results, _, _ in answers)):
+        for results, _, _ in answers:
+            if place >= len(results):
+                continue
+            item = results[place]
+            key = str(item.get("url") or "").rstrip("/") or str(item.get("snippet") or "")
+            if key and key not in seen:
+                seen.add(key)
+                merged.append(item)
+    merged = merged[:MERGED]
+    if not merged:
+        error = "; ".join(e for _, _, e in answers if e) or "пусто"
+        return json.dumps({"error": error}, ensure_ascii=False)
+
+    found: dict = {"query": "; ".join(queries), "results": merged}
+    # Платный уже прочитал и пересказал — читать за ним нечего.
+    if read_pages and all(backend != "openai" for _, backend, _ in answers):
+        pages = read_top(merged, on_event, count=read_pages)
+        if pages:
+            found["pages"] = pages
+    return json.dumps(found, ensure_ascii=False)
+
+
+def _emit(on_event: Event | None, kind: str, payload) -> None:
+    if on_event is not None:
+        try:
+            on_event(kind, payload)
+        except Exception:
+            pass
+
+
+def run_tool(name: str, arguments: str, on_event: Event | None = None,
+             read_pages: int = 0) -> str:
+    """Выполняет вызов модели. Всегда возвращает строку для сообщения tool.
+
+    read_pages — для быстрого поиска: к выдаче сразу тексты стольких верхних
+    страниц (`read_top`). Платному не нужно: он уже прочитал и пересказал.
+    """
 
     def emit(kind: str, payload) -> None:
-        if on_event is not None:
-            try:
-                on_event(kind, payload)
-            except Exception:
-                pass
+        _emit(on_event, kind, payload)
 
     try:
         args = json.loads(arguments or "{}")
@@ -328,12 +498,21 @@ def run_tool(name: str, arguments: str, on_event: Event | None = None) -> str:
 
     started = time.perf_counter()
     try:
+        if name == "web_search" and isinstance(args.get("queries"), list):
+            # Быстрый поиск: запросы уже составлены (`search_many`). Модели
+            # этот вид не показываем — у её инструмента один `query`.
+            return search_many(args["queries"], on_event, read_pages)
         if name == "web_search":
             query = str(args.get("query", ""))
             results, backend = search(query)
             emit("web_search", {"query": query, "found": len(results), "backend": backend,
                                 "took": round(time.perf_counter() - started, 2)})
-            return json.dumps({"query": query, "results": results}, ensure_ascii=False)
+            found = {"query": query, "results": results}
+            if read_pages and backend != "openai":
+                pages = read_top(results, on_event, count=read_pages)
+                if pages:
+                    found["pages"] = pages
+            return json.dumps(found, ensure_ascii=False)
         if name == "read_page":
             url = str(args.get("url", ""))
             text = read_page(url)

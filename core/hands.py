@@ -33,11 +33,14 @@ import random
 import re
 import threading
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Callable
 
 import config
 
+from core import folders
+from core.reminders import KINDS as _REMINDER_KINDS  # виды записи — один на всех
 from core.youtube import KINDS  # виды просьбы к YouTube — список один на всех
 
 NAME = "launch_app"
@@ -49,6 +52,46 @@ YT_NAME = "youtube"
 NOTE_NAME = "save_note"
 READ_NAME = "read_notes"
 DICTATE_NAME = "start_dictation"
+# Раскладка, музыка и звук компьютера: те же дела голосом, но длинными
+# фразами («а ты можешь переключить на английский?») они идут через
+# модель. Исполняет `core/pc_control.py`.
+LAYOUT_NAME = "switch_layout"
+MEDIA_NAME = "media_key"
+PCVOL_NAME = "pc_volume"
+# Все три — всегда в наборе, независимо от apps.json и настроек.
+PC_NAMES = frozenset({LAYOUT_NAME, MEDIA_NAME, PCVOL_NAME})
+# Стандартные папки Windows: «открой загрузки», «открой рабочий стол». Своих
+# папок у хозяина тут нет — они пункты списка «Программы», их открывает
+# `launch_app` вместе с программами.
+FOLDER_NAME = "open_folder"
+# Таймеры и напоминания: время понимает модель (часы у неё есть в каждом
+# запросе), а инструмент только хранит и будит — `core/reminders.py`.
+SET_REM_NAME = "set_reminder"
+LIST_REM_NAME = "list_reminders"
+CANCEL_REM_NAME = "cancel_reminder"
+# Документы хозяина: «перескажи последний скачанный PDF», «что в файле с
+# отчётом?». Читает `core/documents.py`, пересказывает модель — поэтому в
+# `LOCAL` инструмента нет (см. ниже).
+DOC_NAME = "read_document"
+# Откуда брать документ: открытый сейчас в программе (Obsidian, Word,
+# Блокнот), выделенный в проводнике, последний скачанный или по словам
+# названия. Порядок значим — он и в `enum`, и в подсказке модели.
+DOC_WHICH = ("open", "selected", "latest_download", "by_name")
+# Как читаем: `retell` — пересказать своими словами, `aloud` — прочесть вслух
+# её голосом. При `aloud` текст документа идёт прямо в синтез на компьютере и
+# в облако не уходит: модели достаётся только готовая фраза «Читаю …».
+DOC_MODES = ("retell", "aloud")
+# Поиск и открытие файла по названию — по всем дискам («найди файл отчёт»,
+# «открой на диске ц документ договор»). Ищет `core/files.py`, открывает
+# `os.startfile`. В `LOCAL` его нет: когда файл открыт, модель получает
+# готовую фразу и второй круг ей не нужен, а когда файл только найден — второй
+# круг нужен, сказать хозяину, что нашла.
+FIND_NAME = "find_file"
+# Буквы дисков для `drive` — из того же списка, что и открытие диска, иначе
+# модель выдумает диск, которого нет.
+DRIVE_LETTERS = tuple(str(one.get("title", "")).rsplit(" ", 1)[-1]
+                      for one in folders.KNOWN
+                      if str(one.get("id", "")).startswith("drive_"))
 
 # Ключи в brain.actions — те же слова, что в core/commands.py, чтобы словарь
 # читался одинаково с обеих сторон.
@@ -60,13 +103,19 @@ KEY_OF = {SHOT_NAME: "screenshot", MOMENT_NAME: "moment", LOOK_NAME: "look"}
 # ушёл бы ради одного слова «записала». `read_notes` сюда НЕ входит: там
 # модель нужна сама, чтобы пересказать прочитанное хозяину своими словами.
 LOCAL = frozenset({NAME, CLOSE_NAME, SHOT_NAME, MOMENT_NAME, LOOK_NAME, YT_NAME,
-                   NOTE_NAME, DICTATE_NAME})
+                   NOTE_NAME, DICTATE_NAME, LAYOUT_NAME, MEDIA_NAME, PCVOL_NAME,
+                   FOLDER_NAME, SET_REM_NAME, CANCEL_REM_NAME})
 # Инструменты, у которых спрашивается «просил ли он об этом в этой фразе».
 # Проверяется цитатой: модель обязана передать в `because` слова хозяина из
 # его последней реплики, и цитата ищется в самой реплике (см. `asked_for`).
 # `read_notes` тоже: без проверки модель на «а ты можешь?» читала бы ему
-# заметки, которых он не просил, и отвечала бы выдумкой.
-GUARDED = LOCAL | {READ_NAME}
+# заметки, которых он не просил, и отвечала бы выдумкой. `list_reminders`
+# — тоже, хотя сам он не в `LOCAL`: список напоминаний хозяин вправе
+# спросить в любой фразе («что у меня с напоминаниями?»), и без цитаты
+# модель отвечала бы выдуманным списком.
+# `find_file` (`FIND_NAME`) тоже: без его цитаты модель на «а ты можешь
+# найти файл?» сама полезла бы искать по всему диску.
+GUARDED = LOCAL | {READ_NAME, LIST_REM_NAME, DOC_NAME, FIND_NAME}
 # Инструменты, перед которыми спрашиваем у модели: «он правда просил?».
 # Запуск программы, закрытие программы, YouTube — то, что что-то ОТКРЫВАЕТ или
 # ЗАКРЫВАЕТ на экране: ровно они в 27.09 открыли Discord на фразе «Они в
@@ -77,7 +126,23 @@ GUARDED = LOCAL | {READ_NAME}
 # Лишняя секунда проверки (~0.9 с) дешевле такого.
 # Момент (`MOMENT_NAME`) сюда НЕ входит: клип повтора наружу никуда не
 # уходит, в облако уйдёт только слово «нажала». Заметки и диктовка — тоже.
-JUDGED = frozenset({NAME, CLOSE_NAME, YT_NAME, SHOT_NAME, LOOK_NAME})
+# Папки (`FOLDER_NAME`) входят: открытая папка — это окно на экране, ровно как
+# у запуска программы, и лишняя секунда проверки тут дешевле окна, которое
+# открылось само.
+# Напоминания и таймеры сюда НЕ входят: их дело — лежать в файле до срока,
+# наружу (в облако, на экран) не уходит ничего, а хозяин просит их прямо и
+# часто. Судья тут только задержал бы «напомни через двадцать минут» лишней
+# секундой — и на спорном месте могла бы ответить отказом, хотя просьба
+# ясная.
+# Документы (`DOC_NAME`) сюда входят по тому же правилу, что снимок экрана:
+# текст файла уходит в облако целиком, а хозяин может сказать «файл с отчётом
+# попался» в разговоре, в котором просил не о документе. Лишняя секунда
+# проверки тут куда дешевле, чем отдать модели чужой документ.
+# Поиск и открытие файла (`FIND_NAME`) сюда же: открытый файл — это окно на
+# экране, ровно как у запуска программы, а «файл с отчётом попался» в разговоре
+# просьбой открыть его не является.
+JUDGED = frozenset({NAME, CLOSE_NAME, YT_NAME, SHOT_NAME, LOOK_NAME, FOLDER_NAME,
+                    DOC_NAME, FIND_NAME})
 
 # Сколько секунд снимок лежит на телефоне, пока не уберётся сам.
 # Снимок по просьбе — для хозяина: есть время рассмотреть, что у него там.
@@ -300,12 +365,362 @@ DICTATE_TOOL = {
 }
 
 
+
+LAYOUT_TOOL = {
+    "type": "function",
+    "function": {
+        "name": LAYOUT_NAME,
+        "description": (
+            "Переключить раскладку клавиатуры на компьютере хозяина. Зови, "
+            "когда он говорит «переключи на английский», «поменяй раскладку на "
+            "русский», «смени раскладку», «английская раскладка». lang: en — "
+            "английская, ru — русская, next — просто следующая из "
+            "установленных. Сказать «переключила» можно только после ответа "
+            "инструмента: там поле text это уже готовая короткая фраза — "
+            "проговори её и ничего не добавляй. Если в ответе написано, что "
+            "такой раскладки в системе нет или окно её не взяло, скажи это "
+            "честно, а не «переключила»."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "lang": {"type": "string", "enum": ["en", "ru", "next"],
+                         "description": "en — английская, ru — русская, "
+                                        "next — следующая"},
+            },
+            "required": ["lang"],
+        }),
+    },
+}
+
+MEDIA_TOOL = {
+    "type": "function",
+    "function": {
+        "name": MEDIA_NAME,
+        "description": (
+            "Управление музыкой медиа-клавишами: пауза и продолжение, "
+            "следующий трек, предыдущий трек, стоп. Зови на «пауза», «на "
+            "паузу», «сними с паузы», «продолжи музыку», «следующий трек», "
+            "включи следующую песню», «предыдущий трек». Проигрывание "
+            "неизвестно: ответ инструмента — уже готовая фраза, скажи её и "
+            "ничего не добавляй, не выдумывая, что именно играло. Слово "
+            "«клип» — это save_moment, а не сюда."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["play_pause", "next", "previous", "stop"],
+                           "description": "play_pause — пауза и продолжение, "
+                                          "next — следующий трек, previous — "
+                                          "предыдущий, stop — стоп"},
+            },
+            "required": ["action"],
+        }),
+    },
+}
+
+PCVOL_TOOL = {
+    "type": "function",
+    "function": {
+        "name": PCVOL_NAME,
+        "description": (
+            "Громкость звука компьютера и его выключение — то, что хозяин "
+            "слышит в колонках. Зови, когда речь про звук компьютера: «звук "
+            "компа на тридцать», «громче музыку», «сделай музыку потише», "
+            "«выключи звук», «включи звук», «какая громкость». action: set — "
+            "точный уровень в level (0–100), up и down — на step процентов "
+            "(обычно 10), mute — выключить звук, unmute — включить, get — "
+            "узнать. НЕ зови на «тише» и «громче» без слов про компьютер, "
+            "музыку или систему: это громкость её собственного голоса, а не "
+            "компьютера, и та меняется словами без тебя. Сказать «поставила» "
+            "можно только после ответа инструмента: там поле text — готовая "
+            "фраза."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["set", "up", "down", "mute", "unmute", "get"],
+                           "description": "что сделать с громкостью"},
+                "level": {"type": "integer", "minimum": 0, "maximum": 100,
+                          "description": "уровень в процентах, только для set: "
+                                         "«на тридцать» это 30"},
+                "step": {"type": "integer", "minimum": 1, "maximum": 100,
+                         "description": "на сколько процентов для up и down, "
+                                        "обычно 10"},
+            },
+            "required": ["action"],
+        }),
+    },
+}
+
+# Стандартные папки Windows. Набор не зависит ни от apps.json, ни от
+# настроек: они есть у каждого, и «открой загрузки» должно работать сразу.
+# Своих папок хозяина здесь нет — их открывает `launch_app`, они пункты
+# списка «Программы».
+FOLDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": FOLDER_NAME,
+        "description": (
+            "Открыть стандартную папку Windows: загрузки, документы, рабочий "
+            "стол, изображения, музыку, видео или заметки. Зови на «открой "
+            "загрузки», «открой документы», «открой рабочий стол», «открой "
+            "мои заметки». Свои папки хозяина — это пункты списка «Программы», "
+            "их открывает launch_app, сюда их звать не надо. В folder — строго "
+            "id из списка: " + ", ".join(
+                f"{one['title']} ({one['id']})" for one in folders.KNOWN
+            ) + ". Ответ приходит полем text уже готовой фразой — скажи её и "
+            "ничего не добавляй."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "folder": {"type": "string",
+                            "enum": [one["id"] for one in folders.KNOWN],
+                            "description": "какая папка: " + ", ".join(
+                                one["id"] for one in folders.KNOWN)},
+            },
+            "required": ["folder"],
+        }),
+    },
+}
+
+
 # Порядок объявления не меняется: одинаковый набор в каждом запросе нужен не
 # только модели, но и кешу OpenAI — запрос с тем же началом стоит дешевле.
 ACTION_TOOLS = {
     "screenshot": SHOT_TOOL,
     "moment": MOMENT_TOOL,
     "look": LOOK_TOOL,
+}
+
+
+# Раскладка, музыка и звук компьютера в наборе всегда и всегда одними и
+# теми же: их набор не зависит ни от apps.json, ни от того, что умеет
+# голос. Порядок в кортеже значим — на нём держится кеш запроса.
+PC_TOOLS = (LAYOUT_TOOL, MEDIA_TOOL, PCVOL_TOOL)
+
+
+# Таймеры и напоминания. Время понимает модель: в каждом запросе у неё
+# есть часы из системного сообщения, и она передаёт готовые секунды или
+# готовый момент. Разборщиков «через полчаса» здесь нет и быть не должно:
+# «в пять вечера» на той неделе, где пять уже прошло, — это завтра, и
+# выдумывать такое нельзя. Неясно («напомни попозже») — переспросить, а не
+# назначить время наугад.
+SET_REMINDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": SET_REM_NAME,
+        "description": (
+            "Поставить таймер или напоминание. Зови, когда хозяин говорит "
+            "«напомни через двадцать минут вытащить пиццу», «поставь таймер "
+            "на пять минут», «напомни в семь утра встать». ВРЕМЯ СЧИТАЙ САМА "
+            "по часам из системного сообщения (там текущие дата и время) и "
+            "передавай готовым: seconds — целое число секунд от сейчас "
+            "(«через 20 минут» это 1200), at — местное время ISO вида "
+            "2026-09-30T17:00 («в пять вечера» это at на сегодня в 17:00, а "
+            "если 17:00 уже прошло — на завтра; «через час» — это seconds "
+            "3600, а не at). Не передавай оба сразу: сначала seconds, а если "
+            "хозяин назвал час — at. kind: timer — просто «подожди» (таймер на "
+            "чайник), reminder — «не забудь» (напоминание о пицце). text — "
+            "о чём напоминание, его словами, у таймера без слов пусто. say — "
+            "короткая фраза, которую ты произнесёшь, когда позовёт, в твоём "
+            "характере: «Пицца!», «Чайник закипел, хозяин». Не выдумывай "
+            "время, о котором он не сказал: смутное время («попозже», «когда "
+            "освободишься») — переспроси словами, а не ставь наугад. Время "
+            "в прошлом или дальше месяца инструмент не примет — скажи это "
+            "честно и предложи другое. Ответ приходит полем text уже готовой "
+            "фразой («Напомню в 17:00.»): произнеси её и ничего не "
+            "добавляй."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "seconds": {"type": "integer", "minimum": 1,
+                            "description": "Через сколько СЕКУНД от текущего "
+                                           "времени: «через 20 минут» это 1200, "
+                                           "«через час» это 3600"},
+                "at": {"type": "string",
+                       "description": "Местное время срабатывания ISO с "
+                                      "минутами: 2026-09-30T17:00. Только когда "
+                                      "хозяин назвал час, а не «через …»"},
+                "kind": {"type": "string", "enum": list(_REMINDER_KINDS),
+                         "description": "timer — просто подождать, "
+                                        "reminder — не забыть"},
+                "text": {"type": "string",
+                         "description": "О чём напоминать, словами хозяина: "
+                                        "«вытащить пиццу». У таймера без "
+                                        "слов — пусто"},
+                "say": {"type": "string",
+                        "description": "Короткая фраза при срабатывании, в "
+                                       "твоём характере: «Пицца пора!»"},
+            },
+            "required": ["kind"],
+        }),
+    },
+}
+
+LIST_REMINDERS_TOOL = {
+    "type": "function",
+    "function": {
+        "name": LIST_REM_NAME,
+        "description": (
+            "Сказать, какие напоминания и таймеры сейчас стоят. Зови на "
+            "«что у меня с напоминаниями?», «какие таймеры стоят», «что ты "
+            "напомнишь мне?». Ответ приходит списком: во сколько или через "
+            "сколько — о чём. Перескажи хозяину своими словами, коротко; "
+            "пустой список означает, что не стоит ничего, — так и скажи."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }),
+    },
+}
+
+CANCEL_REMINDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": CANCEL_REM_NAME,
+        "description": (
+            "Отменить напоминание или таймер: «отмени таймер», «убери "
+            "напоминание про пиццу», «отмени всё». В id передай id из "
+            "list_reminders (например r1). Не знаешь id — сначала зови "
+            "list_reminders и посмотри, что стоит, и только потом отменяй: "
+            "выдуманный id ничего не отменит, а хозяин будет ждать "
+            "напоминания, которое уже отменено. all: true — отменить всё "
+            "сразу, только когда он сказал «отмени все». Ответ приходит "
+            "полем text уже готовой фразой («Отменила таймер на пиццу.»): "
+            "произнеси её и ничего не добавляй. Ничего не отменилось — "
+            "скажи это честно, не выдумывай."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "id": {"type": "string",
+                       "description": "id из list_reminders: r1, r2…"},
+                "all": {"type": "boolean",
+                        "description": "true — отменить всё сразу. Только "
+                                       "если он прямо сказал «отмени все "
+                                       "напоминания», иначе false"},
+            },
+            "required": [],
+        }),
+    },
+}
+
+# Три напоминания — одним блоком и всегда: их набор не зависит ни от
+# apps.json, ни от настроек голоса. Порядок в кортеже значим — на нём
+# держится кеш запроса, и он не должен зависеть ни от чего.
+REMINDER_TOOLS = (SET_REMINDER_TOOL, LIST_REMINDERS_TOOL, CANCEL_REMINDER_TOOL)
+
+# Документ. Набор не зависит ни от apps.json, ни от настроек: файлы у хозяина
+# есть всегда, а «перескажи последний скачанный PDF» — длинная фраза, мимо
+# мгновенного разбора она идёт только через модель.
+DOC_TOOL = {
+    "type": "function",
+    "function": {
+        "name": DOC_NAME,
+        "description": (
+            "Прочитать документ хозяина — PDF, Word или текст. Зови на "
+            "«прочитай открытый документ», «перескажи то, что у меня открыто», "
+            "«что в этой заметке?», «перескажи последний скачанный PDF», «что в "
+            "файле с отчётом?», «прочитай выделенный документ», «прочитай вслух "
+            "последний скачанный», «зачитай мне это», «продолжи читать». which: "
+            "open — то, что открыто сейчас в программе (Obsidian, Word, "
+            "Блокнот, Notepad++): на «открытый документ», «то, что у меня "
+            "открыто», «эту заметку»; selected — файл, выделенный в окне "
+            "проводника; latest_download — самый новый скачанный; by_name — по "
+            "словам из name («отчёт», «договор»): ищет в загрузках, документах и "
+            "на рабочем столе. mode: retell — пересказать своими словами, это "
+            "обычный случай; aloud — прочесть вслух дословно её голосом, на "
+            "«прочитай вслух», «зачитай», «прочти мне дословно» и на «продолжи "
+            "читать». При retell ответ приходит полем text — это сам текст "
+            "документа: перескажи его хозяину коротко, своими словами; на его "
+            "вопрос отвечай по этому тексту, а не по своим догадкам, и не "
+            "выдумывай того, чего в тексте нет. Если cut true — скажи, что "
+            "прочитала только начало. Если unsaved true — в редакторе есть "
+            "несохранённые правки, скажи об этом одной фразой: читается "
+            "сохранённый файл. При aloud текста документа тебе НЕ придёт и в "
+            "облако он не уходит: его читает она сама, а в ответе будет "
+            "готовая фраза «Читаю «отчёт.pdf».» — произнеси её и ничего не "
+            "добавляй. Прервать чтение можно словами «хватит» или «стоп», "
+            "продолжить — «продолжи читать» (тогда mode: aloud и resume: "
+            "true). Читать не вышло — в ответе будет причина: скажи её хозяину "
+            "и не сочиняй содержимое."
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "which": {"type": "string", "enum": list(DOC_WHICH),
+                          "description": "откуда брать документ: open — "
+                                         "открытый сейчас в программе, "
+                                         "selected — выделенный в проводнике, "
+                                         "latest_download — последний "
+                                         "скачанный, by_name — по названию"},
+                "name": {"type": "string",
+                         "description": "Слова названия файла, только для "
+                                        "by_name: «отчёт», «счёт за март»"},
+                "mode": {"type": "string", "enum": list(DOC_MODES),
+                         "description": "retell — пересказать (по умолчанию), "
+                                        "aloud — прочесть вслух её голосом"},
+                "resume": {"type": "boolean",
+                           "description": "true — только вместе с mode: "
+                                          "aloud, когда он сказал «продолжи "
+                                          "читать»: начать с того места, где "
+                                          "чтение остановилось. Иначе false"},
+            },
+            "required": ["which"],
+        }),
+    },
+}
+
+
+# Поиск файла по названию. Набор не зависит ни от apps.json, ни от настроек:
+# файлы у хозяина есть всегда, а «открой на диске ц документ договор» — длинная
+# фраза, мимо мгновенного разбора она идёт только через модель.
+FIND_TOOL = {
+    "type": "function",
+    "function": {
+        "name": FIND_NAME,
+        "description": (
+            "Найти файл хозяина по названию на любом диске и открыть его в "
+            "программе по умолчанию. Зови на «найди файл отчёт», «открой на "
+            "диске ц документ договор», «открой файл план ремонта», «где файл "
+            "со счётом?». В name — слова названия, без расширения и без пути: "
+            "«отчёт», «счёт за март». В drive — буква диска, только когда он "
+            "сам назвал диск («на диске ц»), иначе пусто: искать везде. open: "
+            "true — открыть найденное, но только если файл один; нашлось "
+            "несколько — переспроси хозяина, какой. Ответ приходит полями name, "
+            "path и folder — это где он лежит; если открывала, скажи поле text "
+            "как есть («Открыла «отчёт.docx».») и ничего не добавляй. Нашлось "
+            "несколько — назни имена и папки и спроси, какой открыть. Не "
+            "нашлось — так и скажи, файл не выдумывай. Программы, ярлыки и "
+            "скрипты (.exe, .bat, .lnk, .ps1) по названию не открываются — "
+            "для них launch_app"
+        ),
+        "parameters": _with_because({
+            "type": "object",
+            "properties": {
+                "name": {"type": "string",
+                         "description": "Слова названия файла, как хозяин его "
+                                        "называет: «отчёт», «план ремонта»"},
+                "drive": {"type": "string",
+                          "enum": [""] + list(DRIVE_LETTERS),
+                          "description": "буква диска, только если он назвал "
+                                         "диск: " + ", ".join(DRIVE_LETTERS) +
+                                         "; иначе пусто — искать везде"},
+                "open": {"type": "boolean",
+                         "description": "true — открыть найденное в программе "
+                                        "по умолчанию, если оно одно. Иначе "
+                                        "false"},
+            },
+            "required": ["name"],
+        }),
+    },
 }
 
 
@@ -358,23 +773,30 @@ def _app_param(named: list[tuple[str, str]]) -> dict:
 
 
 def tool(apps: list[dict]) -> dict:
-    """Объявление инструмента для модели. `enum` — id программ из `apps.json`."""
+    """Объявление инструмента для модели. `enum` — id программ из `apps.json`.
+
+    Свои папки хозяина лежат в том же списке, и открываются так же — поэтому
+    при них описание говорит «программа или папка»: иначе модель, увидев в
+    `enum` папку, решила бы, что это опечатка, и не открыла бы её.
+    """
     named = _named(apps)
     if not named:
         raise ValueError("запускать нечего: список программ пуст")
+    есть_папки = any(str(app.get("kind", "")) == "folder" for app in apps)
+    что = "программу или папку" if есть_папки else "программу"
 
     return {
         "type": "function",
         "function": {
             "name": NAME,
             "description": (
-                "Запустить программу на компьютере хозяина. Список другой не "
+                f"Запустить {что} на компьютере хозяина. Список другой не "
                 "будет: " + ", ".join(f"{title} ({app_id})" for app_id, title in named) +
-                ". Сопоставь, как он назвал программу вслух, с её названием в "
+                ". Сопоставь, как он назвал это вслух, с названием в "
                 "скобках, и передай именно его в app. Ничего, чего здесь нет, "
                 "запустить нельзя: тогда прямо скажи, что не можешь, и назови, "
-                "что можешь. Вызывай, только когда он просит запустить или "
-                "открыть одну из этих программ."
+                f"что можешь. Вызывай, только когда он просит запустить или "
+                f"открыть одну из этих программ{' или папок' if есть_папки else ''}."
             ),
             "parameters": _app_param(named),
         },
@@ -529,6 +951,32 @@ def action_words(name: str, args: dict) -> str:
         return "сделать снимок экрана и показать его на телефоне"
     if name == LOOK_NAME:
         return "посмотреть на его экран (снимок экрана уйдёт тебе в облако)"
+    if name == FOLDER_NAME:
+        # Судье нужна папка словами, а не её id: он не видит перечисления.
+        return f"открыть папку «{folders.title_of(args.get('folder'))}»"
+    if name == FIND_NAME:
+        # Судье нужны слова и буква диска, а не перечисление: он их не видит.
+        что = str(args.get("name") or "").strip()
+        диск = str(args.get("drive") or "").strip()
+        куда = f" на диске {диск}" if диск else ""
+        if bool(args.get("open")):
+            return f"найти и открыть файл «{что}»{куда}"
+        return f"найти файл «{что}»{куда}"
+    if name == DOC_NAME:
+        # Судье обязано быть сказано, что наружу уходит текст документа: он
+        # решает, просил ли хозяин, а не то, чем это кончится. И словами, а не
+        # перечислением — `selected` он не поймёт.
+        which = str(args.get("which") or "").strip()
+        откуда = {"open": "открытый у него документ",
+                  "selected": "выделенный в проводнике файл",
+                  "latest_download": "последний скачанный файл",
+                  "by_name": f"файл «{str(args.get('name') or '').strip()}»"}.get(
+                      which, "файл")
+        if str(args.get("mode") or "retell") == "aloud":
+            # Вслух текст в облако не уходит, но файл всё равно чужой: судья
+            # решает, просил ли хозяин, а не то, что она скажет вслух.
+            return f"прочитать документ ({откуда}) вслух, без пересказа"
+        return f"прочитать документ ({откуда}) и пересказать его хозяину"
     return str(name or "")
 
 
@@ -758,6 +1206,95 @@ def run_close(
     return _ok(ok=True, app=app_id, text=f"закрыто: {what}")
 
 
+def run_folder(arguments: str, on_event: Event | None = None) -> str:
+    """Открывает стандартную папку по вызову модели. Строка — для tool.
+
+    То же самое, что голосовая команда «открой загрузки»: тот же
+    `core/folders.py` и та же строка в журнал «папка: Загрузки», поэтому оба
+    пути хозяин видит одинаково. Своих папок тут нет — они в `launch_app`.
+    """
+
+    def emit(kind: str, payload) -> None:
+        if on_event is not None:
+            try:
+                on_event(kind, payload)
+            except Exception:
+                pass
+
+    try:
+        args = json.loads(arguments or "{}")
+        if not isinstance(args, dict):
+            raise ValueError
+    except ValueError:
+        return _error("аргументы не разобрались как JSON")
+
+    folder_id = str(args.get("folder") or "").strip()
+    what = folders.open_folder(folder_id)
+    emit("folder" if what.get("ok") else "folder_failed",
+         folders.title_of(folder_id))
+    if not what.get("ok"):
+        return _error(str(what.get("text") or "папку не открыла"))
+    remember_done(FOLDER_NAME, arguments)
+    # Путь в облако не отдаём: в нём имя пользователя Windows, модели он ни к чему.
+    return _ok(ok=True, folder=folder_id, text=what["text"])
+
+
+def run_find_file(arguments: str, on_event: Event | None = None) -> str:
+    """Ищет файл по названию и, если просили, открывает. Строка — для tool.
+
+    Пути в облако уходят без имени пользователя Windows (`core/files.py`): в
+    пути имя человека, а модели оно ни к чему. Найдено одно — имя, путь и папка;
+    открывали — ещё и готовая фраза для голоса. Нашлось несколько — имена с
+    папками, чтобы модель переспросила, а не выбрала наугад.
+    """
+    emit = _rem_emit(on_event)
+    args = _rem_args(arguments)
+    if args is None:
+        return _error("аргументы не разобрались как JSON")
+
+    слова = str(args.get("name") or "").strip()
+    if not слова:
+        return _error("название файла не названо — спроси хозяина, что найти")
+
+    from core import files
+
+    try:
+        что = files.find(слова, str(args.get("drive") or "").strip())
+    except Exception as exc:
+        return _error(f"не искала файл: {type(exc).__name__}: {exc}")
+    found = list(что.get("found") or [])
+    if not found:
+        emit("file_missing", слова)
+        return _error(str(что.get("why") or "не нашла файла"))
+
+    if len(found) > 1:
+        # Нашлось несколько — открывать нечего: сначала хозяин скажет, какой.
+        emit("file_found", ", ".join(one.name for one in found))
+        return _ok(ok=True, count=len(found),
+                   searched_all=bool(что.get("searched_all")),
+                   candidates=[{"name": one.name,
+                                "folder": files.папка_пути(one)} for one in found],
+                   text="", why=str(что.get("why") or ""))
+
+    один = found[0]
+    if not bool(args.get("open")):
+        emit("file_found", один.name)
+        return _ok(ok=True, count=1, name=один.name,
+                   path=files.короткий(один), folder=files.папка_пути(один),
+                   searched_all=bool(что.get("searched_all")), text="",
+                   why=str(что.get("why") or ""))
+
+    открыт = files.open_file(один)
+    if not открыт.get("ok"):
+        emit("file_found", f"{один.name} — {открыт.get('text')}")
+        return _error(str(открыт.get("text") or "не открыла файл"))
+    emit("file_opened", один.name)
+    remember_done(FIND_NAME, arguments)
+    return _ok(ok=True, count=1, opened=True, name=один.name,
+               path=files.короткий(один), folder=files.папка_пути(один),
+               text=str(открыт.get("text")))
+
+
 def run_youtube(arguments: str, on_event: Event | None = None) -> str:
     """Открывает ролик, канал или выдачу YouTube. Строка — для сообщения tool.
 
@@ -951,6 +1488,406 @@ def run_dictation(arguments: str, actions: dict | None = None) -> str:
     return _ok(ok=True, hint=hint, text=DICTATION_START)
 
 
+# --- Напоминания и таймеры -------------------------------------------------
+
+
+def _rem_due(args: dict, now=None):
+    """Момент срабатывания из `seconds` или `at`. None — время не названо.
+
+    `seconds` — целое число от текущего момента, `at` — местное время ISO.
+    Порядок именно такой: «через двадцать минут» модель передаёт секундами,
+    а назвала час — `at`, и обе формы сразу она не передаёт (см. описание
+    инструмента). Разборщиков «через полчаса» тут нет и не будет: время
+    понимает модель, у неё часы в каждом запросе.
+    """
+    from core import reminders
+
+    base = reminders.local_now() if now is None else now
+    seconds = args.get("seconds")
+    if isinstance(seconds, bool):
+        return None
+    if isinstance(seconds, (int, float)):
+        try:
+            count = int(round(float(seconds)))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return reminders.parse(base) + timedelta(seconds=count)
+    at = str(args.get("at") or "").strip()
+    if not at:
+        return None
+    try:
+        return reminders.parse(at)
+    except ValueError:
+        return None
+
+
+def journal_line(record: dict, minutes: int) -> str:
+    """Строка в журнал пульта: «напоминание: 17:00 — вытащить пиццу»."""
+    from core import reminders
+
+    moment = reminders.parse(record.get("due"))
+    when = moment.strftime("%H:%M")
+    if str(record.get("kind") or "") == reminders.KIND_TIMER:
+        return f"таймер: {int(minutes or record.get('minutes') or 0)} мин"
+    text = str(record.get("text") or "").strip()
+    return f"напоминание: {when} — {text}" if text else f"напоминание: {when}"
+
+
+def confirm_phrase(record: dict) -> str:
+    """Готовая фраза, которую проговорит голос вместо второго круга.
+
+    Таймер — «Таймер на пять минут пошёл.» (словами, `speech_text`),
+    напоминание — «Поставила на семнадцать часов ровно.». Обе короткие:
+    за ними модель всё равно не говорит ничего, а хозяину ждать второго
+    круга в облако незачем.
+    """
+    from core import reminders
+
+    if str(record.get("kind") or "") == reminders.KIND_TIMER:
+        # Меньше минуты — секундами: «таймер на тридцать секунд», а не «на
+        # одну минуту» (минуты в записи округлены вверх до одной).
+        left = (reminders.parse(record.get("due"))
+                - reminders.parse(record.get("created"))).total_seconds()
+        if 0 < left < 60:
+            return f"Таймер на {reminders.seconds_said(round(left))} пошёл."
+        minutes = int(record.get("minutes") or 0)
+        if minutes > 0:
+            return f"Таймер на {reminders.minutes_said(minutes)} пошёл."
+        return "Таймер пошёл."
+    return f"Напомню {reminders.when_said(record.get('due'))}."
+
+
+def cancel_phrase(record: dict) -> str:
+    """«Отменила напоминание про пиццу.» — фраза для голоса."""
+    from core import reminders
+
+    if str(record.get("kind") or "") == reminders.KIND_TIMER:
+        return "Отменила таймер."
+    text = str(record.get("text") or "").strip()
+    return f"Отменила напоминание: {text}." if text else "Отменила напоминание."
+
+
+def _rem_emit(on_event: Event | None):
+    """Оборачивает отправку события: сбой пульта не должен ронять ответ."""
+    def emit(kind: str, payload) -> None:
+        if on_event is not None:
+            try:
+                on_event(kind, payload)
+            except Exception:
+                pass
+    return emit
+
+
+def _rem_args(arguments: str):
+    """Аргументы вызова или None, если они не JSON. None — не молчать."""
+    try:
+        args = json.loads(arguments or "{}")
+    except ValueError:
+        return None
+    return args if isinstance(args, dict) else None
+
+
+def run_set_reminder(arguments: str, on_event: Event | None = None) -> str:
+    """Ставит напоминание или таймер по вызову модели. Строка — для tool.
+
+    Ответ — тот же словарь, что у остальных инструментов, и `text` в нём
+    это **готовая фраза** для голоса: «Поставила на семнадцать часов ровно.»
+    либо «Таймер на пять минут пошёл.». Числа словами — через
+    `core/speech_text.py`, как везде, где речь уходит в синтез.
+    """
+    emit = _rem_emit(on_event)
+    from core import reminders
+
+    args = _rem_args(arguments)
+    if args is None:
+        return _error("аргументы не разобрались как JSON")
+
+    due = _rem_due(args)
+    if due is None:
+        return _error(
+            "время не названо. Передай seconds (через сколько секунд) или at "
+            "(местное время вида 2026-09-30T17:00). Не выдумывай время, "
+            "о котором хозяин не говорил, — спроси его"
+        )
+
+    kind = str(args.get("kind") or "").strip()
+    if kind not in _REMINDER_KINDS:
+        return _error(
+            f"вид такой не знаю: {kind or '(пусто)'}. Есть только "
+            + " и ".join(_REMINDER_KINDS)
+        )
+    text = str(args.get("text") or "").strip()
+    # Таймер без слов — обычное дело («поставь таймер на пять минут»), а
+    # напоминание без текста означало бы «напомни не о чём».
+    if kind == "reminder" and not text:
+        return _error("о чём напоминать — не сказано. Спроси хозяина, о чём")
+
+    left = int(round((due - reminders.local_now()).total_seconds()))
+    minutes = max(1, round(left / 60.0))
+    try:
+        record = reminders.add(
+            due, text=text, say=str(args.get("say") or ""),
+            kind=kind, minutes=minutes)
+    except ValueError as exc:
+        # Отказ хранилища («это время уже прошло», дальше месяца, больше
+        # двадцати) уходит модели строкой: перескажет хозяину сама. Молча
+        # проглотить нельзя — он будет ждать напоминания, которого нет.
+        emit("reminder_failed", str(exc))
+        return _error(f"не поставила: {exc}")
+    except Exception as exc:
+        return _error(f"не поставила: {type(exc).__name__}: {exc}")
+
+    # Строка в журнал пульта — та же, что у голосовых команд: хозяин видит
+    # одно и то же в обоих путях.
+    emit("reminder", journal_line(record, minutes))
+    return _ok(ok=True, id=record["id"], due=record["due"], kind=kind,
+               text=confirm_phrase(record))
+
+
+def run_list_reminders(arguments: str, on_event: Event | None = None) -> str:
+    """Отдаёт модели список того, что стоит. Строка — для tool.
+
+    **Не в `LOCAL`**: модель нужна сама, чтобы пересказать список хозяину
+    своими словами. Второй круг тут не на пустом месте — в ответе время и
+    текст каждой записи, и пересказать их лучше она.
+    """
+    from core import reminders
+
+    now = reminders.local_now()
+    items = []
+    for one in reminders.pending():
+        try:
+            moment = reminders.parse(one.get("due"))
+        except ValueError:
+            continue
+        items.append({
+            "id": str(one.get("id", "")),
+            "kind": str(one.get("kind") or ""),
+            "at": moment.strftime("%d.%m %H:%M"),
+            "in_seconds": int(round((moment - now).total_seconds())),
+            "text": str(one.get("text") or ""),
+        })
+    if not items:
+        return _ok(ok=True, items=[], count=0,
+                   text="ничего не стоит — напомнить не о чем")
+    return _ok(ok=True, items=items, count=len(items), text="; ".join(
+        f"{one['at']} — {one['text'] or 'таймер'}" for one in items))
+
+
+def run_cancel_reminder(arguments: str, on_event: Event | None = None) -> str:
+    """Отменяет напоминание по id или всё. Строка — для tool.
+
+    Модель знает id из `list_reminders` — об этом сказано в описании
+    инструмента. Выдуманный id не отменяет ничего, и врать об отмене
+    нельзя: в ответе честно, сколько отменила.
+    """
+    emit = _rem_emit(on_event)
+    from core import reminders
+
+    args = _rem_args(arguments)
+    if args is None:
+        return _error("аргументы не разобрались как JSON")
+
+    everything = bool(args.get("all"))
+    one_id = str(args.get("id") or "").strip()
+    if not everything and not one_id:
+        return _error(
+            "нечего отменять: не указан id. Сначала зови list_reminders, "
+            "посмотри, что стоит, и передай id оттуда. «Отмени всё» — это "
+            "all: true"
+        )
+    try:
+        gone = reminders.cancel("all" if everything else one_id)
+    except Exception as exc:
+        return _error(f"не отменила: {type(exc).__name__}: {exc}")
+    if not gone:
+        emit("reminder_cancel", "ничего не отменилось")
+        return _error(
+            f"не отменено: нет такого id ({one_id}). Посмотри list_reminders "
+            "и повтори с id оттуда"
+        )
+    for record in gone:
+        emit("reminder_cancel", journal_line(record, 0))
+    if everything and len(gone) > 1:
+        return _ok(ok=True, count=len(gone), ids=[r["id"] for r in gone],
+                   text=f"Отменила всё — {len(gone)} штук.")
+    record = gone[0]
+    return _ok(ok=True, count=len(gone), id=str(record.get("id", "")),
+               text=cancel_phrase(record))
+
+
+# --- Документы ------------------------------------------------------------
+
+
+def run_document(arguments: str, on_event: Event | None = None,
+                 actions: dict | None = None) -> str:
+    """Читает документ по вызову модели. Строка — для сообщения tool.
+
+    **Не в `LOCAL`**: модель нужна сама, чтобы пересказать прочитанное хозяину
+    своими словами — второй круг тут не на пустом месте, в ответе сам текст
+    документа. В `JUDGED` — по тому же правилу, что снимок экрана: текст
+    файла уходит в облако.
+
+    Исключение — `mode: aloud` («прочитай вслух»). Там текст документа уходит
+    не модели, а прямо в синтез на компьютере, и в облако не попадает вовсе:
+    модель получает готовую фразу «Читаю «отчёт.pdf».» и второй круг ей не
+    нужен (см. `confirm_forms`). Голос выключен — честный отказ, а не
+    обещание: читать некому, и пересказать словами она может.
+
+    В журнал уходят только имя, страницы и знаки: сам текст документа — не
+    в журнал, не в историю и никуда, кроме синтеза на компьютере.
+    """
+    from core import documents
+
+    emit = _rem_emit(on_event)
+
+    args = _rem_args(arguments)
+    if args is None:
+        return _error("аргументы не разобрались как JSON")
+
+    which = str(args.get("which") or "").strip()
+    if which not in DOC_WHICH:
+        return _error(
+            "не поняла, какой документ читать. which строго из списка: "
+            + ", ".join(DOC_WHICH)
+        )
+    mode = str(args.get("mode") or "retell").strip() or "retell"
+    if mode not in DOC_MODES:
+        return _error("не поняла, как читать: mode строго из списка: "
+                      + ", ".join(DOC_MODES))
+    # Продолжение — только для чтения вслух: пересказывать с середины фразы
+    # нельзя, а продолжить читать с места остановки — самое то.
+    resume = bool(args.get("resume"))
+    if resume and mode != "aloud":
+        return _error("продолжить можно только чтение вслух: mode: aloud "
+                      "и resume: true")
+    if mode == "aloud":
+        return _run_aloud(args, emit, actions, resume)
+
+    try:
+        выбран = documents.pick(which, str(args.get("name") or ""))
+    except Exception as exc:
+        return _error(f"не нашла документ: {type(exc).__name__}: {exc}")
+    if not выбран.get("ok"):
+        emit("document_failed", str(выбран.get("why") or "не нашла документ"))
+        return _error(str(выбран.get("why") or "не нашла документ"))
+
+    try:
+        прочитан = documents.read_text(выбран["path"])
+    except Exception as exc:
+        emit("document_failed", f"{type(exc).__name__}: {exc}")
+        return _error(f"не прочитала документ: {type(exc).__name__}: {exc}")
+    if not прочитан.get("ok"):
+        emit("document_failed", str(прочитан.get("why") or "не прочитала"))
+        return _error(str(прочитан.get("why") or "не прочитала документ"))
+    if not str(прочитан.get("text") or "").strip():
+        emit("document_failed", "пусто")
+        return _error("в документе нет текста — пересказывать нечего")
+
+    # В журнал — только размеры. Текст документа туда не уходит никогда.
+    emit("document", documents.journal_line(прочитан))
+    return _ok(ok=True, name=str(прочитан.get("name") or ""),
+               pages=int(прочитан.get("pages") or 0),
+               chars=int(прочитан.get("chars") or 0),
+               cut=bool(прочитан.get("cut")),
+               # Только для `open`: в редакторе есть несохранённые правки, и
+               # модель обязана сказать об этом одной фразой — читается
+               # сохранённый файл.
+               unsaved=bool(выбран.get("unsaved")),
+               text=str(прочитан.get("text") or ""))
+
+
+def _run_aloud(args: dict, emit, actions: dict | None, resume: bool) -> str:
+    """Чтение вслух: читает голосовой цикл, модели достаётся только фраза.
+
+    Голос выключен — действия `read_aloud` в словаре нет, и это честный отказ,
+    а не «прочитала». Так же и на «продолжи читать», когда продолжать нечего:
+    отказ приходит из голосового цикла, он один и знает, где остановилась.
+    """
+    from core import documents
+
+    action = (actions or {}).get("read_aloud")
+    if not callable(action):
+        return _error("голос выключен, читать вслух нечем — перескажу словами")
+
+    if resume:
+        # Файл заново не трогаем: чтение уже начато, текст у голосового цикла.
+        try:
+            начато = action(None, "", True)
+        except Exception as exc:
+            return _error(f"не вышло: {type(exc).__name__}: {exc}")
+        if not _началось(начато):
+            return _error("я ничего не читала — нечего продолжать")
+        имя = str(начато[1] if isinstance(начато, tuple) else "") or "документ"
+        emit("document_aloud", f"продолжаю вслух: {имя}")
+        return _ok(ok=True, name=имя, text=f"Продолжаю читать «{имя}».")
+
+    try:
+        выбран = documents.pick(str(args.get("which") or ""),
+                                str(args.get("name") or ""))
+    except Exception as exc:
+        return _error(f"не нашла документ: {type(exc).__name__}: {exc}")
+    if not выбран.get("ok"):
+        emit("document_failed", str(выбран.get("why") or "не нашла документ"))
+        return _error(str(выбран.get("why") or "не нашла документ"))
+    try:
+        прочитан = documents.read_text(выбран["path"])
+    except Exception as exc:
+        emit("document_failed", f"{type(exc).__name__}: {exc}")
+        return _error(f"не прочитала документ: {type(exc).__name__}: {exc}")
+    if not прочитан.get("ok"):
+        emit("document_failed", str(прочитан.get("why") or "не прочитала"))
+        return _error(str(прочитан.get("why") or "не прочитала документ"))
+
+    имя = str(прочитан.get("name") or "")
+    try:
+        начато = action(str(прочитан.get("text") or ""), имя, False)
+    except Exception as exc:
+        emit("document_failed", f"{type(exc).__name__}: {exc}")
+        return _error(f"не вышло: {type(exc).__name__}: {exc}")
+    if not _началось(начато):
+        # Голос текст принял, но читать не смог: пустой файл, сбой синтеза.
+        emit("document_failed", "нечего читать вслух")
+        return _error("прочитать вслух не вышло — перескажу словами")
+    # Текста документа в ответе нет и здесь: в облако он не идёт ни при каких
+    # обстоятельствах. Только имя файла и то, что читает голос.
+    emit("document_aloud", documents.journal_aloud_line(прочитан))
+    return _ok(ok=True, name=имя, pages=int(прочитан.get("pages") or 0),
+               text=f"Читаю «{имя}».")
+
+
+def _началось(ответ) -> bool:
+    """Запустилось ли чтение вслух. Ответ — `True` или кортеж с именем файла."""
+    if isinstance(ответ, tuple):
+        return bool(ответ[0])
+    return bool(ответ)
+
+
+def confirm_forms(call: dict) -> tuple | None:
+    """Формы подтверждения для вызова — или None, если нужен второй круг.
+
+    У всех инструментов это `CONFIRM` по имени, а у `read_document` — по
+    `mode`: при `aloud` модель получает готовую фразу, и второй круг в облако
+    идти не должен (текст документа в облако не уходит вообще). При `retell`
+    второй круг нужен: пересказать прочитанное должна она сама.
+    """
+    имя = str(call.get("name") or "")
+    if имя == FIND_NAME:
+        # Второй круг нужен всегда, кроме одного случая: файл открыт, и модель
+        # получила готовую фразу. Нашлось несколько или не нашлось ничего —
+        # это ей сказать хозяину своими словами.
+        args = _rem_args(call.get("args") or "")
+        if args is None or not bool(args.get("open")):
+            return None
+        return ("{text}",)
+    if имя == DOC_NAME:
+        args = _rem_args(call.get("args") or "")
+        if args is None or str(args.get("mode") or "retell") != "aloud":
+            return None
+        return ("{text}",)
+    return CONFIRM.get(имя)
+
+
 def _folded(text: str) -> str:
     return re.sub(r"[^0-9a-zA-Zа-яё]+", " ", (text or "").lower().replace("ё", "е")).strip()
 
@@ -1027,6 +1964,24 @@ CONFIRM = {
     # Диктовка: поле `text` — это ровно то, что хозяину и нужно услышать
     # («Диктуй. Скажешь «всё» — запишу.»), и говорит это голос, не модель.
     DICTATE_NAME: ("{text}",),
+    # Раскладка, музыка и звук компьютера — как YouTube и заметки: ответ
+    # приходит полем `text` уже готовой фразой («Нажала паузу.», «Теперь
+    # английская раскладка.», «Звук компьютера — тридцать процентов.»),
+    # и проговаривает его голос, а не модель.
+    LAYOUT_NAME: ("{text}",),
+    MEDIA_NAME: ("{text}",),
+    PCVOL_NAME: ("{text}",),
+    # Папка — как YouTube и заметки: поле `text` уже содержит «Открыла
+    # загрузки.», и проговаривает его голос, а не модель.
+    FOLDER_NAME: ("{text}",),
+    # Напоминание и таймер — то же самое: `text` приходит уже готовой
+    # фразой («Поставила на семнадцать часов ровно.», «Таймер на пять минут
+    # пошёл.»), и проговаривает её голос. Модель за этим инструментом не
+    # говорит ничего, а ждать второго круга в облако ради слова «поставила»
+    # незачем. `list_reminders` сюда НЕ входит: там модель нужна, чтобы
+    # пересказать список хозяину своими словами.
+    SET_REM_NAME: ("{text}",),
+    CANCEL_REM_NAME: ("{text}",),
 }
 
 
@@ -1101,7 +2056,10 @@ def confirm(calls: list[dict], apps: list[dict] | None = None,
     one = len(calls) == 1
     parts: list[str] = []
     for call in calls:
-        forms = CONFIRM.get(call.get("name", ""))
+        # Формы — по `confirm_forms`, а не по `CONFIRM`: у `read_document` они
+        # зависят от `mode` (при `aloud` второй круг не нужен, при `retell` —
+        # нужен), и имя инструмента тут уже ничего не говорит.
+        forms = confirm_forms(call)
         if forms is None:
             return ""
         try:

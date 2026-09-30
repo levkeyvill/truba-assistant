@@ -18,7 +18,8 @@ from pathlib import Path
 
 import config
 from core import (app_icons, autostart, bookmarks, launcher, memory, notes, phone,
-                  replay, settings, speaker, usage, voices_install, weather)
+                  replay, reminders, settings, speaker, usage, voices_install,
+                  weather)
 
 SAFE = Path(tempfile.mkdtemp(prefix="truba-tests-"))
 atexit.register(shutil.rmtree, SAFE, True)
@@ -66,6 +67,9 @@ phone.KEY_FILE = SAFE / "phone_key.txt"
 # Список программ хозяина: с 29.09 битый файл уезжает в карантин, и тест с
 # испорченным списком не должен добраться до настоящего.
 launcher.APPS_FILE = SAFE / "apps.json"
+# Напоминания и таймеры: тест ставит их пачками, и файл в живой `data/`
+# после прогона означал бы, что хозяину остались чужие напоминания.
+reminders.PATH = SAFE / "reminders.json"
 
 
 class DataGuardTests(unittest.TestCase):
@@ -77,7 +81,7 @@ class DataGuardTests(unittest.TestCase):
                      usage.USAGE_PATH, usage.OPENROUTER_PRICES_PATH,
                      usage.USD_RUB_PATH, weather.CACHE_PATH,
                      voices_install.LOG_PATH, phone.VIEWPORT_FILE, phone.KEY_FILE,
-                     launcher.APPS_FILE,
+                     launcher.APPS_FILE, reminders.PATH,
                      autostart.STARTUP_DIR, notes.root()):
             self.assertTrue(str(path).startswith(str(SAFE)), path)
 

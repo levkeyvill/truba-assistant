@@ -224,6 +224,9 @@ def resolve(item: dict) -> str | None:
 
 MENU_LAUNCH = "launch"
 KINDS = ("hotkey", "site")
+# Виды самих кнопок в apps.json. `folder` — своя папка хозяина: у неё, как у
+# программы, есть только путь, и открывается она так же — проводником.
+APP_KINDS = ("app", "url", "store", "folder")
 
 
 def read_menu(item: dict) -> list[dict]:
@@ -498,6 +501,24 @@ def open_url(app_id: str, url: str) -> tuple[bool, str]:
     return False, f"нет такой кнопки: {app_id}"
 
 
+def open_web(url: str) -> tuple[bool, str]:
+    """Открывает адрес в браузере по умолчанию — тем же, что закладки.
+
+    Не в конкретной программе: телефон просит открыть на компьютере запрос из
+    карточки поиска, и хозяин ждёт его в том браузере, которым сам пользуется.
+
+    Только `http`/`https`: адрес приходит из интернета, и `file:` или
+    `javascript:` открывать ему нельзя (как в `open_url`).
+    """
+    if not isinstance(url, str) or not url.startswith(("http://", "https://")):
+        return False, f"не открываю такой адрес: {str(url)[:60]}"
+    try:
+        os.startfile(url)
+        return True, "браузер"
+    except Exception as exc:
+        return False, f"браузер: {exc}"
+
+
 def run_menu(app_id: str, key: str, marks: list[dict] | None = None) -> tuple[bool, str]:
     """Выполняет пункт меню, названный телефоном. Возвращает (вышло, что)."""
     if key == MENU_LAUNCH:
@@ -556,6 +577,16 @@ def load() -> list[dict]:
                 ready.append(entry)
             continue
 
+        if kind == "folder":
+            # Своя папка хозяина. Кнопку не убираем, даже если папки нет: иначе
+            # она молча исчезла бы и из настроек, и хозяин не понял бы, куда
+            # делась. Проводник об этом честно скажет при нажатии.
+            path = str(item.get("path") or "").strip()
+            if path:
+                entry["path"] = path
+                ready.append(entry)
+            continue
+
         path = resolve(item)
         if path:
             entry["path"] = path
@@ -601,12 +632,25 @@ def decorate_menus(apps: list[dict], on_error=None) -> list[dict]:
 
 
 def launch(app_id: str) -> tuple[bool, str]:
-    """Запускает программу или открывает ссылку. Возвращает (получилось, что именно)."""
+    """Запускает программу, открывает ссылку или папку.
+
+    Возвращает (получилось, что именно).
+    """
     for item in load():
         if item["id"] != app_id:
             continue
 
         try:
+            if item["kind"] == "folder":
+                # Папка открывается так же, как её открывает сам проводник, —
+                # права не нужны. Нет папки — честно говорим, а не открываем
+                # ничего похожего.
+                path = Path(item["path"])
+                if not path.is_dir():
+                    return False, f"папки «{item['title']}» нет"
+                os.startfile(str(path))
+                return True, item["title"]
+
             if item["kind"] == "url":
                 os.startfile(item["url"])
                 return True, item["title"]
@@ -827,6 +871,11 @@ def close(app_id: str) -> tuple[bool, str]:
 
     if kind == "url":
         return False, f"{title} — это вкладка в браузере, её не закрываю"
+
+    if kind == "folder":
+        # Искать окно проводника не будем: проводников у человека бывает
+        # несколько, а закрыть не тот — значит закрыть не то, что он просил.
+        return False, f"{title} — папку закрыть не могу"
 
     if kind == "store":
         # У магазинного приложения своего имени у процесса нет: имя

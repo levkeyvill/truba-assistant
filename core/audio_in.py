@@ -12,6 +12,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -51,6 +52,26 @@ TAIL_KEPT = 1.0
 # не отличает, а сообщений за фразу получается немного: по WebSocket столько
 # лишних сообщений только жгли бы связь с телефоном.
 VOICE_EVERY = 0.1
+
+# --- Замер эха во время её речи --------------------------------------------
+#
+# Пока она говорит, микрофон слышит и её собственный голос из динамика
+# телефона. Сравнивать его речь с порогом бесполезно: порог один на всех, а
+# эхо у разных телефонов разное. Поэтому меряем фон — насколько громко
+# слышно её, пока молчит хозяин, — и перебиваем только то, что заметно
+# выше этого фона.
+#
+# Сколько последних кусков держим и каким процентилем берём фон: 80-й, а не
+# максимум, иначе один щелчок поднимет фон и следующее перебивание
+# перестанет срабатывать.
+ECHO_FLOOR_CHUNKS = 60
+ECHO_FLOOR_PERCENTILE = 80
+# Сколько её речи должно пройти, прежде чем фон вообще можно сравнивать.
+# Раньше этого микрофон ничего не показал, и сравнивать не с чем.
+ECHO_FLOOR_MIN = 0.5
+# Ниже этой громкости (RMS) перебиванием не считаем ничего: это тишина
+# комнаты, а не голос. Порог «во сколько раз громче фона» — config.BARGE_RATIO.
+BARGE_MIN_RMS = 0.01
 # Громкость, при которой рамка считается «громко». Дальше она не растёт:
 # иначе тихий голос и крик выглядели бы одинаково.
 VOICE_FULL = 0.08
@@ -128,6 +149,15 @@ class Listener:
     # Классом, а не в `__post_init__` — по той же причине, что и `on_voice`.
     last_level: float = 0.0
 
+    # Куда сообщать «его можно перебить прямо сейчас»: его громкость и фон её
+    # собственного голоса, с которым его сравнили. Классом — по той же
+    # причине, что и `on_voice`.
+    on_barge: Callable[[float, float], None] | None = None
+
+    # Замер последней её речи — пик микрофона на ней. Фон берётся отдельно,
+    # методом `echo_measure`: он нужен один раз за реплику, в журнал.
+    last_echo_peak: float = 0.0
+
     _queue: queue.Queue = field(default_factory=lambda: queue.Queue(maxsize=200))
     _muted: threading.Event = field(default_factory=threading.Event)
     _stop: threading.Event = field(default_factory=threading.Event)
@@ -165,6 +195,32 @@ class Listener:
         # порог подбирался по живым замерам, а не назначался на глаз —
         # ровно на этом уже обожглись с отбором по голосу.
         self.last_start_peak = 0.0
+        self._reset_echo()
+
+    # --- Замер эха и мгновенное перебивание ---------------------------------
+
+    def _reset_echo(self) -> None:
+        """Забыть замер её прошлой речи.
+
+        Вызывается на каждой её реплике и когда микрофон перестаёт слушать
+        громко: фон новой реплики начинается с нуля, иначе перебивание
+        сравнивалось бы с эхом той, прошлой.
+        """
+        self._echo: deque[float] = deque(maxlen=ECHO_FLOOR_CHUNKS)
+        self._echo_samples = 0
+        self._barge_run: deque[float] = deque()
+        self._barge_fired = False
+        self.last_echo_peak = 0.0
+
+    def echo_measure(self) -> tuple[float, float]:
+        """Замер её последней речи: (фон, пик).
+
+        Отдельный метод, а не поля: голосовой цикл спрашивает замер перед
+        `stop_listening_loudly`, который замер обнуляет. По этим двум
+        числам в журнале и подбираются пороги — назначать их на глаз уже
+        обожглись с отбором по голосу.
+        """
+        return float(self._echo_floor()), float(self.last_echo_peak)
 
     # --- Заглушка на время своей речи -------------------------------------
 
@@ -182,13 +238,17 @@ class Listener:
         """
         self._muted.clear()
         self._barge_threshold = threshold
+        # Новая её реплика — фон эха прежний больше не годится.
+        self._reset_echo()
 
     def stop_listening_loudly(self) -> None:
         self._barge_threshold = 0.0
+        self._reset_echo()
 
     def unmute(self, keep_seconds: float = TAIL_KEPT) -> None:
         self._muted.clear()
         self._vad.reset()
+        self._reset_echo()
         # Накопленное за время своей речи выбрасываем — но не всё.
         #
         # Раньше чистилась вся очередь, и это стирало начало фразы: человек
@@ -297,6 +357,92 @@ class Listener:
         except Exception:
             pass
 
+    def _barge(self, level: float, floor: float) -> None:
+        """Говорит подписчику, что хозяина можно перебить прямо сейчас.
+
+        Ошибку глотаем целично, как в `_voice`: перебивание — украшение,
+        а микрофон от неё не зависит.
+        """
+        hook = getattr(self, "on_barge", None)
+        if hook is None:
+            return
+        try:
+            hook(float(level), float(floor))
+        except Exception:
+            pass
+
+    def _echo_floor(self) -> float:
+        """Фон её голоса: 80-й процентиль громкости за последние ~2 секунды.
+
+        Процентиль, а не максимум: щелчок мыши поднял бы максимум, и после
+        него перестало бы срабатывать всё подряд. Пусто — 0.0, сравнивать
+        тогда не с чем, и сработать нечему.
+        """
+        if not self._echo:
+            return 0.0
+        ordered = sorted(self._echo)
+        index = min(len(ordered) - 1,
+                    int(ECHO_FLOOR_PERCENTILE / 100.0 * (len(ordered) - 1)))
+        return float(ordered[index])
+
+    def _echo_add(self, level: float) -> None:
+        """Кладёт кусок в фон её голоса."""
+        self._echo.append(float(level))
+        self._echo_samples += VAD_HOP
+
+    def _watch_barge(self, level: float, prob: float) -> None:
+        """Следит за микрофоном, пока она говорит.
+
+        VAD назвал кусок речью — он идёт в окно кандидата на перебивание
+        шириной `BARGE_MS`. Куски, которые из окна вытеснились, уходят в фон:
+        пока кандидат не начался, в окне лежит её собственный голос из
+        динамика, и только он. Так фон набирается даже когда она говорит без
+        единой паузы, а его собственный «голос» фон себе поднять не может.
+
+        Срабатывает один раз за её реплику: когда окно заполнено его речью
+        (`prob ≥ SPEECH_ON`) и её медиана заметно выше фона.
+        """
+        if self._barge_fired:
+            return
+
+        # Пик запоминаем всегда: по нему журнал показывает, сколько микрофон
+        # слышал на её речи, даже если перебивания так и не вышло.
+        if level > self.last_echo_peak:
+            self.last_echo_peak = float(level)
+
+        # Окно нечётное: на чётном медиана усредняет две середины, и на
+        # полуокне «эхо + его голос» получается ровно половина — ровно тот
+        # случай, когда обрывать рано.
+        need = max(1, int(float(config.BARGE_MS) / 1000.0 * config.SAMPLE_RATE
+                          / VAD_HOP))
+        need += 1 - need % 2
+
+        if prob < SPEECH_ON:
+            # Тишина посреди её речи: кандидат оборвался (щелчок, кашель), и
+            # этот кусок — уже её голос, его в фон.
+            self._barge_run.clear()
+            self._echo_add(level)
+            return
+
+        self._barge_run.append(float(level))
+        # Окно скользит, а не растёт: вытесненное уходит в фон.
+        while len(self._barge_run) > need:
+            self._echo_add(self._barge_run.popleft())
+        if len(self._barge_run) < need:
+            return
+
+        median = float(np.median(self._barge_run))
+        # Фон берём до проверки: он должен быть набран, иначе сравнивать
+        # не с чем — первые полсекунды её речи уходят на разогрев.
+        if self._echo_samples < int(ECHO_FLOOR_MIN * config.SAMPLE_RATE):
+            return
+        floor = self._echo_floor()
+        # Порог перебивания из настроек (`_barge_threshold`) — это пик, а здесь
+        # RMS: сравнивать их нельзя. Нижняя граница — почти тишина.
+        if median >= max(BARGE_MIN_RMS, floor * float(config.BARGE_RATIO)):
+            self._barge_fired = True
+            self._barge(median, floor)
+
     def _may_start(self, preroll: np.ndarray) -> bool:
         """Можно ли начинать фразу прямо сейчас.
 
@@ -358,6 +504,16 @@ class Listener:
                 self.last_level = voice_level(chunk)
 
                 prob = self._vad.probability(chunk)
+
+                # Пока она говорит — меряем её эхо и ждём его голоса. Идёт
+                # по каждому куску, а не по началу фразы: перебивание должно
+                # случиться, пока она ещё замолчала не успел.
+                if self._barge_threshold > 0:
+                    # Линейная громкость (RMS), а не `voice_level`: та сжата
+                    # корнем для подсветки, и «в 2.5 раза громче фона» на ней
+                    # значило бы «в 6 раз» на деле (30.09, ревью).
+                    rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64))))
+                    self._watch_barge(rms, prob)
 
                 if not speaking:
                     preroll = np.concatenate([preroll, chunk])[-preroll_len:]
