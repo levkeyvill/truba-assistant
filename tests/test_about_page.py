@@ -119,7 +119,8 @@ class РазделОПрограммеTests(unittest.TestCase):
         # не было. Разметка оттуда не подставляется: только `textContent`.
         рисование = self._блок("function обнНарисовать(")
         self.assertIn("эл.обнЗаметки.textContent = обнПроверка.notes", рисование)
-        self.assertIn("эл.обнНазвание.textContent = обнПроверка.title", рисование)
+        self.assertIn("обнПроверка.state === 'latest'", рисование)
+        self.assertIn("эл.обнНазвание.textContent = 'Что изменилось в версии '", рисование)
         self.assertNotIn("innerHTML", рисование)
         форма = self._форма()
         # `лист.innerHTML = ''` — очистка листа, а не разметка с сервера.

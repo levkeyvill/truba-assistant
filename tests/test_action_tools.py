@@ -219,14 +219,17 @@ class ToolSetTests(unittest.TestCase):
         # «перескажи последний скачанный PDF» — длинная фраза, которой
         # незачем идти в облако на уточнение. Поиск файла по названию — сразу за
         # документами: он тоже всегда, и «открой на диске ц документ» — длинная
-        # фраза, которой незачем идти в облако.
+        # фраза, которой незачем идти в облако. Питание компьютера — сразу за
+        # буфером обмена и тоже всегда: «выключи компьютер» незачем уводить
+        # в облако на уточнение, а сам инструмент только задаёт вопрос.
         self.assertEqual(
             names, [hands.NAME, hands.CLOSE_NAME, hands.YT_NAME, hands.NOTE_NAME,
                     hands.READ_NAME, hands.LAYOUT_NAME, hands.MEDIA_NAME,
                     hands.PCVOL_NAME, hands.FOLDER_NAME, hands.SET_REM_NAME,
                     hands.LIST_REM_NAME, hands.CANCEL_REM_NAME,
-                    hands.DOC_NAME, hands.FIND_NAME, hands.SHOT_NAME,
-                    hands.MOMENT_NAME, hands.LOOK_NAME]
+                    hands.DOC_NAME, hands.FIND_NAME, hands.CLIP_NAME,
+                    hands.POWER_NAME,
+                    hands.SHOT_NAME, hands.MOMENT_NAME, hands.LOOK_NAME]
         )
         self.assertEqual(self._names_for("а ты можешь снять скрин?"), names)
 

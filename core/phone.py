@@ -841,6 +841,16 @@ class PhoneServer:
                 return JSONResponse(res, status_code=400)
             return JSONResponse(res)
 
+        # Только чтение: проверить, что это настоящий процесс пульта.
+        # Никакого HTTP-пути для включения питания нет.
+        @app.get("/api/power/status")
+        async def api_power_status(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            from core import power
+            return JSONResponse({"ok": True, "runtime": power.live_runtime()},
+                                headers=NO_CACHE)
+
         @app.post("/api/settings/clear-history")
         async def api_settings_clear(request: Request):
             if not _local(request):

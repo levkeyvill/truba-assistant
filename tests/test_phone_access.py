@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 import config
-from core import phone, weather
+from core import phone, power, weather
 from core.phone import PhoneServer
 
 ROOT = Path(config.ROOT)
@@ -114,6 +114,16 @@ class ServerAccessTests(unittest.TestCase):
 
     def test_this_computer_still_gets_the_state(self):
         self.assertEqual(self.здесь.get("/state").status_code, 200)
+
+    def test_power_status_is_read_only_and_local(self):
+        power.reset()
+        self.assertEqual(self.вдали.get("/api/power/status").status_code, 403)
+        ответ = self.здесь.get("/api/power/status")
+        self.assertEqual(ответ.status_code, 200)
+        self.assertEqual(ответ.json(), {"ok": True, "runtime": False})
+        self.assertEqual(self.здесь.post("/api/power/arm").status_code, 404)
+        self.assertEqual(self.здесь.post("/api/power/disarm").status_code, 404)
+        self.assertFalse(power.live_runtime())
 
     def test_the_phone_page_itself_is_open(self):
         # Страница и версия нужны телефону до всякого ключа.

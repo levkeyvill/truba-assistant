@@ -202,7 +202,7 @@ def показать_уже_запущенный() -> bool:
 def запустить(в_трей: bool = False) -> None:
     import webview
 
-    from core import settings
+    from core import power, settings
     from core.phone import PhoneServer
 
     settings.apply_to_config()
@@ -232,6 +232,12 @@ def запустить(в_трей: bool = False) -> None:
     сервер.attach(среда.handle_event)
 
     сервер.start()
+
+    # Только настоящий запущенный пульт может вызвать системное питание.
+    # Отдельные проверки и файловая копия Cline импортируют тот же модуль,
+    # но не проходят эту точку входа.
+    if __name__ == "__main__":
+        power.enable_live_runtime()
 
     # Нагрузка железа для карточек и для телефона. Тот же поток, что и
     # раньше: он шлёт снимок в страницу телефона, а пульт спрашивает сам.
@@ -290,6 +296,7 @@ def запустить(в_трей: bool = False) -> None:
             окно.hidden = False
         webview.start(icon=значок_окна())
     finally:
+        power.disable_live_runtime()
         прибраться()
 
 
