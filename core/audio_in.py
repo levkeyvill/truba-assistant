@@ -101,6 +101,34 @@ def voice_level(chunk: np.ndarray) -> float:
 LEVEL_CHUNK_SECONDS = 0.05
 
 
+def peak_level(track, rate) -> float:
+    """Насколько громко звучала запись — 0…1, та же шкала, что у полоски.
+
+    Считаем максимум по кускам `LEVEL_CHUNK_SECONDS`, а не по всей записи
+    целиком. Три секунды с паузами между словами дают низкий средний уровень,
+    и обычная речь выглядела бы «тихой», хотя микрофон её прекрасно слышит.
+    """
+    трек = np.asarray(track)
+    hop = max(1, int(float(rate) * LEVEL_CHUNK_SECONDS))
+    лучший = 0.0
+    for начало in range(0, len(трек), hop):
+        лучший = max(лучший, voice_level(трек[начало:начало + hop]))
+    return лучший
+
+
+def record_own(device, channels: int, rate: int, frames: int, extra=None):
+    """Записать `frames` кадров СВОИМ потоком: массив (кадры, каналы).
+
+    Не `sd.rec`: он общий на весь процесс, как и `sd.play` у голоса в
+    колонки (`core/audio_out.py::play_own`, там же история падения 02.10).
+    Свой `InputStream` ничей звук не обрывает.
+    """
+    with sd.InputStream(device=device, channels=channels, samplerate=rate,
+                        dtype="float32", extra_settings=extra) as stream:
+        data, _overflowed = stream.read(int(frames))
+    return data
+
+
 def measure_level(device, channel: int = 0, seconds: float = 0.25) -> float:
     """Уровень 0…1 одного микрофона коротким замером.
 
@@ -116,17 +144,12 @@ def measure_level(device, channel: int = 0, seconds: float = 0.25) -> float:
     # иначе Windows на двухвходовом устройстве возьмёт не тот канал.
     channels = min(каналов, channel + 1)
     rate, extra = _rate_for(device, info, channels)
-    recorded = sd.rec(int(rate * seconds), samplerate=rate, channels=channels,
-                      dtype="float32", device=device, blocking=True,
-                      extra_settings=extra)
+    recorded = record_own(device, channels, rate, int(rate * seconds), extra)
     track = recorded[:, min(channel, channels - 1)]
     if not len(track):
         raise RuntimeError("микрофон не отдал звук")
-    hop = max(1, int(rate * LEVEL_CHUNK_SECONDS))
-    лучший = 0.0
-    for начало in range(0, len(track) - hop + 1, hop):
-        лучший = max(лучший, voice_level(track[начало:начало + hop]))
-    return лучший
+    # Громкость — самая громкая часть замера, а не средняя по нему.
+    return peak_level(track, rate)
 
 
 def _rate_for(device, info, channels) -> tuple:

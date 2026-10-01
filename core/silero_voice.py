@@ -10,6 +10,11 @@ r"""Синтез речи через Silero v5 — основной движок
 
 from __future__ import annotations
 
+import hashlib
+import os
+import shutil
+from pathlib import Path
+
 import numpy as np
 
 import config
@@ -30,6 +35,10 @@ MAX_CHARS = 900
 
 MODELS_LIST_URL = "https://raw.githubusercontent.com/snakers4/silero-models/master/models.yml"
 DOWNLOAD_ATTEMPTS = 3
+BUNDLED_MODEL = "v5_5_ru"
+# Официальная модель Silero v5.5, проверенная загрузкой на CPU. В полном ZIP
+# она лежит в models/silero; исходники на GitHub по-прежнему без модели.
+BUNDLED_MODEL_SHA256 = "50081637b602126ee06cb3bc8a744d25651d2da149ee8864b9a379bfdd934437"
 # Сколько ждём следующего куска данных. Не всей загрузки: 140 МБ на медленном
 # интернете идут минутами, а вот тишина в минуту — это уже обрыв.
 READ_TIMEOUT = 60.0
@@ -63,6 +72,30 @@ def _download(url: str, target, attempts: int = DOWNLOAD_ATTEMPTS) -> None:
     raise RuntimeError(f"не скачалось {url}: {last}")
 
 
+def _install_bundled_model(model_name: str, model_dir: Path) -> bool:
+    """Взять официальный голос из полного ZIP, если он в нём есть."""
+    if model_name != BUNDLED_MODEL:
+        return False
+    bundled = config.MODELS_DIR / "silero" / f"{model_name}.pt"
+    if not bundled.is_file():
+        return False
+    digest = hashlib.sha256()
+    with bundled.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != BUNDLED_MODEL_SHA256:
+        raise RuntimeError("Файл голоса Silero в архиве повреждён. Распакуй архив заново.")
+    model_dir.mkdir(parents=True, exist_ok=True)
+    target = model_dir / f"{model_name}.pt"
+    part = target.with_suffix(".pt.part")
+    try:
+        shutil.copyfile(bundled, part)
+        os.replace(part, target)
+    finally:
+        part.unlink(missing_ok=True)
+    return True
+
+
 def _models_list():
     """Путь к списку моделей silero — там же, где его ищет сам silero."""
     import os
@@ -85,6 +118,17 @@ def ensure_model(model_name: str, language: str = "ru") -> None:
     самому silero: пусть скачает, как умеет (лучше медленно, чем никак).
     """
     import os
+
+    # У полного установочного ZIP модель уже внутри. Пользователь не должен
+    # зависеть от доступности отдельного сервера Silero на первом запуске.
+    if language == "ru" and model_name == BUNDLED_MODEL:
+        import silero.silero as package
+
+        bundled_dir = Path(package.__file__).parent / "model"
+        if (bundled_dir / f"{model_name}.pt").is_file():
+            return
+        if _install_bundled_model(model_name, bundled_dir):
+            return
 
     try:
         from omegaconf import OmegaConf

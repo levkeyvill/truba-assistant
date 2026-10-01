@@ -38,6 +38,7 @@ PowerShell 5.1 ломает именно VBScript, поэтому пишем ASC
 """
 
 import hmac
+import json
 import os
 import secrets
 import socket
@@ -89,7 +90,10 @@ def install_id() -> str:
     ключ = _прочитать(ID_FILE, default="").strip()
     if len(ключ) >= ID_MIN:
         return ключ
-    ключ = secrets.token_urlsafe(12)
+    # 64 шестнадцатеричных знака — как у установщика: `Труба.vbs` признаёт
+    # отпечатком другой копии только такой (`ValidInstallId`). Было
+    # `token_urlsafe(12)` — 16 знаков другого вида (01.10).
+    ключ = secrets.token_hex(32)
     _записать(ID_FILE, ключ)
     return ключ
 
@@ -360,11 +364,16 @@ def кто_на_порте(номер: int | None = None) -> str:
 
 
 def _это_пульт_трубы(порт: int) -> bool:
-    """Отвечает ли на порту что-то похожее на пульт Трубы (любой версии)."""
+    """Есть ли на порту ответ старого пульта с его известной структурой."""
     try:
         with urllib.request.urlopen(
             f"http://{HOST}:{int(порт)}/api/runtime", timeout=TIMEOUT
         ) as ответ:
-            return ответ.status == 200
-    except (urllib.error.URLError, OSError, ValueError):
+            if ответ.status != 200:
+                return False
+            данные = json.load(ответ)
+            return (isinstance(данные, dict)
+                    and данные.get("ok") is True
+                    and all(ключ in данные for ключ in ("voice", "events", "overview")))
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
         return False

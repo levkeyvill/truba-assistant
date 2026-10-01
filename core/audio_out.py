@@ -14,6 +14,36 @@ import numpy as np
 import sounddevice as sd
 
 
+def play_own(wave, sample_rate: int, device: int | None = None) -> None:
+    """Проиграть звук СВОИМ потоком и дождаться конца.
+
+    `sd.play`/`sd.rec`/`sd.wait`/`sd.stop` — одни на весь процесс: новый
+    вызов из другого потока обрывает предыдущий прямо посреди работы. 02.10
+    так упал test5: «Прослушать» в мастере (`sd.play`) наложилось на замер
+    полоски (`sd.rec`), и Windows закрыла пульт с повреждением памяти
+    (0xc0000374); повтор дал и зависания. Ими пользуется только `Speaker`
+    ниже — всё остальное открывает свой `OutputStream`, который никого не
+    трогает и никем не обрывается.
+    """
+    data = np.asarray(wave, dtype=np.float32)
+    if data.ndim == 1:
+        data = data.reshape(-1, 1)
+    extra = None
+    try:
+        info = sd.query_devices(device if device is not None else sd.default.device[1])
+        api = sd.query_hostapis(info["hostapi"])["name"]
+        # WASAPI в общем режиме берёт только частоту микшера Windows; без
+        # пересчёта запись микрофона на 44,1 кГц в колонки на 48 кГц не пошла бы.
+        if "wasapi" in api.lower() and hasattr(sd, "WasapiSettings"):
+            extra = sd.WasapiSettings(auto_convert=True)
+    except Exception:
+        extra = None
+    with sd.OutputStream(device=device, channels=data.shape[1],
+                         samplerate=int(sample_rate), dtype="float32",
+                         extra_settings=extra) as stream:
+        stream.write(data)
+
+
 class Speaker:
     # Куски здесь играются по одному через sd.play — между ними щель.
     # Поэтому поток по кускам сюда не шлём, только целые предложения.

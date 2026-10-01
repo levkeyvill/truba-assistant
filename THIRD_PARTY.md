@@ -2,8 +2,10 @@
 
 Код в этом репозитории — сама Труба (её лицензия — в файле `LICENSE`).
 **Модели в репозиторий не входят:** установщик и пульт скачивают их с
-Hugging Face и GitHub. У каждой модели своя лицензия, и её условия
-действуют на тебя, когда ты ей пользуешься.
+Hugging Face и серверов авторов. Полный установочный ZIP может включать
+неизменённую модель голоса Silero, чтобы установка не зависела от доступности
+её сервера. У каждой модели своя лицензия, и её условия действуют на тебя,
+когда ты ей пользуешься.
 
 ## Главное
 
@@ -20,7 +22,7 @@ Hugging Face и GitHub. У каждой модели своя лицензия, 
 
 | Что | Зачем в Трубе | Лицензия |
 |---|---|---|
-| [Silero TTS](https://github.com/snakers4/silero-models) (`v5_5_ru`) | голос по умолчанию, на процессоре | CC BY-NC-SA 4.0 — некоммерческое использование с указанием автора (Silero Team) |
+| [Silero TTS](https://github.com/snakers4/silero-models) (`v5_5_ru`) | голос по умолчанию, на процессоре; в полном ZIP — неизменённая модель Silero Team | [CC BY-NC-SA 4.0](https://github.com/snakers4/silero-models/blob/master/LICENSE) — некоммерческое использование с указанием автора |
 | [Silero VAD](https://github.com/snakers4/silero-vad) | детектор речи в микрофоне | MIT |
 | [GigaAM v3](https://github.com/salute-developers/GigaAM) (ONNX-сборка [istupakov/gigaam-v3-onnx](https://huggingface.co/istupakov/gigaam-v3-onnx)) | распознавание речи | MIT |
 | [WeSpeaker ResNet34-LM](https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM) | отпечаток голоса («только хозяин») | CC BY 4.0 |

@@ -31,9 +31,33 @@ class ПробаЗвукаВМастереTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_the_wizard_saves_before_it_records(self):
-        # «Записать и послушать» в мастере: выбор → сохранение → запись, и при
-        # ошибке сохранения не пишем, а говорим почему.
+        # Шаг 4 мастера: выбор → сохранение → запись, и при ошибке сохранения
+        # не пишем, а говорим почему. Плюс вердикт по записи, отдельное
+        # «Прослушать» и обратный отсчёт (всё это — в .mjs).
         self._запустить()
+
+    def test_the_wizard_has_two_buttons_and_its_own_result_line(self):
+        # Запись и прослушивание — разные дела: одна кнопка «записать и
+        # послушать» проигрывала мимо хозяина ровно один раз.
+        скрипт = (config.ROOT / "ui" / "web" / "pult.js").read_text(encoding="utf-8")
+        шаг = скрипт.split("function мастерШагЗвук(")[1].split("\n}\n")[0]
+        self.assertIn("мастерКнопка('Записать 3 секунды')", шаг)
+        self.assertIn("мастерКнопка('Прослушать')", шаг)
+        self.assertNotIn("Записать и послушать", скрипт)
+        # Строка результата — в объекте шага: `звукЗаписать` её заполняет.
+        self.assertIn("звукПрослушать, звукЗапись, звукСтатус: статус", шаг)
+        self.assertIn("звукПрослушать.addEventListener('click',"
+                      " () => мастерПрослушать(эл));", скрипт)
+
+    def test_the_settings_form_sends_the_same_listen_request(self):
+        # Форма настроек рисует свои кнопки, но слушает той же функцией и
+        # спрашивает тот же маршрут: правила проверки звука должны быть одни.
+        скрипт = (config.ROOT / "ui" / "web" / "pult.js").read_text(encoding="utf-8")
+        self.assertIn("звукПрослушать.addEventListener('click',"
+                      " () => прослушатьЗапись(настрЭлементы));", скрипт)
+        слушает = скрипт.split("async function прослушатьЗапись(")[1].split("\n}\n")[0]
+        self.assertIn("fetch('/api/audio/test/play', { method: 'POST' })", слушает)
+        self.assertEqual(скрипт.count("function прослушатьЗапись("), 1)
 
     def test_the_level_timer_pauses_for_the_probe(self):
         # Проба держит микрофон три секунды: таймер полоски должен встать ДО

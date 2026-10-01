@@ -74,10 +74,10 @@ def microphone(report: Report, seconds: float = 1.5) -> float:
     rate = int(info["default_samplerate"])
     channels = min(info["max_input_channels"], config.MIC_CHANNEL + 1)
 
-    recorded = sd.rec(
-        int(rate * seconds), samplerate=rate, channels=channels,
-        dtype="float32", device=index, blocking=True,
-    )
+    # Своим потоком, не общим `sd.rec` (см. `audio_out.play_own`).
+    from core.audio_in import record_own
+
+    recorded = record_own(index, channels, rate, int(rate * seconds))
     track = recorded[:, min(config.MIC_CHANNEL, channels - 1)]
 
     noise = float(np.abs(track).max())
@@ -107,10 +107,10 @@ def voice_level(seconds: float = 4.0) -> dict:
     rate = int(info["default_samplerate"])
     channels = min(info["max_input_channels"], config.MIC_CHANNEL + 1)
 
-    recorded = sd.rec(
-        int(rate * seconds), samplerate=rate, channels=channels,
-        dtype="float32", device=index, blocking=True,
-    )
+    # Своим потоком, не общим `sd.rec` (см. `audio_out.play_own`).
+    from core.audio_in import record_own
+
+    recorded = record_own(index, channels, rate, int(rate * seconds))
     track = np.abs(recorded[:, min(config.MIC_CHANNEL, channels - 1)])
 
     peak = float(track.max())

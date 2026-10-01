@@ -68,51 +68,106 @@ End Sub
 
 ReadInstance
 
-' Кто отвечает на общем порту: «свой», «чужая» или «никто».
-' Отвечает сам пульт этой копии — /api/install есть только у новых версий;
-' у старой 0.9.6 его нет, и она видна по /api/runtime (он локальный).
-Function КтоНаПорте()
-  Dim request
-  КтоНаПорте = "никто"
+' Настоящий отпечаток установки — 64 шестнадцатеричных знака. Ответ
+' посторонней программы на том же порту нельзя принимать за другую Трубу.
+Function ValidInstallId(value)
+  Dim i, c
+  ValidInstallId = False
+  If Len(value) <> 64 Then Exit Function
+  For i = 1 To 64
+    c = LCase(Mid(value, i, 1))
+    If InStr(1, "0123456789abcdef", c, vbBinaryCompare) = 0 Then Exit Function
+  Next
+  ValidInstallId = True
+End Function
+
+' Кто отвечает на общем порту: «свой», «чужая», «порт занят» или «никто».
+' У старой 0.9.6 нет /api/install; узнаём её по структуре /api/runtime.
+Function PortOwner()
+  Dim request, status, body, hadHttp
+  PortOwner = "никто"
+  hadHttp = False
+  ' Отпечаток мог появиться только что: у копии, обновлённой со старой
+  ' версии кнопкой «Обновить», файла нет — его заводит сам пульт при первом
+  ' запросе. Без перечитывания своя же копия выглядела «чужой» (01.10).
+  If Len(myId) = 0 Then ReadInstance
   On Error Resume Next
   Set request = CreateObject("MSXML2.ServerXMLHTTP.6.0")
   request.setTimeouts 500, 500, 500, 500
   request.open "GET", "http://127.0.0.1:" & myPort & "/api/install", False
+  Err.Clear
   request.send
   If Err.Number = 0 Then
-    If request.status = 200 Then
-      If Len(myId) > 0 And Trim(request.responseText) = myId Then
-        КтоНаПорте = "свой"
-      Else
-        КтоНаПорте = "чужая"
+    hadHttp = True
+    status = request.status
+    If Err.Number = 0 Then
+      If status = 200 Then
+        body = Trim(request.responseText)
+        ' Пульт мог завести файл отпечатка этим же запросом.
+        If Len(myId) = 0 Then ReadInstance
+        If Err.Number = 0 Then
+          If Len(myId) > 0 And body = myId Then
+            PortOwner = "свой"
+          ElseIf ValidInstallId(body) Then
+            PortOwner = "чужая"
+          End If
+        End If
       End If
     End If
   End If
   Err.Clear
-  If КтоНаПорте = "никто" Then
+  If PortOwner = "никто" Then
     Set request = CreateObject("MSXML2.ServerXMLHTTP.6.0")
     request.setTimeouts 500, 500, 500, 500
     request.open "GET", "http://127.0.0.1:" & myPort & "/api/runtime", False
+    Err.Clear
     request.send
-    If Err.Number = 0 And request.status = 200 Then КтоНаПорте = "чужая"
+    If Err.Number = 0 Then
+      hadHttp = True
+      status = request.status
+      If Err.Number = 0 Then
+        If status = 200 Then
+          body = request.responseText
+          If Err.Number = 0 Then
+            If InStr(1, body, """voice""", vbTextCompare) > 0 And _
+               InStr(1, body, """events""", vbTextCompare) > 0 And _
+               InStr(1, body, """overview""", vbTextCompare) > 0 Then
+              PortOwner = "чужая"
+            End If
+          End If
+        End If
+      End If
+    End If
     Err.Clear
   End If
+  If PortOwner = "никто" And hadHttp Then PortOwner = "порт занят"
   On Error GoTo 0
 End Function
 
 ' Повторный щелчок: своё окно показывает сам Python (ui\window.py находит
 ' его по заголовку и сразу выходит). Здесь только ждём, когда оно ответит.
 Function PultReady()
-  Dim request
+  Dim request, status, body
   PultReady = False
+  ' То же, что в PortOwner: файл отпечатка заводит сам пульт.
+  If Len(myId) = 0 Then ReadInstance
   If Len(myId) = 0 Then Exit Function
   On Error Resume Next
   Set request = CreateObject("MSXML2.ServerXMLHTTP.6.0")
   request.setTimeouts 1000, 1000, 1000, 1000
   request.open "GET", "http://127.0.0.1:" & myPort & "/api/install", False
+  Err.Clear
   request.send
   If Err.Number = 0 Then
-    PultReady = (request.status = 200 And Trim(request.responseText) = myId)
+    status = request.status
+    If Err.Number = 0 Then
+      If status = 200 Then
+        body = Trim(request.responseText)
+        ' Пульт мог завести файл отпечатка этим же запросом.
+        If Len(myId) = 0 Then ReadInstance
+        If Err.Number = 0 Then PultReady = (body = myId)
+      End If
+    End If
   End If
   Err.Clear
   On Error GoTo 0
@@ -121,18 +176,18 @@ End Function
 ' Решение сразу, без ожидания и без фокусировки чужого окна: на порту
 ' другая Труба (своя папка или старая версия) — второй пульт поднимать
 ' нельзя, микрофон он всё равно не отдаст.
-state = КтоНаПорте()
+state = PortOwner()
 If state = "свой" Then
   ' Своя копия уже работает: из автозагрузки делать нечего, а по
   ' двойному щелчку своё окно покажет Python.
   If trayStart Then WScript.Quit
 ElseIf state = "чужая" Then
-  MsgBox "Труба уже работает из другой папки; закрой её и повтори запуск." & vbCrLf & vbCrLf & _
-    "Пульт на этом компьютере может быть только один: две Трубы мешают" & vbCrLf & _
-    "друг другу за микрофон. Папки установки при этом независимы — эта" & vbCrLf & _
-    "копия не тронута, её можно запустить позже." & vbCrLf & vbCrLf & _
-    "Чужое окно мы не открываем, чтобы не перепутать, чьё это Труба.", _
-    vbExclamation, "Труба — запуск"
+  MsgBox "Уже открыт пульт Трубы из другой папки." & vbCrLf & _
+    "Закрой его и повтори запуск этой копии.", vbExclamation, "Труба — запуск"
+  WScript.Quit
+ElseIf state = "порт занят" Then
+  MsgBox "Труба не может запуститься: порт 8765 занят другой программой." & vbCrLf & _
+    "Закрой её и повтори запуск.", vbExclamation, "Труба — запуск"
   WScript.Quit
 End If
 
@@ -193,12 +248,14 @@ For attempt = 1 To waitSteps
   End If
   ' Каждую восьмую итерацию (раз в 2 с) смотрим, кто на порту.
   If attempt Mod 8 = 0 Then
-    state = КтоНаПорте()
+    state = PortOwner()
     If state = "чужая" Then
-      MsgBox "Труба уже работает из другой папки; закрой её и повтори запуск." & vbCrLf & vbCrLf & _
-        "Второй пульт не поднялся — так и должно быть: на компьютере" & vbCrLf & _
-        "работает только одна Труба, иначе они мешают друг другу за микрофон." & vbCrLf & _
-        "Эта копия не тронута, запусти её позже.", vbExclamation, "Труба — запуск"
+      MsgBox "Уже открыт пульт Трубы из другой папки." & vbCrLf & _
+        "Закрой его и повтори запуск этой копии.", vbExclamation, "Труба — запуск"
+      WScript.Quit
+    ElseIf state = "порт занят" Then
+      MsgBox "Труба не может запуститься: порт 8765 занят другой программой." & vbCrLf & _
+        "Закрой её и повтори запуск.", vbExclamation, "Труба — запуск"
       WScript.Quit
     End If
   End If

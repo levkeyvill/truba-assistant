@@ -343,10 +343,13 @@ class СтраницаТелефонаTests(unittest.TestCase):
                     "truba-edit-action"):
             self.assertIn(f"'{что}'", self.js, что)
         self.assertIn("type: 'truba-edit'", self.js)
-        # 28 сентября: плитка «+» убрана из сетки — при восьми программах
+        # 28 сентября: плитка «+» убрана из СЕТКИ — при восьми программах
         # девятая плитка попадала в счёт, сетка становилась 4 × 3 вместо 4 × 2,
-        # и макет в пульте врал. Кнопка добавления теперь в пульте под экраном.
-        self.assertNotIn("truba-edit-add", self.js)
+        # и макет в пульте врал. 1 октября хозяин попросил «+» на макете снова —
+        # но кнопкой поверх сетки, а не плиткой в ней (см.
+        # tests/test_programs_mockup.py). Сообщение `truba-edit-add` поэтому
+        # на странице есть, а узла «+» в сетке — нет.
+        self.assertIn("type: 'truba-edit-add'", self.js)
 
     def test_touching_a_tile_picks_it_and_dragging_reorders(self):
         # Касание без сдвига — выбор, сдвиг больше 6 px — перетаскивание.
@@ -358,14 +361,20 @@ class СтраницаТелефонаTests(unittest.TestCase):
         self.assertIn("if (!перенесли) { editSay(", блок)
 
     def test_the_add_tile_is_gone_from_the_grid(self):
-        # Ни функции, ни класса, ни пункта в меню: плитка «+» в сетке была
-        # причиной того, что макет в пульте показывал другую сетку.
-        for кусок in ("editAddTile", "'app add'", "truba-edit-add", ".app.add"):
+        # Ни функции, ни класса плитки: плитка «+» в сетке была причиной того,
+        # что макет в пульте показывал другую сетку. Добавление теперь кнопкой
+        # поверх сетки — она в `#apps` не входит вовсе.
+        for кусок in ("editAddTile", "'app add'", ".app.add"):
             self.assertNotIn(кусок, self.js)
             self.assertNotIn(кусок, self.html)
         # Раскладка считается по числу программ, а не по числу узлов в сетке.
         блок = self._блок("function drawApps(items, layout) {", "\n\n")
         self.assertIn("layoutApps(items.length, вид)", блок)
+        # Кнопка «+» — вне сетки: иначе `appsBox.childElementCount` (resize)
+        # и `querySelectorAll('.app')` (перетаскивание) считали бы её девятой
+        # программой. Живёт в `document.body` и позиционируется рамками.
+        self.assertIn("document.body.appendChild(кнопка)", self.js)
+        self.assertIn("getBoundingClientRect()", self.js)
 
     def test_the_grid_is_always_four_columns_and_two_rows(self):
         # Раньше колонки считались от числа программ («авто» давало пять),

@@ -135,7 +135,17 @@ class AudioApiTests(ApiBase):
     def test_nothing_is_available_from_the_phone(self):
         # Запись голоса хозяина не должна включаться со страницы с чужим Host.
         self.assertEqual(self.вдали.post("/api/audio/test").status_code, 403)
+        self.assertEqual(self.вдали.post("/api/audio/test/play").status_code, 403)
         self.assertEqual(self.вдали.get("/api/audio").status_code, 403)
+
+    def test_playing_needs_a_recording_first(self):
+        # Слушать нечего: сервер должен сказать это прямо, а не молча выйти
+        # с «успехом» — иначе хозяин подумает, что у него нет колонок.
+        self.server.runtime._audio_play_lock = threading.Lock()
+        self.server.runtime._проба_звука = None
+        ответ = self.client.post("/api/audio/test/play")
+        self.assertEqual(ответ.status_code, 400)
+        self.assertIn("Записать 3 секунды", ответ.json()["error"])
 
     def test_check_asks_to_turn_the_voice_off(self):
         # Работающий голос держит микрофон: второй раз его не открыть.
@@ -595,7 +605,7 @@ class WizardMicLevelTests(unittest.TestCase):
 
 
 class ЗамерИПробаНеМешаютДругДругуTests(unittest.TestCase):
-    """Замер полоски и проба «Записать и послушать» — один захват микрофона.
+    """Замер полоски и проба «Записать 3 секунды» — один захват микрофона.
 
     Раньше у них были разные замки, и 0,25-секундный замер попадал в трёхсекундную
     пробу: Windows отдавал пробе «устройство занято». Здесь обе стороны подменены и
@@ -653,7 +663,7 @@ class ЗамерИПробаНеМешаютДругДругуTests(unittest.Tes
         finally:
             self._вышли()
 
-    def _записать(self):
+    def _записать(self, голос_остановлен=False):
         self._во_шли("проба")
         try:
             self.отпустить_пробу.wait(5)

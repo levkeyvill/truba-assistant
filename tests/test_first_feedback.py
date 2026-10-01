@@ -64,9 +64,19 @@ class FullScreenHelpTests(unittest.TestCase):
         self.assertIn("телефонВоВесьЭкран(телефон);", self.pult)
 
     def test_both_browsers_are_described_in_the_pult_and_the_readme(self):
+        # 01.10: шаг про iPhone переименован — на айфоне полным экраном
+        # занимается и Firefox (он на том же движке Safari).
         for кусок in ("Как открыть Трубу на весь экран", "Firefox на Android",
-                      "Safari на iPhone", "Установить", "Открывать как веб-приложение",
-                      "с иконки"):
+                      "iPhone (Safari или Firefox)", "Установить",
+                      "Открывать как веб-приложение", "с иконки"):
+            self.assertIn(кусок, self.pult, f"в пульте нет: {кусок}")
+            self.assertIn(кусок, self.readme, f"в README нет: {кусок}")
+
+    def test_the_iphone_button_is_admitted_to_be_useless(self):
+        # Кнопка «во весь экран» на айфоне не работает — сказано прямо, а не
+        # оставлено читать по инструкции, как будто кнопка полезна.
+        for кусок in ("кнопка «во весь экран»", "ничего не делает",
+                      "тогда он привязан к компьютеру"):
             self.assertIn(кусок, self.pult, f"в пульте нет: {кусок}")
             self.assertIn(кусок, self.readme, f"в README нет: {кусок}")
 

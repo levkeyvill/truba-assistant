@@ -54,9 +54,12 @@
         { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     if (текст.indexOf('/api/audio/level') === 0 || текст === '/api/audio/test'
+        || текст === '/api/audio/test/play'
         || текст.indexOf('/api/weather/find') === 0) {
-      return new Response(JSON.stringify({ ok: true, level: 0.4, places: [] }),
-        { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(JSON.stringify(текст === '/api/audio/test/play'
+        ? { ok: true, speaker: 'Колонки (USB)', seconds: 3, played_in: 'speakers' }
+        : { ok: true, level: 0.4, places: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' } });
     }
     if (текст.indexOf('/api/hardware') === 0) {
       return new Response(JSON.stringify({ ok: true, hw: {

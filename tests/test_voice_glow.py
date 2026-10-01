@@ -410,7 +410,8 @@ class PhonePageGlowTests(unittest.TestCase):
         self.assertIn("edgeDictation(!!msg.on)", self.html)
         for имя in ("edgeApply", "edgeState", "edgeDictation"):
             self.assertIn(f"function {имя}(", self.html)
-        setstate = self.html.split("function setState(name) {")[1].split("\n}")[0]
+        # 01.10: у setState второй аргумент — проценты скачивания голоса.
+        setstate = self.html.split("function setState(name, detail) {")[1].split("\n}")[0]
         self.assertIn("edgeState(name)", setstate)
         for вид in ("hear", "heard"):
             self.assertNotIn(f"msg.type === '{вид}'", self.html)

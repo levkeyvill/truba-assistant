@@ -160,7 +160,7 @@ try {
   assert.ok(!характер.отправлено.some(тело => тело.persona_preset === 'friendly'),
     'An unchanged persona must not be sent');
 
-  /* Шаг 4: микрофон и звук, голос выключен → «Записать и послушать». */
+  /* Шаг 4: микрофон и звук, голос выключен → «Записать 3 секунды» и «Прослушать». */
   const звук = await evaluate(`(async () => {
     for (let i = 0; i < 40; i++) {
       if (мастерШаги[4] && мастерШаги[4].звукСтатус.textContent) break;

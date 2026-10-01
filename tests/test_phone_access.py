@@ -184,7 +184,9 @@ class PagesCarryTheKeyTests(unittest.TestCase):
         self.assertIn("localStorage.setItem('ключ', изСсылки)", страница)
         self.assertIn("'/ws' + ключ", страница)
         self.assertIn("msg.type === 'need_key'", страница)
-        self.assertIn("телефон не привязан", страница)
+        # 01.10: полоса внизу заменена крупным сообщением по центру.
+        self.assertIn("Этот ярлык не привязан к компьютеру", страница)
+        self.assertIn("сообщениеНаЭкране(текстНепривязанного(), true)", страница)
 
     def test_the_key_is_read_when_connecting_not_before(self):
         # 29.09 в браузере: `connect()` зовётся при загрузке выше по тексту,

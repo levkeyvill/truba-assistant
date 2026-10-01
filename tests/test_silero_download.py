@@ -7,6 +7,7 @@
 """
 
 import shutil
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +93,36 @@ class DownloadTests(unittest.TestCase):
                            or (mock.Mock(), None)):
             голос.load()
         self.assertEqual(порядок, [("наша", "v5_5_ru"), ("silero", "v5_5_ru")])
+
+    def test_bundled_model_installs_without_model_server(self):
+        import silero.silero as package
+
+        bundle = self.папка / "models" / "silero" / "v5_5_ru.pt"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_bytes(b"complete official model fixture")
+        package_file = self.папка / "site-packages" / "silero" / "silero.py"
+        target = package_file.parent / "model" / "v5_5_ru.pt"
+        digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        with mock.patch.object(silero_voice.config, "MODELS_DIR", self.папка / "models"), \
+                mock.patch.object(silero_voice, "BUNDLED_MODEL_SHA256", digest), \
+                mock.patch.object(package, "__file__", str(package_file)), \
+                mock.patch.object(silero_voice, "_models_list",
+                                  side_effect=AssertionError("сеть не нужна")), \
+                mock.patch.object(silero_voice, "_download",
+                                  side_effect=AssertionError("сеть не нужна")):
+            silero_voice.ensure_model("v5_5_ru")
+        self.assertEqual(target.read_bytes(), bundle.read_bytes())
+        self.assertFalse(target.with_suffix(".pt.part").exists())
+
+    def test_corrupted_bundled_model_is_rejected(self):
+        bundle = self.папка / "models" / "silero" / "v5_5_ru.pt"
+        bundle.parent.mkdir(parents=True)
+        bundle.write_bytes(b"incomplete")
+        model_dir = self.папка / "site-packages" / "silero" / "model"
+        with mock.patch.object(silero_voice.config, "MODELS_DIR", self.папка / "models"):
+            with self.assertRaisesRegex(RuntimeError, "архиве повреждён"):
+                silero_voice._install_bundled_model("v5_5_ru", model_dir)
+        self.assertFalse((model_dir / "v5_5_ru.pt").exists())
 
 
 if __name__ == "__main__":

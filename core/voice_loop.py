@@ -452,6 +452,10 @@ DICTATION_CANCEL_SAY = "Не записываю."
 DICTATION_DONE = "Готово, записала."
 
 
+class _Stopped(Exception):
+    """Голос выключили, пока он грузился: дальше не грузим и не говорим."""
+
+
 class VoiceLoop:
     # Значения по умолчанию — на уровне класса, а не в __init__: цикл
     # собирают и вручную (тесты, подмены), и без замера громкости, и без
@@ -459,6 +463,8 @@ class VoiceLoop:
     _voice_meter = None
     _cloud_down = None
     _cloud_told = False
+    # Что сейчас грузится — для пульта и телефона (`_loading`).
+    loading_text = ""
     # Замок разговорного хода и срок проактивности — на уровне класса
     # только как «не задано». Общими они быть не должны: двум циклам,
     # работающим рядом, ход должен доставаться свой. Создаются по первому
@@ -703,22 +709,27 @@ class VoiceLoop:
                 audio=wav, text=txt.read_text(encoding="utf-8").strip()
             )
 
-        self._emit("loading", "распознавание речи")
+        self._loading("распознавание речи")
         self._stt = load_stt(config.STT_MODEL, config.STT_QUANTIZATION)
         self._stt.recognize(
             np.zeros(config.SAMPLE_RATE, dtype=np.float32), sample_rate=config.SAMPLE_RATE
         )
         self._stt_name = str(config.STT_MODEL)
         self._stt_quant = config.STT_QUANTIZATION
+        self._check_stop()
 
-        self._emit("loading", "синтез речи")
+        self._loading("синтез речи")
+        if config.TTS_ENGINE == "higgs":
+            self._fetch_higgs()
         self._voice = make_voice()
         self._voice.load()
+        self._check_stop()
         # Первый синтез всегда медленный — прогреваем заранее, чтобы
         # первая живая реплика не ждала лишние секунды.
         self._voice.say("Проверка.", self._ref, nfe_step=config.TTS_NFE)
+        self._check_stop()
 
-        self._emit("loading", "микрофон")
+        self._loading("микрофон")
 
         if config.OUTPUT == "phone":
             from core.phone import PhoneServer, PhoneSpeaker
@@ -752,6 +763,51 @@ class VoiceLoop:
         self._voice_meter.start()
 
         self._loaded = True
+
+    def _loading(self, text: str, log: bool = True) -> None:
+        """Что сейчас грузится: в журнал, в пульт и на телефон.
+
+        `log=False` — только показать (проценты скачивания раз в три секунды
+        журнал не засоряют, туда идёт каждый пятый процент).
+        """
+        self.loading_text = text
+        if log:
+            self._emit("loading", text)
+        server = self._server or getattr(self, "_external_server", None)
+        if server is not None:
+            try:
+                server.send_state("loading", text)
+            except Exception:
+                pass
+
+    def _check_stop(self) -> None:
+        """Выключили, пока грузились, — дальше не идём (01.10: «Выключить
+        голос» во время загрузки молча не срабатывал)."""
+        if self._stop.is_set():
+            raise _Stopped()
+
+    def _fetch_higgs(self) -> None:
+        """Веса Higgs (~9 ГБ) — отдельным процессом, с прогрессом и отменой."""
+        from core import higgs_voice
+
+        if higgs_voice.weights_ready():
+            return
+        всего = higgs_voice.DOWNLOAD_BYTES
+        последний = [-1]
+
+        def показать(байт: int) -> None:
+            доля = min(99, int(байт * 100 / всего))
+            текст = (f"качаю модель Higgs: {байт / 1e9:.1f} из ~{всего / 1e9:.1f} ГБ "
+                     f"({доля} %)").replace(".", ",")
+            # В журнал — каждые 5 %, на экран — каждый раз.
+            self._loading(текст, log=доля // 5 != последний[0])
+            последний[0] = доля // 5
+
+        self._loading("качаю модель Higgs (~9 ГБ, один раз) — выключить голос "
+                      "можно в любой момент, потом докачается с того же места")
+        if not higgs_voice.download_weights(self._stop, показать):
+            raise _Stopped()
+        self._loading("синтез речи")
 
     def _make_speaker(self):
         """Колонки с тем устройством вывода, которое выбрано в пульте.
@@ -2639,15 +2695,34 @@ class VoiceLoop:
             # Higgs отдаёт видеопамять, когда голос выключают, — при
             # повторном включении её надо поднять обратно, до первой фразы.
             if getattr(self._voice, "loaded", True) is False:
-                self._emit("loading", "синтез речи")
+                self._loading("синтез речи")
+                if config.TTS_ENGINE == "higgs":
+                    self._fetch_higgs()
                 self._voice.load()
+                self._check_stop()
                 self._voice.say("Проверка.", self._ref, nfe_step=config.TTS_NFE)
+            self._check_stop()
+        except _Stopped:
+            # Выключили посреди загрузки: не говорим «готова» и не слушаем.
+            # Наполовину поднятый Higgs отдаёт видеопамять сразу.
+            unload = getattr(self._voice, "unload", None)
+            if unload is not None:
+                try:
+                    unload()
+                except Exception:
+                    pass
+            self.loading_text = ""
+            self._emit("stopped", None)
+            self._phone_state("voiceoff")
+            return
         except Exception as exc:
+            self.loading_text = ""
             self._emit("error", f"{type(exc).__name__}: {exc}")
             self._emit("stopped", None)
             self._phone_state("voiceoff")
             return
 
+        self.loading_text = ""
         self.ready = True
         self._emit("ready", None)
         # Отсчёт тишины с этого мига: иначе первый же заход был бы

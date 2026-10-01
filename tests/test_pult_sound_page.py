@@ -27,9 +27,20 @@ class ЗвукСтраницаTests(unittest.TestCase):
 
     def test_маршруты(self):
         for маршрут in ("/api/audio'", "/api/audio/level", "/api/audio/test",
+                        "/api/audio/test/play",
                         "/api/hardware", "/api/voices/status", "/api/voices/install",
                         "/api/weather/find?q="):
             self.assertIn(маршрут, self.скрипт)
+
+    def test_запись_и_прослушивание_разными_кнопками(self):
+        # Кнопка одна («записать и послушать») проигрывала запись один раз мимо
+        # хозяина, и проверить звук было нечем. Теперь их две.
+        форма = self.скрипт.split("function построитьНастройки(")[1].split("\n}\n")[0]
+        self.assertIn("звукПроверить.textContent = 'Записать 3 секунды'", форма)
+        self.assertIn("звукПрослушать.textContent = 'Прослушать'", форма)
+        self.assertIn("звукПрослушать.disabled = true", форма)
+        self.assertIn("звукПрослушать, звукЗапись, звукСтатус", форма)
+        self.assertNotIn("Записать и послушать", self.скрипт)
 
     def test_поле_output_одно_и_в_звуке(self):
         self.assertEqual(self.скрипт.count("настрПоле(звук, 'output', output)"), 1)

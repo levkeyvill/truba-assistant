@@ -12,6 +12,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <title>Труба</title>
 <style>
   /* Шрифт отдаём сами. Раньше Montserrat тут был только объявлен: в браузере
@@ -405,6 +406,33 @@
      кнопки нажимаются — ими выбирают, что кнопка делает. */
   body.edit #orb, body.edit #режимы,
   body.edit #s-wx, body.edit #expand, body.edit #hint { pointer-events: none; }
+  /* Значок программы — картинка, и браузер на нажатии мышью начинает своё
+     перетаскивание картинки: под курсором появляется «призрак», а
+     pointer-события обрываются (`pointercancel`), и плитка не тащится живьём.
+     Поэтому в режиме правки картинка не тянется и вообще не берёт указатель,
+     а жест целиком достаётся плитке. */
+  body.edit .app img {
+    -webkit-user-drag: none; user-select: none; pointer-events: none;
+  }
+  body.edit .app { touch-action: none; user-select: none; }
+  /* Кнопка «+» в макете пульта: добавить программу прямо с экрана телефона.
+     Плиткой в сетке она быть не может — 28.09 девятая плитка ломала раскладку,
+     — поэтому стоит поверх, в свободном месте у края области программ, и на
+     раскладку `layoutApps` не влияет. На настоящем телефоне её нет. */
+  body.edit #edit-add {
+    display: flex;
+    position: fixed;
+    width: 40px; height: 40px;
+    border: 0; border-radius: 50%;
+    background: var(--accent); color: var(--на-акценте);
+    font: 600 26px/1 "Montserrat", -apple-system, "Segoe UI", Roboto, sans-serif;
+    cursor: pointer;
+    align-items: center; justify-content: center;
+    z-index: 12;
+    box-shadow: 0 4px 10px var(--тень);
+  }
+  body.edit #edit-add:active { transform: scale(.93); }
+  body.edit #edit-add[hidden] { display: none; }
   @keyframes pop {
     from { opacity: 0; transform: scale(.85); }
     to   { opacity: 1; transform: none; }
@@ -1104,6 +1132,23 @@
     background: var(--panel); color: var(--muted); font-size: 12px;
     z-index: 15;
   }
+  /* Тот же элемент, но крупно: телефон открыт с ярлыка, а комп его не знает.
+     Узкой полосой внизу (12 px) хозяин это не прочитал — в журнале десятки
+     строк «телефон без ключа не пустила», а на экране пустая Труба. Крупное
+     сообщение занимает почти весь экран (телефон стоит горизонтально),
+     читается с расстояния и прямо говорит, что делать. */
+  #offline.крупно {
+    top: 0; bottom: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    min-height: 390px;
+    padding: 28px; text-align: left;
+    background: var(--bg); color: var(--text);
+    font-size: 19px; line-height: 1.5;
+    z-index: 17;
+  }
+  /* Показом занимается `сообщениеНаЭкране`: она ставит и класс, и `display`,
+     поэтому правила показа здесь нет — только сам вид крупного сообщения. */
   #expand {
     display: none;
     position: fixed; left: 50%; bottom: 8px;
@@ -1112,6 +1157,37 @@
     border: 1px solid var(--line); border-radius: 18px;
     background: var(--panel); color: var(--muted); font-size: 11px;
     z-index: 16;
+  }
+  /* На iPhone полного экрана нет, а кнопка «во весь экран» молча ничего не
+     делала. Плашка-вопрос честнее мёртвой кнопки: она такая же маленькая и
+     снизу, но говорит, где искать настоящий полный экран. */
+  #expand.подсказка {
+    color: var(--accent); border-color: var(--акцент-подложка);
+    background: var(--акцент-подложка); font-size: 13px;
+    padding: 9px 18px;
+  }
+  /* Карточка-подсказка по нажатию: длинный текст не влезет в плашку. */
+  #подсказка-экрана {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 28px;
+    background: var(--заслон);
+    z-index: 40;
+  }
+  #подсказка-экрана .птекст {
+    position: relative;
+    max-width: 520px;
+    padding: 28px 56px 28px 28px;
+    border: 1px solid var(--line); border-radius: 20px;
+    background: var(--panel); color: var(--text);
+    font-size: 19px; line-height: 1.5;
+  }
+  #подсказка-экрана .пзакрыть {
+    position: absolute; top: 8px; right: 10px;
+    width: 40px; height: 40px;
+    border: none; border-radius: 50%;
+    background: none; color: var(--muted);
+    font-size: 20px; line-height: 1;
   }
 
   /* ---------- Свечение по краям экрана ----------
@@ -2570,8 +2646,13 @@ const APP_COLORS = {
    обработчика нажатия. */
 function appFace(item) {
   /* Настоящий значок программы узнаётся мгновенно, рисованный — нет.
-     Для ссылок значка нет, там остаётся наша иконка. */
-  if (item.image) return '<img src="' + item.image + '" alt="">';
+     Для ссылок значка нет, там остаётся наша иконка.
+     В режиме правки картинке запрещено тянуться: иначе мышь перетаскивает
+     именно её (см. `body.edit .app img` в стилях). */
+  if (item.image) {
+    return '<img src="' + item.image + '" alt=""'
+      + (EDIT ? ' draggable="false"' : '') + '>';
+  }
   return ICONS[item.icon] || ICONS.app;
 }
 
@@ -2840,11 +2921,11 @@ function menuCard(item) {
   return el;
 }
 
-function menuItem(item) {
+function menuItem(item, app, номер) {
   /* Закладки и сайты — карточками, остальное — квадратными плитками. */
   if (item.kind === 'bookmark' || item.kind === 'site') {
     const card = menuCard(item);
-    menuBindClick(card, item);
+    menuBindClick(card, item, app, номер);
     return card;
   }
   const el = document.createElement('div');
@@ -2860,13 +2941,21 @@ function menuItem(item) {
     tag.textContent = item.caption;
     el.appendChild(tag);
   }
-  menuBindClick(el, item);
+  menuBindClick(el, item, app, номер);
   return el;
 }
 
 /* Нажатие и удержание — одни и те же и для плитки, и для карточки: поведение
-   не менялось, поменялся только вид (28.09). */
-function menuBindClick(el, item) {
+   не менялось, поменялся только вид (28.09).
+   В макете пульта (`?edit=1`) плитка ничего не выполняет — комп только
+   сообщает пульту, какой пункт выбран: `truba-edit-menu-pick`. */
+function menuBindClick(el, item, app, номер) {
+  if (EDIT) {
+    el.addEventListener('click', () => {
+      editSay({ type: 'truba-edit-menu-pick', app: app.id, index: номер });
+    });
+    return;
+  }
   if (item.toggle) {
     el.classList.add('flip');
     el.dataset.key = item.key;
@@ -2913,11 +3002,17 @@ function openMenu(app) {
   closeMenu();
   currentMenu = app;
   menuTiles.innerHTML = '';
+  /* Пункты приходят от сервера, а в макете — от пульта (`прогПозиции`), и у
+     программы без пунктов их нет вовсе: подменю всё равно нужно, там главная
+     плитка и «+». */
+  const пункты = Array.isArray(app.menu) ? app.menu : [];
   /* Подменю считается от своего окна, а не от раскладки программ: здесь
      сверху ничего нет, места больше, а первая плитка вдвое выше обычной и
      занимает два столбца. Считаем по самим пунктам: закладка занимает две
-     колонки, а плитка одну — по одному числу пунктов это не узнать. */
-  layoutMenu(app.menu);
+     колонки, а плитка одну — по одному числу пунктов это не узнать.
+     В макете в конце ещё плитка «+», и в раскладку она тоже входит: иначе
+     последний пункт уехал бы за нижний край. */
+  layoutMenu(EDIT ? пункты.concat([{ kind: 'плюс' }]) : пункты);
 
   const main = document.createElement('div');
   main.className = 'app main';
@@ -2927,15 +3022,76 @@ function openMenu(app) {
   main.style.color = APP_COLORS[app.id] || 'var(--muted)';
   main.innerHTML = appFace(app);
   main.addEventListener('click', () => {
+    /* В макете программа не запускается — она выбирается для правки. */
+    if (EDIT) { editSay({ type: 'truba-edit-pick', id: app.id }); return; }
     send({ type: 'menu', app: app.id, item: 'launch' });
     flash(main);
     armMenu();
   });
   menuTiles.appendChild(main);
 
-  app.menu.forEach((item) => menuTiles.appendChild(menuItem(item)));
+  пункты.forEach((item, номер) => menuTiles.appendChild(menuItem(item, app, номер)));
+  /* Плитка «+» — только в макете: хозяин жмёт её и получает в пульте новый
+     пункт подменю. Настоящему телефону добавлять нечего. */
+  if (EDIT) menuTiles.appendChild(editПлиткаПлюс(app));
   menuBox.classList.add('on');
   armMenu();
+}
+
+/* Плитка «+» в подменю макета. Рисованная, как обычный пункт, с подписью
+   «добавить»: хозяин должен узнать её по подписи, а не по рисунку. */
+function editПлиткаПлюс(app) {
+  const el = document.createElement('div');
+  el.className = 'app captioned';
+  el.title = 'добавить пункт';
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'добавить пункт');
+  el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+    + ' stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+  const tag = document.createElement('span');
+  tag.className = 'cap-tag';
+  tag.textContent = 'добавить';
+  el.appendChild(tag);
+  el.addEventListener('click', () => editПоказатьВиды(app));
+  return el;
+}
+
+/* Что добавлять: две крупные плитки во всю ширину подменю. Раскладка тут
+   своя — плитки программы в этом виде нет, и резервировать под неё два ряда
+   незачем: `layoutMenu` всегда считает её. */
+function editПоказатьВиды(app) {
+  menuTiles.innerHTML = '';
+  const w = window.innerWidth - 20, h = window.innerHeight - 34;
+  const tile = Math.max(TILE_MIN, Math.min(TILE_MAX,
+    Math.floor((w - TILE_GAP) / 2), Math.floor((h - TILE_GAP) / 2)));
+  menuTiles.style.setProperty('--cols', 2);
+  menuTiles.style.setProperty('--tile', tile + 'px');
+  menuTiles.classList.remove('narrow');
+  menuTiles.appendChild(editПлиткаВида(app, 'site', 'browser', 'Сайт'));
+  menuTiles.appendChild(editПлиткаВида(app, 'hotkey', 'keyboard', 'Сочетание клавиш'));
+}
+
+function editПлиткаВида(app, вид, значок, подпись) {
+  const el = document.createElement('div');
+  el.className = 'app card';
+  el.title = 'добавить: ' + подпись;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'добавить пункт ' + подпись);
+  const face = document.createElement('div');
+  face.className = 'card-face';
+  face.innerHTML = ICONS[значок] || ICONS.app;
+  el.appendChild(face);
+  const текст = document.createElement('div');
+  текст.className = 'card-text';
+  const имя = document.createElement('div');
+  имя.className = 'card-name';
+  имя.textContent = подпись;
+  текст.appendChild(имя);
+  el.appendChild(текст);
+  el.addEventListener('click', () => {
+    editSay({ type: 'truba-edit-menu-add', app: app.id, kind: вид });
+  });
+  return el;
 }
 
 /* Само меню больше не закрывается — только касанием пустого места.
@@ -3059,9 +3215,20 @@ const SOUNDS = {
    одинаково. Играется на месте, не дожидаясь компа. */
 let clickBuffer = null;
 
+/* Звук на iPhone будит не одним состоянием. Кроме обычного 'suspended' там
+   есть ещё 'interrupted' — телефон глушит звук сам (переключатель «бесшумно»,
+   ушедшее приложение, входящий звонок). Мы будили только 'suspended', и на
+   айфоне после блокировки экрана щелчки пропадали совсем. Одна функция
+   вместо условия в пяти местах: состояние называет она. */
+function разбудитьЗвук() {
+  if (!audioCtx) return;
+  if (audioCtx.state !== 'suspended' && audioCtx.state !== 'interrupted') return;
+  try { audioCtx.resume(); } catch (e) {}
+}
+
 function playClick() {
   if (!audioCtx) return;
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  разбудитьЗвук();
   if (!clickBuffer) {
     const rate = audioCtx.sampleRate;
     const length = Math.round(rate * 0.02);
@@ -3098,7 +3265,7 @@ function playSound(name) {
   /* Браузер телефона усыпляет звук, когда экран гаснет или страница
      уходит в фон, и сам его не будит. Без этого после блокировки
      экрана пропадали и сигналы, и её голос. */
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  разбудитьЗвук();
   const now = audioCtx.currentTime;
   for (const [freq, at, len, gain] of parts) {
     const osc = audioCtx.createOscillator();
@@ -3131,7 +3298,7 @@ function searchHum(on, gain) {
   humХочу = !!on;
   if (!audioCtx) return;
   /* Браузер телефона усыпляет звук, когда гаснет экран, — как в playSound. */
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  разбудитьЗвук();
   if (on) {
     /* Уже играет — второй раз нечего. */
     if (humИсточник) return;
@@ -3213,6 +3380,13 @@ async function wakeUp() {
   try { keepAwake(); } catch (e) {}
 
   try {
+    /* iPhone: говорим системе, что это обычное воспроизведение, а не звонок
+       или системный звук. Иначе переключатель «бесшумно» глушит всё, что мы
+       играем, и щелчков не слышно. Свойства может не быть — тогда пробуем
+       просто, как раньше. Ставим до создания контекста. */
+    try {
+      if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    } catch (e2) {}
     audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
     await audioCtx.resume();
     if (!analyser) {
@@ -3252,6 +3426,10 @@ document.addEventListener('click', wakeUp);
 if (!EDIT) {
   connect();
   watchBattery();
+  дописатьКлючВМанифест();
+  /* Кнопку полного экрана решаем сразу, а не после первого касания: на iPhone
+     её место занимает плашка-подсказка, и человек должен видеть её сразу. */
+  updateExpand();
 }
 
 function goFullscreen() {
@@ -3312,13 +3490,86 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible' || !started) return;
   keepAwake();
   updateExpand();
+  /* Возврат на экране — самый частый момент, когда телефон глушит звук:
+     после блокировки контекст лежит в 'suspended' или 'interrupted'. */
+  разбудитьЗвук();
 });
 
+/* Полный экран по-настоящему умеют не все. На iPhone его нет вовсе: Fullscreen
+   API для страниц не поддерживают ни Safari, ни Firefox (оба на движке
+   Safari), и кнопка «во весь экран» там просто ничего не делала. Скрыть
+   панели браузера на айфоне можно только ярлыком «На экран „Домой“» в режиме
+   веб-приложения. Поэтому:
+     • умеет браузер — обычная кнопка, как была;
+     • не умеет и это iPhone — плашка «как на весь экран?» с подсказкой;
+     • уже открыто как веб-приложение (или полный экран) — кнопки нет:
+       показывать её там незачем. */
+function полныйЭкранУмеется() {
+  const el = document.documentElement;
+  return !!(el.requestFullscreen || el.webkitRequestFullscreen);
+}
+
+function открытоКакПриложение() {
+  if (navigator.standalone) return true;
+  try {
+    if (window.matchMedia
+        && (window.matchMedia('(display-mode: standalone)').matches
+            || window.matchMedia('(display-mode: fullscreen)').matches)) return true;
+  } catch (e) {}
+  return false;
+}
+
+/* iPhone: по userAgent (iPhone, iPad, iPod) или по `navigator.standalone`,
+   который есть только у веб-приложения на iOS. */
+function этоАйфон() {
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+    || navigator.standalone !== undefined;
+}
+
 function updateExpand() {
-  expand.style.display = document.fullscreenElement ? 'none' : 'block';
+  if (document.fullscreenElement || открытоКакПриложение()) {
+    expand.style.display = 'none';
+    return;
+  }
+  if (полныйЭкранУмеется()) {
+    expand.textContent = 'во весь экран';
+    expand.classList.remove('подсказка');
+    expand.style.display = 'block';
+    return;
+  }
+  /* Ни полного экрана, ни ярлыка: на iPhone это единственный честный ответ. */
+  expand.textContent = 'как на весь экран?';
+  expand.classList.add('подсказка');
+  expand.style.display = 'block';
 }
 document.addEventListener('fullscreenchange', updateExpand);
-expand.addEventListener('click', () => { goFullscreen(); updateExpand(); });
+
+/* Карточка-подсказка с крестиком: длинный текст не влезет в плашку, а
+   сама плашка должна остаться маленькой и не мешать экрану. */
+function показатьПодсказкуЭкрана() {
+  if (EDIT) return;
+  let карточка = $('подсказка-экрана');
+  if (карточка) { карточка.remove(); return; }
+  карточка = document.createElement('div');
+  карточка.id = 'подсказка-экрана';
+  const крест = document.createElement('button');
+  крест.className = 'пзакрыть';
+  крест.type = 'button';
+  крест.textContent = '✕';
+  крест.addEventListener('click', () => карточка.remove());
+  const текст = document.createElement('div');
+  текст.className = 'птекст';
+  текст.textContent = 'Поделиться → На экран „Домой“ → включи '
+    + '„Открывать как веб-приложение“ → Добавить. Открывай Трубу с этой иконки.';
+  карточка.append(крест, текст);
+  document.body.appendChild(карточка);
+}
+
+expand.addEventListener('click', () => {
+  if (expand.classList.contains('подсказка')) { показатьПодсказкуЭкрана(); return; }
+  goFullscreen();
+  updateExpand();
+});
 
 /* ---------- Главная кнопка ---------- */
 /* Круг и кнопка «найти» означают одно и то же — «слушаю без имени», —
@@ -3411,9 +3662,14 @@ function applyTheme(value) {
 }
 
 /* ---------- Связь ---------- */
-function setState(name) {
+function setState(name, detail) {
   edgeState(name);
-  const [color, text] = STATES[name] || STATES.off;
+  let [color, text] = STATES[name] || STATES.off;
+  /* Голос Higgs при первом включении качает модель ~9 ГБ — это минуты.
+     «загружаюсь, подожди…» без конца выглядело зависанием (01.10), поэтому
+     проценты скачивания комп присылает в `text` состояния. */
+  const доля = name === 'loading' && /(\d+)\s*%/.exec(String(detail || ''));
+  if (доля) text = 'качаю голос: ' + доля[1] + ' %';
   core.style.background = color;
   glow.style.background = color;
   ring.style.borderColor = name === 'off' ? 'var(--line)' : color;
@@ -3439,7 +3695,52 @@ function ключПривязки() {
     return изСсылки;
   }
 }
+
+/* Ссылка манифеста с ключом. Ярлык «На экран „Домой“» — отдельное
+   веб-приложение со своим хранилищем: `localStorage` из Safari в него не
+   попадает, и ключ из ссылки теряется. Единственный путь — сам манифест:
+   Safari идёт в `/manifest.json` и открывает `start_url` оттуда. Сервер
+   отдаёт манифест с ключом тому, кто ключ уже прислал; если страницу открыли
+   из старой закладки (или манифест закэшировался без ключа), дописываем его
+   здесь. В режиме правки не трогаем: макет в пульте ничего не ставит. */
+function дописатьКлючВМанифест() {
+  if (EDIT) return;
+  let ключ = '';
+  try { ключ = ключПривязки(); } catch (e) {}
+  if (!ключ) return;
+  const link = document.querySelector('link[rel="manifest"]');
+  if (!link) return;
+  const href = link.getAttribute('href') || '';
+  if (href.indexOf('k=') !== -1) return;
+  link.setAttribute('href', '/manifest.json?k=' + encodeURIComponent(ключ));
+}
 var needKey = false;
+
+/* Сообщение на весь экран. Прежде здесь была узкая полоса внизу (12 px) с
+   текстом «телефон не привязан: открой в пульте „Настройки → Телефон“ и
+   наведи камеру на QR-код» — на горизонтальном телефоне её почти не видно, и
+   хозяин в журнале читал десятки строк «телефон без ключа не пустила», не
+   понимая, что делать. Теперь тот же элемент `#offline` показывается крупно,
+   по центру, с понятным действием. */
+function сообщениеНаЭкране(текст, крупно) {
+  offline.textContent = текст;
+  offline.classList.toggle('крупно', !!крупно);
+  offline.style.display = крупно ? 'flex' : 'block';
+}
+
+/* Ярлык без ключа: на iPhone он смотрится не как браузерная вкладка, и слово
+   «айфон» в тексте нужно только там. На Android (и на всяком другом) — тот же
+   текст без него. */
+function текстНепривязанного() {
+  if (!этоАйфон()) {
+    return 'Этот ярлык не привязан к компьютеру. В пульте открой «Настройки → '
+      + 'Телефон», наведи камеру телефона на QR-код, открой ссылку и заново '
+      + 'добавь её на экран «Домой». Старый ярлык удали.';
+  }
+  return 'Этот ярлык не привязан к компьютеру. В пульте открой «Настройки → '
+    + 'Телефон», наведи камеру айфона на QR-код, открой ссылку и заново '
+    + 'добавь её на экран «Домой». Старый ярлык удали.';
+}
 
 function connect() {
   const phoneKey = ключПривязки();
@@ -3448,6 +3749,7 @@ function connect() {
   socket.binaryType = 'arraybuffer';
 
   socket.onopen = () => {
+    offline.classList.remove('крупно');
     offline.style.display = 'none';
     /* Настоящее состояние присылает комп сразу после подключения. */
     setState('off');
@@ -3467,7 +3769,7 @@ function connect() {
     }
 
     const msg = JSON.parse(event.data);
-    if (msg.type === 'state') setState(msg.state);
+    if (msg.type === 'state') setState(msg.state, msg.text);
     else if (msg.type === 'mode') markMode(msg.value);
     else if (msg.type === 'volume') markVolume(msg.value);
     else if (msg.type === 'theme') applyTheme(msg.value);
@@ -3509,22 +3811,20 @@ function connect() {
     edgeDictation(false);
     if (needKey) {
       /* Не «нет связи»: связь есть, но комп этот телефон не знает. Пробовать
-         каждые полторы секунды незачем — ключ сам не появится. */
-      offline.textContent = 'телефон не привязан: открой в пульте «Настройки → Телефон» '
-        + 'и наведи камеру на QR-код';
-      offline.style.display = 'block';
+         каждые полторы секунды незачем — ключ сам не появится. Показываем
+         крупно и по центру: это единственный экран, который увидит человек,
+         открывший непривязанный ярлык. */
+      сообщениеНаЭкране(текстНепривязанного(), true);
       needKey = false;
       setTimeout(connect, 15000);
       return;
     }
-    offline.textContent = 'нет связи с компом, переподключаюсь...';
-    offline.style.display = 'block';
+    сообщениеНаЭкране('нет связи с компом, переподключаюсь...', false);
     setTimeout(connect, 1500);
   };
 
   socket.onerror = () => {
-    offline.textContent = 'не могу соединиться с ' + location.host;
-    offline.style.display = 'block';
+    сообщениеНаЭкране('не могу соединиться с ' + location.host, false);
     try { socket.close(); } catch (e) {}
   };
 }
@@ -3542,8 +3842,7 @@ function reloadSoon() {
   /* Макет в пульте перезагружать нельзя: он потерял бы всё, что хозяин
      нарисовал, и пульт счёл бы страницу сломанной. */
   if (EDIT) return;
-  offline.textContent = 'обновляюсь до свежей версии...';
-  offline.style.display = 'block';
+  сообщениеНаЭкране('обновляюсь до свежей версии...', false);
   setTimeout(() => location.reload(), 400);
 }
 
@@ -3574,7 +3873,15 @@ async function schedule(data, epoch) {
   if (!audioCtx) return;
   let buffer = null;
   try {
-    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    /* Будим, но не ждём вечно: на айфоне `resume()` в состоянии
+       'interrupted' (звонок) не возвращается, пока звонок не кончится, а
+       очередь кусков и отчёты «played» за это время встали бы. */
+    if (audioCtx.state !== 'running') {
+      await Promise.race([
+        audioCtx.resume().catch(() => {}),
+        new Promise((готово) => setTimeout(готово, 500)),
+      ]);
+    }
     buffer = await audioCtx.decodeAudioData(data.slice(0));
   } catch (e) {
     /* Битый кусок пропускаем: молчание лучше зависшей очереди. */
@@ -3685,7 +3992,13 @@ function editBindTile(el, item) {
     const перенесли = editDrag.moved;
     editDrag = null;
     el.classList.remove('dragging');
-    if (!перенесли) { editSay({ type: 'truba-edit-pick', id: item.id }); return; }
+    if (!перенесли) { editSay({ type: 'truba-edit-pick', id: item.id });
+      /* Касание значка открывает и подменю — той же раскладкой, что на
+         телефоне. Программа без пунктов тоже: там главная плитка и «+».
+         Перетаскивание подменю не открывает (сюда мы не доходим). */
+      openMenu(item);
+      return;
+    }
     editSay({ type: 'truba-edit-order', ids: editOrder() });
   };
   el.addEventListener('pointerup', конец);
@@ -3704,6 +4017,64 @@ function editPick(id) {
   });
 }
 
+/* Пришло новое сообщение, а подменю открыто: перерисовать его с новыми
+   пунктами той же программы и не закрывать. Иначе хозяин только что добавил
+   пункт в пульте, а макет остался бы со старым списком — и правка была бы не
+   видна. Программу узнаём по `id`, а не по объекту: пульт присылает новые. */
+function editОбновитьМеню(items) {
+  if (!menuBox.classList.contains('on') || !currentMenu) return;
+  const такая = items.find((item) => item && item.id === currentMenu.id);
+  if (!такая) { closeMenu(); return; }
+  openMenu(такая);
+}
+
+/* Кнопка «+» в макете: добавить программу прямо с экрана телефона. Плиткой в
+   сетке её быть не может (28.09: девятая плитка ломала раскладку), поэтому
+   стоит поверх, у края области программ, и на `layoutApps` не влияет.
+   На настоящем телефоне её нет — создаётся только здесь. */
+const EDIT_ADD_SIZE = 40;
+
+function editСоздатьКнопку() {
+  const кнопка = document.createElement('button');
+  кнопка.type = 'button';
+  кнопка.id = 'edit-add';
+  кнопка.textContent = '+';
+  кнопка.title = 'Добавить программу';
+  кнопка.setAttribute('aria-label', 'Добавить программу');
+  кнопка.addEventListener('click', () => {
+    editSay({ type: 'truba-edit-add' });
+  });
+  document.body.appendChild(кнопка);
+  return кнопка;
+}
+
+/* Где поставить кнопку: сначала правый нижний угол области программ, а если
+   там плитка — левее, до первого свободного места. Считаем по рамкам
+   (`getBoundingClientRect`): при восьми программах сетка заполнена целиком,
+   и «+» в углу накрыла бы значок. */
+function editПоставитьКнопку() {
+  const кнопка = $('edit-add');
+  if (!кнопка) return;
+  const зона = appsBox.getBoundingClientRect();
+  const плитки = Array.from(appsBox.querySelectorAll('.app[data-app]'))
+    .map((el) => el.getBoundingClientRect());
+  const отступ = 6, шаг = EDIT_ADD_SIZE + отступ;
+  const top = зона.bottom - EDIT_ADD_SIZE - отступ;
+  for (let left = зона.right - EDIT_ADD_SIZE - отступ; left >= зона.left; left -= шаг) {
+    const занято = плитки.some((рамка) =>
+      left < рамка.right && left + EDIT_ADD_SIZE > рамка.left
+      && top < рамка.bottom && top + EDIT_ADD_SIZE > рамка.top);
+    if (занято) continue;
+    кнопка.style.left = Math.round(left) + 'px';
+    кнопка.style.top = Math.round(Math.max(top, отступ)) + 'px';
+    кнопка.hidden = false;
+    return;
+  }
+  /* Свободного места в строке не нашлось — прячем, чтобы не накрыть значок.
+     01.10 хозяин: «на 8 программах и не нужен „+“ — логично»: сетка полная. */
+  кнопка.hidden = true;
+}
+
 if (EDIT) {
   /* Макет — значит, подсказки «коснись» и «во весь экран» тут лишние: их
      нажатие в iframe всё равно ничего не делает. Показатели — прочерки,
@@ -3716,6 +4087,12 @@ if (EDIT) {
     $(id).querySelector('.bar i').style.width = '0%';
   }
   batBox.hidden = true;
+  editСоздатьКнопку();
+
+  /* Мышь на значке начинает тянуть саму картинку, и жест не доходит до
+     плитки. Запрещаем перетаскивание целиком — в макете тянуть нечего,
+     а на настоящем телефоне этого запрета нет. */
+  document.addEventListener('dragstart', (event) => { event.preventDefault(); });
 
   /* Слушаем только родителя нашего же адреса: сообщение с чужой страницы не
      должно ни нарисовать programs, ни узнать содержимое макета. */
@@ -3732,6 +4109,8 @@ if (EDIT) {
     if (Array.isArray(msg.actions) && msg.actions.length) drawActions(msg.actions);
     editPick(msg.selected);
     editPickAction(msg.action);
+    editОбновитьМеню(items);
+    editПоставитьКнопку();
   });
 
   editSay({ type: 'truba-edit-ready' });

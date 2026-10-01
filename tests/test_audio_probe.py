@@ -41,8 +41,10 @@ class ПробаЗвукаНаСервереTests(unittest.TestCase):
         self.события.append("start")
         self.rt.voice.running = True
 
-    def _записать(self):
-        self.события.append("record")
+    def _записать(self, голос_остановлен=False):
+        # Флаг от пробы: голос она снимает сама, поэтому «занято» здесь
+        # означает только живой поток (см. `test_mic_record_listen`).
+        self.события.append(("record", голос_остановлен))
         if self.ошибкаЗаписи is not None:
             raise self.ошибкаЗаписи
         return {"ok": True, "seconds": 3.0}
@@ -51,13 +53,14 @@ class ПробаЗвукаНаСервереTests(unittest.TestCase):
         self.rt.voice.running = False
         ответ = self.rt.audio_test(True)
         self.assertTrue(ответ["ok"])
-        self.assertEqual(self.события, ["record"])
+        self.assertEqual(self.события, [("record", False)])
         self.assertFalse(self.rt.voice.running)
 
     def test_включённый_голос_возвращается(self):
         ответ = self.rt.audio_test(True)
         self.assertTrue(ответ["ok"])
-        self.assertEqual(self.события, ["stop", "warm_stop", "record", "start", "warm_start"])
+        self.assertEqual(self.события,
+                         ["stop", "warm_stop", ("record", True), "start", "warm_start"])
         self.assertTrue(self.rt.voice.running)
 
     def test_запись_сорвалась_голос_всё_равно_поднят(self):
@@ -102,7 +105,8 @@ class ПробаЗвукаНаСервереTests(unittest.TestCase):
         ответ = self.rt.audio_test(True)
         self.assertTrue(ответ["ok"])
         self.assertEqual(self.события,
-                         ["stop", "warm_stop", "record", "drop_audio", "start", "warm_start"])
+                         ["stop", "warm_stop", ("record", True), "drop_audio",
+                          "start", "warm_start"])
         self.assertFalse(self.rt._audio_stale, "флаг сброшен")
         self.assertTrue(self.rt.voice.running)
 

@@ -181,6 +181,128 @@ def _weights_folder() -> Path:
         return Path(snapshot_download(REPO))
 
 
+# --- Скачивание весов ------------------------------------------------------
+#
+# 01.10.2026: на чистой установке хозяин выбрал Higgs, и включение голоса
+# 15 минут молча качало 9 ГБ внутри загрузки: телефон висел на «загружаюсь»,
+# а «Выключить голос» ничего не делал — поток нельзя прервать посреди
+# `snapshot_download`. Теперь веса качает отдельный процесс: его можно
+# убить кнопкой, а Hugging Face в следующий раз докачает с того же места.
+
+# Сколько весит модель целиком — только для подписи «X из ~9,3 ГБ».
+DOWNLOAD_BYTES = 9.3e9
+
+
+def weights_ready() -> bool:
+    """Веса уже на диске целиком — сеть не нужна."""
+    from huggingface_hub import snapshot_download
+
+    try:
+        snapshot_download(REPO, local_files_only=True)
+        return True
+    except Exception:
+        return False
+
+
+def _hub_dir() -> Path:
+    """Кеш Hugging Face. С версии 1.x файлы лежат в общей `hub/blobs`, а не в
+    папке модели, поэтому прогресс считаем по всему кешу, а не по ней."""
+    import os
+
+    свой = os.environ.get("HF_HUB_CACHE")
+    if свой:
+        return Path(свой)
+    return Path(os.environ.get("HF_HOME") or (config.MODELS_DIR / "hf")) / "hub"
+
+
+def _hub_bytes() -> int:
+    """Сколько байт сейчас в кеше, включая недокачанные куски."""
+    import os
+
+    всего = 0
+    for корень, _папки, файлы in os.walk(_hub_dir()):
+        for имя in файлы:
+            try:
+                всего += os.stat(os.path.join(корень, имя)).st_size
+            except OSError:
+                pass
+    return всего
+
+
+def _убить_дерево(процесс) -> None:
+    """Погасить процесс скачивания вместе с потомками.
+
+    `python.exe` из `.venv` (uv) — обёртка, настоящий Python у неё дочерний:
+    `kill()` гасил одну обёртку, а скачивание шло дальше (проверено 01.10).
+    """
+    import subprocess
+
+    try:
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(процесс.pid)],
+                       capture_output=True, timeout=10,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except Exception:
+        pass
+    try:
+        процесс.kill()
+    except Exception:
+        pass
+    try:
+        процесс.wait(timeout=10)
+    except Exception:
+        pass
+
+
+def download_weights(stop: threading.Event, progress=None, poll: float = 3.0) -> bool:
+    """Скачать веса отдельным процессом. False — остановили кнопкой.
+
+    `progress(скачано_байт)` зовётся раз в `poll` секунд. Вывод процесса — в
+    `data/higgs_download.log`: при сбое там видно, что ответил Hugging Face.
+    """
+    import os
+    import subprocess
+    import sys
+
+    код = ("import config\n"
+           "from huggingface_hub import snapshot_download\n"
+           f"snapshot_download({REPO!r})\n")
+    среда = dict(os.environ)
+    среда["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+    журнал_путь = config.DATA_DIR / "higgs_download.log"
+    журнал_путь.parent.mkdir(parents=True, exist_ok=True)
+    было = _hub_bytes()
+    with журнал_путь.open("w", encoding="utf-8") as журнал:
+        процесс = subprocess.Popen(
+            [sys.executable, "-c", код], cwd=str(config.ROOT), env=среда,
+            stdout=журнал, stderr=subprocess.STDOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            while процесс.poll() is None:
+                if stop.wait(poll):
+                    _убить_дерево(процесс)
+                    return False
+                if progress is not None:
+                    try:
+                        progress(max(0, _hub_bytes() - было))
+                    except Exception:
+                        pass
+        except BaseException:
+            if процесс.poll() is None:
+                _убить_дерево(процесс)
+            raise
+    if процесс.returncode != 0:
+        try:
+            хвост = журнал_путь.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            хвост = ""
+        хвост = " ".join(хвост.strip().splitlines()[-2:])[-300:]
+        raise RuntimeError("модель Higgs не скачалась"
+                           + (f": {хвост}" if хвост else "")
+                           + " — проверь интернет и включи голос ещё раз, "
+                             "скачивание продолжится с того же места")
+    return True
+
+
 def apply_delay(codes_tn):
     """[T, N] сырые коды → [T + N - 1, N] со сдвигом: книга c опаздывает на c шагов."""
     import torch

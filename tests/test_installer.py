@@ -1,8 +1,8 @@
 """Установщик Трубы: «Установить Трубу.bat», tools/install.ps1, prefetch.
 
-Всё проверяется текстом файлов. Ничего не ставится, не скачивается и не
-запускается: установщик качает гигабайты, а тесты должны проходить быстро и
-без сети.
+Текстовые проверки и одна локальная проверка функции PowerShell. Ничего не
+ставится и не скачивается: установщик качает гигабайты, а тесты должны
+проходить быстро и без сети.
 
 Что тут ловится по делу. `Установить Трубу.bat` — только ASCII и CRLF:
 кириллица в .bat ломается кодировкой cmd, а одиночные LF ломают весь файл.
@@ -15,8 +15,11 @@ cp1251 и рассыпает русский текст. `--seed` у `uv venv` о
 """
 
 import ast
+import os
 import re
 import subprocess
+import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -127,6 +130,44 @@ class InstallPs1Tests(unittest.TestCase):
         self.assertIn("'venv', '.venv', '--python', '3.11', '--seed'", self.текст)
         self.assertIn("https://github.com/astral-sh/uv/releases/download/0.12.2/uv-x86_64-pc-windows-msvc.zip",
                       self.текст)
+
+    @unittest.skipUnless(os.name == "nt", "Проверка Windows PowerShell")
+    def test_environment_check_reads_cfg_home_instead_of_powershell_home(self):
+        # В 0.9.7 `$home` совпал с неизменяемым `$HOME` PowerShell. Из-за этого
+        # установленный Python был объявлен отсутствующим в самом конце.
+        base = Path(getattr(sys, "_base_executable", sys.executable)).parent
+        if not (base / "pythonw.exe").is_file():
+            self.skipTest("базового pythonw.exe нет в среде проверки")
+        with tempfile.TemporaryDirectory() as tmp:
+            venv = Path(tmp) / ".venv"
+            (venv / "Lib" / "site-packages").mkdir(parents=True)
+            (venv / "pyvenv.cfg").write_text(f"home = {base}\n", encoding="utf-8")
+            ps = r'''
+$tokens = $null; $errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile(
+    $env:TRUBA_TEST_INSTALLER, [ref]$tokens, [ref]$errors)
+if ($errors.Count) { throw 'Ошибка разбора install.ps1' }
+$fn = $ast.FindAll({param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq 'Проверить-Окружение'}, $true) | Select-Object -First 1
+if (-not $fn) { throw 'Нет функции проверки окружения' }
+Invoke-Expression $fn.Extent.Text
+$venv = $env:TRUBA_TEST_VENV
+$python = $env:TRUBA_TEST_PYTHON
+$log = ''
+function Write-Лог { param($Текст, $Цвет); Write-Output $Текст }
+function Отказ { param($Сообщение); throw $Сообщение }
+Проверить-Окружение
+'''
+            env = os.environ.copy()
+            env.update(TRUBA_TEST_INSTALLER=str(INSTALL_PS1),
+                       TRUBA_TEST_VENV=str(venv), TRUBA_TEST_PYTHON=sys.executable)
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-Command", ps], env=env,
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=20)
+            self.assertEqual(result.returncode, 0,
+                             (result.stdout + result.stderr)[-1000:])
 
     def test_torch_comes_from_the_pytorch_index_for_the_cpu(self):
         # torch с PyPI тянет 2.5 ГБ с CUDA; базовой установке нужна сборка для

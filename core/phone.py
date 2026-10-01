@@ -18,7 +18,7 @@ import socket
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import numpy as np
 from fastapi import WebSocket
@@ -151,6 +151,20 @@ def phone_key() -> str:
     return ключ
 
 
+def key_matches(присланный) -> bool:
+    """Верный ли это ключ привязки телефона.
+
+    Сравнение байтами, как в `ws_refusal`: строку с не-ASCII знаками
+    `compare_digest` не сравнивает, а падает — и присланный кириллицей
+    «ключ» ронял бы проверку. Ключ попадает в манифест и в адрес запуска
+    ярлыка, поэтому проверять его надо здесь, а не в разборе адреса.
+    """
+    ключ = str(присланный or "")
+    if not ключ:
+        return False
+    return hmac.compare_digest(ключ.encode("utf-8"), phone_key().encode("utf-8"))
+
+
 def ws_refusal(ws) -> str:
     """Почему не пускаем это соединение. Пустая строка — пускаем.
 
@@ -166,9 +180,8 @@ def ws_refusal(ws) -> str:
     if client_is_local(ws):
         return ""
     ключ = str(ws.query_params.get("k") or "")
-    # Байтами: строку с не-ASCII знаками `compare_digest` не сравнивает, а
-    # падает — и присланный кириллицей «ключ» ронял бы проверку.
-    if not ключ or not hmac.compare_digest(ключ.encode("utf-8"), phone_key().encode("utf-8")):
+    # Сравнение байтами — см. `key_matches`.
+    if not ключ or not key_matches(ключ):
         return "нет ключа"
     return ""
 
@@ -381,7 +394,7 @@ class PhoneServer:
         }
 
         @app.get("/")
-        async def index():
+        async def index(request: Request):
             # Отмечаем, что телефон хотя бы дошёл до страницы: если дальше
             # соединение не появится, значит дело в самой странице.
             self._emit("page_opened", None)
@@ -390,25 +403,52 @@ class PhoneServer:
             # при подключении и перезагрузится сама, если устарела.
             # Тему вписываем туда же — до первой отрисовки, иначе телефон
             # моргает тёмным, пока не пришло сообщение по связи.
-            return HTMLResponse(
-                _с_темой(html.replace("__VERSION__", self.page_version())),
-                headers=NO_CACHE,
-            )
+            html = _с_темой(html.replace("__VERSION__", self.page_version()))
+            # Тот, кто ключ уже прислал, получает ссылку манифеста с ключом:
+            # Safari при «На экран „Домой“» идёт в манифест и открывает
+            # `start_url` — без ключа ярлык выходит непривязанным.
+            ключ = request.query_params.get("k") or ""
+            if key_matches(ключ):
+                html = html.replace(
+                    '<link rel="manifest" href="/manifest.json">',
+                    '<link rel="manifest" href="/manifest.json?k=%s">'
+                    % quote(ключ, safe=""),
+                )
+            return HTMLResponse(html, headers=NO_CACHE)
 
         # Манифест и иконка нужны, чтобы страница ставилась на телефон
         # как приложение и открывалась без адресной строки.
         @app.get("/manifest.json")
-        async def manifest():
-            return FileResponse(
-                web / "manifest.json",
-                media_type="application/manifest+json",
-                headers=NO_CACHE,
+        async def manifest(request: Request):
+            ключ = request.query_params.get("k") or ""
+            if not key_matches(ключ):
+                return FileResponse(
+                    web / "manifest.json",
+                    media_type="application/manifest+json",
+                    headers=NO_CACHE,
+                )
+            # Ключ в `start_url` — иначе ярлык на iPhone открывается во
+            # вкладке без него, а `localStorage` из Safari в отдельное
+            # веб-приложение не попадает вовсе.
+            данные = json.loads((web / "manifest.json").read_text(encoding="utf-8"))
+            данные["start_url"] = "/?k=" + quote(ключ, safe="")
+            return JSONResponse(
+                данные, media_type="application/manifest+json", headers=NO_CACHE
             )
 
         @app.get("/icon.svg")
         async def icon():
             return FileResponse(
                 web / "icon.svg", media_type="image/svg+xml", headers=NO_CACHE
+            )
+
+        # iPhone для ярлыка «На экран „Домой“» SVG не берёт и без PNG
+        # кладёт на экран уменьшенный снимок страницы (01.10, тест айфона).
+        @app.get("/apple-touch-icon.png")
+        async def apple_touch_icon():
+            return FileResponse(
+                web / "apple-touch-icon.png", media_type="image/png",
+                headers=NO_CACHE,
             )
 
         @app.get("/search_hum.wav")
@@ -1340,6 +1380,25 @@ class PhoneServer:
                 return JSONResponse(res, status_code=400)
             return JSONResponse(res, headers=NO_CACHE)
 
+        @app.post("/api/audio/test/play")
+        async def api_audio_test_play(request: Request):
+            # Отдельное нажатие «Прослушать»: играет запись, сделанную
+            # `/api/audio/test`. Голосом не управляет и микрофон не открывает,
+            # но запись хозяина в чужие руки не отдаём — доступ тот же, что у
+            # самой записи.
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                res = await asyncio.to_thread(rt.audio_test_play)
+            except Exception as exc:
+                return _fail(exc)
+            if not res.get("ok"):
+                return JSONResponse(res, status_code=400)
+            return JSONResponse(res, headers=NO_CACHE)
+
         @app.get("/api/hardware")
         async def api_hardware(request: Request):
             if not _local(request):
@@ -1918,6 +1977,12 @@ class PhoneServer:
             # размер экрана. Мусор и неправдоподобные числа просто игнорируем:
             # из-за чужого сообщения макет в пульте прыгать не должен.
             размер = _viewport_pair(data.get("w"), data.get("h"))
+            # Телефон в этом проекте лежит горизонтально, а макет в пульте всегда
+            # альбомный: телефон мог прислать «стоячий» размер (повернули и
+            # отключили), и макет встал бы столбом. Поэтому запоминаем всегда
+            # широкую сторону первой — тем же, что и подпись «Экран телефона W×H».
+            if размер is not None and размер["h"] > размер["w"]:
+                размер = {"w": размер["h"], "h": размер["w"]}
             if размер is not None and размер != self.viewport:
                 self._viewport = размер
                 _write_viewport(размер["w"], размер["h"])

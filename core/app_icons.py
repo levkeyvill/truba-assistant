@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import hashlib
+import os
 from ctypes import wintypes
 from pathlib import Path
 
@@ -307,6 +308,39 @@ def forget(app_id: str) -> None:
         (folder / f"{app_id}.png").unlink(missing_ok=True)
 
 
+def _icon_file(app: dict) -> Path | None:
+    """Файл, из которого брать значок программы. None — пути нет.
+
+    Путь в apps.json бывает с переменными (`%LOCALAPPDATA%\\Discord\\...`):
+    без раскрытия файл «не существует», и кнопка оставалась без значка.
+
+    Программы на Squirrel (Discord, Slack) запускаются через `Update.exe
+    --processStart Discord.exe`, а у самого `Update.exe` значка нет —
+    Windows отдаёт серое окошко. Логотип у них лежит рядом в `app.ico`,
+    а запасной путь — сама программа в новейшей папке `app-<версия>`.
+    """
+    program = str(app.get("path") or "").strip()
+    if not program:
+        return None
+    path = Path(os.path.expandvars(program))
+    if path.name.lower() != "update.exe":
+        return path
+    logo = path.parent / "app.ico"
+    if logo.exists():
+        return logo
+    args = [str(a) for a in (app.get("args") or [])]
+    target = ""
+    for i, arg in enumerate(args[:-1]):
+        if arg.lower() == "--processstart":
+            target = args[i + 1]
+    if target:
+        versions = sorted(path.parent.glob("app-*"), reverse=True)
+        for folder in versions:
+            if (folder / target).exists():
+                return folder / target
+    return path
+
+
 def picture_for(app: dict) -> Path | None:
     """Готовый файл значка кнопки. None — страница нарисует его сама.
 
@@ -326,13 +360,12 @@ def picture_for(app: dict) -> Path | None:
             picture = config.ROOT / picture
         return picture if picture.exists() else None
 
-    program = app.get("path")
-    if not program:
+    program_path = _icon_file(app)
+    if program_path is None:
         return None
 
     # Ключ зависит и от файла: смена пути или обновление программы не
     # должны показывать прежний логотип из кеша этой кнопки.
-    program_path = Path(program)
     try:
         stamp = program_path.stat()
     except OSError:

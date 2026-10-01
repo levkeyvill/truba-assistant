@@ -45,9 +45,11 @@ def _свободный_порт() -> int:
 class _ЧужойПульт:
     """Локальный сервер, отвечающий как пульт Трубы (любой версии)."""
 
-    def __init__(self, отпечаток: str | None, runtime: bool = True) -> None:
+    def __init__(self, отпечаток: str | None, runtime: bool = True,
+                 runtime_body: bytes = b'{"ok":true,"voice":{},"events":[],"overview":{}}') -> None:
         self.отпечаток = отпечаток
         self.runtime = runtime
+        self.runtime_body = runtime_body
         self.порт = _свободный_порт()
         вид = self
 
@@ -56,7 +58,7 @@ class _ЧужойПульт:
                 if self.path == "/api/install" and вид.отпечаток:
                     тело = вид.отпечаток.encode("utf-8")
                 elif self.path == "/api/runtime" and вид.runtime:
-                    тело = b'{"ok": true}'
+                    тело = вид.runtime_body
                 else:
                     self.send_error(404)
                     return
@@ -161,6 +163,13 @@ class ОбщийПортTests(unittest.TestCase):
     def test_чужая_программа_объясняется_отдельно(self):
         _подменить_отпечаток(self, "my-install-id-0123456789ab")
         посторонняя = _ЧужойПульт(None, runtime=False)
+        self.addCleanup(посторонняя.остановить)
+        self.assertEqual(instance.кто_на_порте(посторонняя.порт),
+                         "чужая программа")
+
+    def test_посторонний_http_с_runtime_не_считается_трубой(self):
+        _подменить_отпечаток(self, "my-install-id-0123456789ab")
+        посторонняя = _ЧужойПульт(None, runtime_body=b'{"ok":true}')
         self.addCleanup(посторонняя.остановить)
         self.assertEqual(instance.кто_на_порте(посторонняя.порт),
                          "чужая программа")
@@ -370,14 +379,15 @@ class ЗапускПультаTests(unittest.TestCase):
         решение, показать = self._решить("другая копия")
         self.assertEqual(решение, "отказ")
         показать.assert_not_called()
-        self.assertIn("уже работает из другой папки", window_mod.текст_отказа())
+        self.assertIn("Уже открыт пульт Трубы из другой папки",
+                      window_mod.текст_отказа())
 
     def test_старая_версия_тоже_даёт_отказ(self):
         # Та же ветка, но про другое (у 0.9.6 нет /api/install): текст
         # обязан объяснять и это, а не молчать.
         решение, _ = self._решить("другая копия")
         self.assertEqual(решение, "отказ")
-        self.assertIn("микрофон", window_mod.текст_отказа())
+        self.assertIn("Закрой его и повтори запуск", window_mod.текст_отказа())
 
     def test_чужая_программа_объясняется_отдельно(self):
         решение, _ = self._решить("чужая программа")
@@ -615,7 +625,11 @@ class УстановщикTests(unittest.TestCase):
 
     def test_установщик_не_перезаписывает_чужой_ярлык(self):
         self.assertIn("ЯрлыкЧужой", self.ps1)
-        self.assertIn("не трогаю его", self.ps1)
+        self.assertIn("оставляю его", self.ps1)
+        # Вторая папка — не сбой: жёлтым и словом «принадлежит» хозяин
+        # принял это за ошибку установки (01.10).
+        self.assertIn("Это не ошибка", self.ps1)
+        self.assertNotIn("принадлежит другой установке", self.ps1)
 
     def test_установщик_проверяет_окружение_до_обеих_веток_успеха(self):
         # «Готово» при неработающем окружении — ровно тот случай, из-за
@@ -663,11 +677,11 @@ class УстановщикTests(unittest.TestCase):
         байты = self.vbs.read_bytes()
         self.assertEqual(байты[:2], b"\xff\xfe", "VBScript читает только UTF-16 с BOM")
         текст = байты.decode("utf-16")
-        self.assertIn("КтоНаПорте", текст)
-        self.assertIn("Труба уже работает из другой папки; закрой её и повтори запуск.",
+        self.assertIn("PortOwner", текст)
+        self.assertIn("Уже открыт пульт Трубы из другой папки.",
                       текст)
         # Проверка обязана быть до запуска Python, иначе будет 30 с ожидания.
-        self.assertLess(текст.index("state = КтоНаПорте()"),
+        self.assertLess(текст.index("state = PortOwner()"),
                         текст.index("shell.Run command"))
         # Никаких соседних портов и никакой фокусировки чужого окна.
         self.assertNotIn("install_port.txt", текст)
@@ -679,6 +693,53 @@ class УстановщикTests(unittest.TestCase):
         текст = self.vbs.read_bytes().decode("utf-16")
         self.assertIn("/api/install", текст)
         self.assertIn("/api/runtime", текст)
+
+    def _vbs_состояние_порта(self, порт: int, отпечаток: str) -> str:
+        cscript = shutil.which("cscript.exe")
+        if not cscript:
+            self.skipTest("Windows Script Host недоступен")
+        текст = self.vbs.read_bytes().decode("utf-16")
+        функции = []
+        for имя in ("ValidInstallId", "PortOwner"):
+            начало = текст.index(f"Function {имя}(")
+            конец = текст.index("End Function", начало) + len("End Function")
+            функции.append(текст[начало:конец])
+        проба = ("Option Explicit\r\nDim myPort, myId\r\n"
+                 f"myPort = {порт}\r\nmyId = \"{отпечаток}\"\r\n"
+                 + "\r\n".join(функции) + "\r\n"
+                 "Select Case PortOwner()\r\n"
+                 "Case \"никто\": WScript.Echo \"NONE\"\r\n"
+                 "Case \"свой\": WScript.Echo \"OWN\"\r\n"
+                 "Case \"чужая\": WScript.Echo \"OTHER\"\r\n"
+                 "Case \"порт занят\": WScript.Echo \"BUSY\"\r\n"
+                 "End Select\r\n")
+        with tempfile.TemporaryDirectory() as папка:
+            путь = Path(папка) / "port_probe.vbs"
+            путь.write_bytes(b"\xff\xfe" + проба.encode("utf-16-le"))
+            результат = subprocess.run([cscript, "//NoLogo", str(путь)],
+                                       capture_output=True, timeout=12)
+        self.assertEqual(результат.returncode, 0,
+                         (результат.stdout + результат.stderr)
+                         .decode("utf-8", "replace"))
+        return результат.stdout.decode("ascii").strip()
+
+    def test_vbs_свободный_порт_не_называет_другой_трубой(self):
+        # Регрессия 01.10: при ошибке подключения к пустому порту выражение
+        # `Err.Number = 0 And request.status = 200` возвращало «чужая».
+        self.assertEqual(self._vbs_состояние_порта(_свободный_порт(), "a" * 64),
+                         "NONE")
+
+    def test_vbs_различает_свою_чужую_и_посторонний_http(self):
+        свой = _ЧужойПульт("a" * 64)
+        чужой = _ЧужойПульт("b" * 64)
+        старый = _ЧужойПульт(None)
+        посторонний = _ЧужойПульт(None, runtime_body=b'{"ok":true}')
+        for сервер in (свой, чужой, старый, посторонний):
+            self.addCleanup(сервер.остановить)
+        for сервер, ожидание in ((свой, "OWN"), (чужой, "OTHER"),
+                                 (старый, "OTHER"), (посторонний, "BUSY")):
+            self.assertEqual(self._vbs_состояние_порта(сервер.порт, "a" * 64),
+                             ожидание)
 
     def test_vbs_не_утверждает_что_установка_не_дошла_до_конца(self):
         текст = self.vbs.read_bytes().decode("utf-16")
@@ -700,6 +761,26 @@ class УстановщикTests(unittest.TestCase):
         self.assertEqual(текст.count("\nSub "), текст.count("\nEnd Sub"))
         self.assertEqual(текст.count("\nFunction "), текст.count("\nEnd Function"))
         self.assertNotIn("install_port.txt", текст)
+
+    def test_vbs_компилируется_без_запуска_трубы(self):
+        cscript = shutil.which("cscript.exe")
+        if not cscript:
+            self.skipTest("Windows Script Host недоступен")
+        текст = self.vbs.read_bytes().decode("utf-16")
+        первая, остаток = текст.split("\r\n", 1)
+        self.assertEqual(первая, "Option Explicit")
+        # Первая исполняемая строка завершает пробу. Движок всё равно
+        # компилирует весь файл и ловит ошибки даже в недостижимых функциях.
+        with tempfile.TemporaryDirectory() as папка:
+            проба = Path(папка) / "compile_only.vbs"
+            проба.write_bytes(b"\xff\xfe" +
+                              (первая + "\r\nWScript.Quit\r\n" + остаток)
+                              .encode("utf-16-le"))
+            результат = subprocess.run([cscript, "//NoLogo", str(проба)],
+                                       capture_output=True, timeout=10)
+        self.assertEqual(результат.returncode, 0,
+                         (результат.stdout + результат.stderr)
+                         .decode("utf-8", "replace"))
 
 
 if __name__ == "__main__":
