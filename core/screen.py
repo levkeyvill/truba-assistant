@@ -131,6 +131,25 @@ def as_data_url(image) -> str:
     return f"data:image/jpeg;base64,{data}"
 
 
+def recent(count: int = 3) -> list[tuple[Path, str]]:
+    """Последние сохранённые Трубой снимки, включая прошлые запуски."""
+    from PIL import Image
+
+    try:
+        paths = sorted(shots_dir().glob("????-??-??_??-??-??.png"),
+                       reverse=True)[:count]
+    except OSError:
+        return []
+    found = []
+    for path in reversed(paths):
+        try:
+            with Image.open(path) as picture:
+                found.append((path, as_data_url(picture)))
+        except OSError:
+            continue  # один битый кадр не прячет остальные
+    return found
+
+
 def take(which: str | int = "primary") -> tuple[Path, str]:
     """Снимает, сохраняет и готовит картинку для телефона."""
     image = grab(which)

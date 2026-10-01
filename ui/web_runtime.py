@@ -278,6 +278,24 @@ class WebRuntime:
         self._provider_test_lock = threading.Lock()
         self._preview_lock = threading.Lock()
         self._web_test_lock = threading.Lock()
+        # Проба звука мастера: снимает голос, пишет и возвращает. Замок
+        # создаём здесь, а не на лету — иначе два первых параллельных запроса
+        # завели бы по своему замку и прошли бы одновременно.
+        self._audio_probe_lock = threading.Lock()
+        # Захват микрофона на шаге 4: короткий замер полоски и проба «Записать и
+        # послушать» — **один** замок на время открытия устройства. Иначе замер
+        # на 0,25 с и проба на 3 с открывают один микрофон разом, и проба
+        # получает «устройство занято». Проба берёт его с ожиданием до секунды
+        # (замер короткий, он скоро кончится), замер — без ожидания: полоска
+        # может подождать следующего своего прохода.
+        self._level_capture_lock = threading.Lock()
+        # Предварительный уровень шага 4 мастера: кеш последнего замера и
+        # ограничение частоты. Захват он **не** защищает — его держит
+        # `_level_capture_lock`, и во время `sounddevice` этот замок свободен.
+        self._level_preview_lock = threading.Lock()
+        self._level_preview_at = 0.0
+        self._level_preview_key = None
+        self._level_preview_level = None
         # Активная запись образца хозяина: {"id", "recorder"} или None.
         self._enroll = None
         # Звук меняли при работающем голосе — поднять заново при включении.
@@ -1012,14 +1030,22 @@ class WebRuntime:
                 return
             self._remember(kind, payload)
             return
-        if kind in ("open_search", "open_source"):
-            # Касания карточки поиска: это действия с компьютера, обрабатываем
-            # здесь (пульт живёт всё время), а в ленту «Голоса» они не идут.
-            # Сами напишем в журнал тем, что вышло (см. `_open_source`).
+        if kind in ("open_search", "open_source", "reminders_cancel",
+                    "search_history_delete", "search_history_clear"):
+            # Касания карточек и действия из списков: это поступки хозяина с
+            # телефона, обрабатываем здесь (пульт живёт всё время), а в ленту
+            # «Голоса» они не идут — там только то, что она сама сказала.
+            # Сами напишем в журнал тем, что вышло.
             if kind == "open_search":
                 self._open_search(payload)
-            else:
+            elif kind == "open_source":
                 self._open_source(payload)
+            elif kind == "reminders_cancel":
+                self._reminders_cancel_phone(payload)
+            elif kind == "search_history_delete":
+                self._search_history_delete(payload)
+            else:
+                self._search_history_clear()
             return
         self._remember(kind, payload)
         if kind == "connected":
@@ -1060,6 +1086,10 @@ class WebRuntime:
             self._notes_list()
         elif kind == "notes_topic":
             self._notes_topic(payload)
+        elif kind == "reminders_list":
+            self._reminders_phone()
+        elif kind == "search_history_list":
+            self._search_history_phone()
 
     def _phone_volume(self, payload) -> None:
         """Регулятор громкости на телефоне: `{"type": "volume", "step": ±1}`.
@@ -1552,6 +1582,141 @@ class WebRuntime:
             except Exception:
                 pass
 
+    def _reminders_phone(self) -> None:
+        """Телефон открыл карточку «Напоминания»: отдать список.
+
+        Только чтение и только по уже авторизованному сокету телефона: сам
+        список — личный файл хозяина, а локальный `GET /api/reminders` с
+        телефона недоступен. Ничего на компьютере не выполняется — только
+        чтение и ответ тому, кто спросил.
+
+        Список уже собирает `reminders_list()` — тем же, что и Панель, чтобы
+        телефон и пульт не показывали разное.
+        """
+        self._bg(self._отдать_напоминания)
+
+    def _отдать_напоминания(self, ошибка: str = "") -> None:
+        """Ответить телефону списком напоминаний (или понятной ошибкой).
+
+        Отдельный метод, потому что тем же ответом пульта заканчивает и отмена
+        с телефона: хозяин должен увидеть, что осталось стоять, даже когда
+        отменять было нечего.
+        """
+        try:
+            items = self.reminders_list().get("items") or []
+        except Exception as exc:
+            self._remember("error", f"напоминания на телефон: {exc}")
+            items, ошибка = [], ошибка or "не получила список"
+        try:
+            self.server.send_reminders(items, error=ошибка)
+        except Exception as exc:
+            self._remember("error", f"напоминания на телефон: {exc}")
+
+    def _reminders_cancel_phone(self, payload) -> None:
+        """Телефон попросил снять одно напоминание: `{"type":
+        "reminders_cancel", "id": "r1"}`.
+
+        Отмена ровно одного — тем же `reminders_cancel`, что зовёт Панель: он
+        проверяет вид id и сам берёт `pending` после отмены. Вторую проверку
+        писать не надо, иначе телефон и пульт разойдутся, кому можно сносить.
+        «Отменить всё» с телефона нельзя: `id` вида `all` Панель и не принимает.
+
+        Отказ — честным текстом, а не пустым списком молча.
+        """
+        body = payload if isinstance(payload, dict) else {}
+
+        def run() -> None:
+            try:
+                self.reminders_cancel(body)
+            except Exception as exc:
+                self._remember("reminder_cancel_error", str(exc))
+                self._отдать_напоминания(str(exc) or "не получилось отменить")
+                return
+            self._отдать_напоминания()
+
+        self._bg(run)
+
+    def _search_history_phone(self) -> None:
+        """Телефон открыл «Историю поиска»: отдать запросы и время.
+
+        Читается `core/search_history.py` — тот же файл, куда кладутся
+        настоящие успешные поиски. Ничего не выполняется и никуда не
+        открывается: тап по строке телефон шлёт отдельно, и там уже
+        `open_search` (соберёт адрес сервер).
+        """
+        self._bg(self._отдать_историю)
+
+    def _отдать_историю(self, ошибка: str = "") -> None:
+        """Ответить телефону историей поиска (или понятной ошибкой).
+
+        Отдельный метод для тех же двух причин, что и у напоминаний: после
+        удаления записи или очистки всего хозяин должен увидеть, что осталось.
+        """
+        from core import search_history
+
+        try:
+            записи = search_history.entries()
+        except Exception as exc:
+            self._remember("error", f"история поиска на телефон: {exc}")
+            записи, ошибка = [], ошибка or "не получила список"
+        try:
+            self.server.send_search_history(записи, error=ошибка)
+        except Exception as exc:
+            self._remember("error", f"история поиска на телефон: {exc}")
+
+    def _search_history_delete(self, payload) -> None:
+        """Телефон попросил убрать одну запись: `{"type":
+        "search_history_delete", "id": …}`.
+
+        Убирается строго по `id` из `core/search_history.py`: тот же вопрос
+        может лежать в истории дважды, и снести все копии по тексту — значило
+        бы снести лишнее. Ни пути, ни адреса телефон не присылает и получить
+        не может — `id` это ключ списка, а не имя файла.
+        """
+        data = payload if isinstance(payload, dict) else {}
+        что = str(data.get("id", "") or "").strip()
+
+        def run() -> None:
+            from core import search_history
+
+            try:
+                убрано = search_history.delete(что)
+            except Exception as exc:
+                self._remember("error", f"история поиска: удаление не вышло — {exc}")
+                self._отдать_историю("не получилось убрать")
+                return
+            if not убрано:
+                # Честный отказ: молчаливое «готово» хозяин бы принял за
+                # удаление, а запись осталась бы на месте.
+                self._remember("search_history_delete", f"нет такой записи: {что}")
+                self._отдать_историю("этой записи уже нет")
+                return
+            self._remember("search_history_delete", что)
+            self._отдать_историю()
+
+        self._bg(run)
+
+    def _search_history_clear(self) -> None:
+        """Телефон попросил очистить всю историю поиска.
+
+        Файл один и общий с пультом, поэтому чистится целиком — «очистить
+        историю» и значит «всю». Ответ — то, что осталось (то есть ничего),
+        а не тишина: хозяин должен увидеть, что команда сработала.
+        """
+        def run() -> None:
+            from core import search_history
+
+            try:
+                сколько = search_history.clear()
+            except Exception as exc:
+                self._remember("error", f"история поиска: очистка не вышла — {exc}")
+                self._отдать_историю("не получилось очистить")
+                return
+            self._remember("search_history_clear", f"убрано записей: {сколько}")
+            self._отдать_историю()
+
+        self._bg(run)
+
     def _notes_list(self) -> None:
         """Телефон открыл заметки: список разделов и тем.
 
@@ -1749,6 +1914,19 @@ class WebRuntime:
         except Exception:
             pass
 
+    def _порт(self) -> int:
+        """Порт, на котором работает эта копия пульта.
+
+        У двух Труб на одном компьютере он разный, поэтому ссылка телефона,
+        QR и Origin берут его отсюда, а не из `config.PHONE_PORT`. Сервера
+        нет (проверки в тестах) — привычный порт из настроек.
+        """
+        import config
+
+        сервер = getattr(self, "server", None)
+        порт = getattr(сервер, "port", None)
+        return int(порт) if isinstance(порт, int) else int(config.PHONE_PORT)
+
     def settings_snapshot(self) -> dict:
         import config
         from core import autostart, memory, settings
@@ -1804,6 +1982,9 @@ class WebRuntime:
             "provider": provider, "providers": providers,
             "settings": values, "persona": persona, "phone_key": ключ_телефона,
             "memory": mem_text, "addresses": local_addresses(),
+            # Порт этого пульта: у второй копии Трубы он свой, и адрес
+            # телефона в QR должен вести именно к ней.
+            "phone_port": self._порт(),
             "voices": voices, "voice_samples": samples,
             "owner_known": owner_known, "autostart": автозапуск,
         }
@@ -1857,13 +2038,254 @@ class WebRuntime:
             уровень = 0.0
         return {"ok": True, "level": max(0.0, min(1.0, уровень))}
 
-    def audio_test(self) -> dict:
+    # Шаг 4 мастера смотрит на **выбранный** микрофон, а не на тот, который
+    # сейчас держит голос. Частые запросы к `/api/audio/level` там шлёт
+    # страница, поэтому короткий замер ограничиваем: 0.4 с между ними — это
+    # две-три полоски в секунду, глазом достаточно, а микрофон не дёргается.
+    PREVIEW_MIN_GAP = 0.4
+    # Сам замер короткий: полоска должна жить, но не держать устройство.
+    PREVIEW_SECONDS = 0.25
+
+    def audio_level_preview(self, mic_name: str = "",
+                            mic_channel: int = 0) -> dict:
+        """Уровень **выбранного** микрофона для шага 4 мастера.
+
+        Обычный `audio_level` отвечает уровнем работающего голоса: на шаге
+        мастера голоса может ещё не быть, а если он есть — держит прошлый
+        микрофон, и полоска врала бы. Поэтому здесь запрос сам называет
+        устройство, а сервер отвечает ровно по нему.
+
+        Работающий слушатель при этом не трогаем: если он слушает ровно этот
+        микрофон и вход, его уровень и есть ответ, второй захват не нужен.
+        Иначе меряем коротко и сразу закрываем; если Windows не даёт
+        открыть устройство, так и говорим — уровень чужого микрофона здесь
+        был бы враньём.
+        """
+        import config
+
+        имя = str(mic_name or "").strip()
+        try:
+            вход = int(mic_channel or 0)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": f"вход должен быть числом, а не «{mic_channel}»"}
+        if вход < 0:
+            return {"ok": False, "error": f"вход должен быть не меньше нуля, а не {вход}"}
+
+        # Список устройств — тот же, что видит страница: замерять того, чего
+        # в списке нет, нельзя, иначе это будет тихий обход выбора.
+        try:
+            устройства = config.list_inputs()
+        except Exception as exc:
+            return {"ok": False, "error": f"не удалось получить список микрофонов: {exc}"}
+        if not имя:
+            # Ничего не выбрано — значит системный, как и в голосе.
+            устройство = next((у for у in устройства if у.get("default")), None)
+            if устройство is None and устройства:
+                устройство = устройства[0]
+            if устройство is None:
+                return {"ok": False, "error": "микрофон не найден — подключи микрофон"}
+        else:
+            устройство = next((у for у in устройства
+                               if str(у.get("name") or "") == имя), None)
+            if устройство is None:
+                близкие = [у for у in устройства if имя.lower() in str(у.get("name", "")).lower()]
+                if близкие:
+                    устройство = близкие[0]
+                else:
+                    return {"ok": False,
+                            "error": f"микрофон «{имя}» сейчас не подключён"}
+        каналов = int(устройство.get("channels") or 1)
+        if вход >= каналов:
+            return {"ok": False,
+                    "error": f"у микрофона «{устройство.get('name', '')}» только "
+                             f"{каналов} вход(а), а выбран {вход + 1}"}
+
+        # Голос слушает ровно это устройство — берём его уровень, не открывая
+        # микрофон второй раз (Windows второго захвата не даёт).
+        слушает = self._слушает_устройство(устройство.get("index"), вход)
+        if слушает is not None:
+            return {"ok": True, "level": слушает, "source": "voice"}
+
+        # Тот же голос, но другой микрофон или другой вход: его уровень здесь
+        # не годится, меряем нужное устройство сами.
+        индекс = устройство.get("index")
+        if индекс is None:
+            return {"ok": False, "error": "микрофон не найден в списке устройств"}
+        # Захват микрофона — общий с пробой. Идёт проба: устройство сейчас
+        # занято на три секунды, честно говорим об этом и **не** открываем его
+        # вторым захватом. Полоска вернётся сама на следующем проходе.
+        захват = self._level_capture_lock
+        if not захват.acquire(blocking=False):
+            return {"ok": False, "busy": True, "error": "идёт проверка звука — полоска вернётся сразу после неё"}
+        try:
+            now = time.monotonic()
+            with self._level_preview_lock:
+                прошло = now - self._level_preview_at
+                if прошло < self.PREVIEW_MIN_GAP and self._level_preview_key == (индекс, вход):
+                    # Частые запросы не открывают микрофон снова.
+                    if self._level_preview_level is not None:
+                        return {"ok": True, "level": self._level_preview_level, "source": "measure"}
+                    return {"ok": False, "error": "микрофон меряется — подожди долю секунды"}
+                self._level_preview_at = now
+                self._level_preview_key = (индекс, вход)
+                self._level_preview_level = None
+            try:
+                from core.audio_in import measure_level
+
+                уровень = float(measure_level(индекс, вход, self.PREVIEW_SECONDS))
+            except Exception as exc:
+                # Устройство занято или не открывается — это ответ «почему полоска
+                # молчит», а не тишина и не уровень чужого микрофона.
+                return {"ok": False, "error": f"микрофон «{устройство.get('name', '')}» "
+                                              f"не даёт замерить уровень: {exc}"}
+            уровень = max(0.0, min(1.0, уровень))
+            with self._level_preview_lock:
+                self._level_preview_level = уровень
+            return {"ok": True, "level": уровень, "source": "measure"}
+        finally:
+            захват.release()
+
+    def _слушает_устройство(self, индекс, вход: int):
+        """Уровень работающего голоса, если он слушает ровно это устройство.
+
+        `None` — голос выключен или слушает другое: тогда нужен свой замер.
+        """
+        listener = getattr(getattr(self, "voice", None), "_listener", None)
+        if listener is None or not bool(getattr(self.voice, "running", False)):
+            return None
+        if индекс is None:
+            return None
+        try:
+            if int(getattr(listener, "device", -1)) != int(индекс):
+                return None
+            if int(getattr(listener, "channel", 0) or 0) != вход:
+                return None
+            уровень = float(getattr(listener, "last_level", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, min(1.0, уровень))
+
+    def audio_test(self, проба: bool = False) -> dict:
         """Записать с выбранного микрофона и тут же проиграть в выбранный вывод.
 
         Работающий голос держит микрофон, поэтому второй раз его открыть
         нельзя — вернём просьбу выключить голос. Так же сделано в «Проверке
         распознавания» и в записи образца: микрофон занят им.
+
+        `проба` — запрос мастера первого запуска. Он отличается от обычной
+        кнопки настроек тем, что голос на время пробы снимает и возвращает
+        **сервер**: показывать это просьбой «выключи голос» мастеру нельзя,
+        у него кнопки «Дальше» ждут ответа, а хозяин может закрыть вкладку
+        на середине. Остановка, запись и включение обратно идут под одним
+        замком и в `finally`, поэтому голос не остаётся выключенным — даже
+        если запись или проигрывание сорвалось.
         """
+        if проба:
+            return self._audio_probe()
+        return self._audio_record_once()
+
+    def _поднять_голос_после_пробы(self) -> None:
+        """Вернуть голос после пробы: как `voice_toggle`, но без проверок.
+
+        Если звук меняли при работающем голосе, `_audio_stale` поднят — старые
+        микрофон и колонки поднимать нельзя, сначала `_drop_audio()`.
+        Уже работающий голос второй раз не запускаем.
+        """
+        if getattr(self.voice, "running", False):
+            return
+        if getattr(self, "_audio_stale", False):
+            self._drop_audio()
+        self.voice.start()
+        self._warm_start()
+
+    def _audio_probe(self) -> dict:
+        """Проба микрофона из мастера: голос снимаем, пишем, возвращаем как было.
+
+        Голос включаем обратно только если он был включён: выключенный остаётся
+        выключенным. Не поднялся — возвращаем честный отказ с причиной, молчать
+        после пробы нельзя.
+
+        Остановка голоса тоже под защитой: если она погасила голос наполовину и
+        упала, восстановление всё равно должно произойти, а проба — честно
+        отклониться, не выдавая записанный текст за успех.
+        """
+        замок = self._audio_probe_lock
+        if not замок.acquire(blocking=False):
+            return {"ok": False, "error": "проба звука уже идёт — подожди пару секунд"}
+        # Захват микрофона — общий с коротким замером полоски (`_level_capture_lock`).
+        # Замер длится 0,25 с, поэтому проба ждёт его до секунды и затем пишет
+        # спокойно. Сама проба ждёт не больше этого: если микрофон всё ещё занят
+        # (кто-то другой пишет), честно отказываем, а не висим.
+        захват = self._level_capture_lock
+        if not захват.acquire(timeout=1.0):
+            замок.release()
+            return {"ok": False, "error": "микрофон занят другой записью — подожди пару секунд и попробуй снова"}
+        try:
+            return self._проба_под_захватом()
+        finally:
+            захват.release()
+            замок.release()
+
+    def _проба_под_захватом(self) -> dict:
+        """Сама проба. Замки (проба и захват микрофона) уже взяты вызывающим."""
+        былГолос = bool(getattr(self.voice, "running", False))
+        сбойСтопа = None
+        if былГолос:
+            try:
+                self.voice.stop()
+                self._warm_stop()
+            except Exception as exc:
+                # Голос мог уже погаснуть — восстановление всё равно нужно.
+                сбойСтопа = exc
+        сбойГолоса = None
+        сбойЗаписи = None
+        ответ = None
+        try:
+            if сбойСтопа is None:
+                try:
+                    ответ = self._audio_record_once()
+                except Exception as exc:
+                    сбойЗаписи = exc
+        finally:
+            if былГолос:
+                try:
+                    self._поднять_голос_после_пробы()
+                except Exception as exc:
+                    сбойГолоса = exc
+        if сбойСтопа is not None:
+            текст = f"{type(сбойСтопа).__name__}: {сбойСтопа}"
+            if сбойГолоса is not None:
+                текст += f"; и вернуть не вышло: {type(сбойГолоса).__name__}: {сбойГолоса}"
+            вернулся = (сбойГолоса is None
+                        and bool(getattr(self.voice, "running", False)))
+            return {"ok": False, "voice_restored": вернулся,
+                    "error": f"проба не началась, голос не остановился: {текст}"
+                             + ("" if вернулся else
+                                " — включи его сам, пультом или «Голос» в настройках")}
+        if сбойГолоса is not None:
+            текст = f"{type(сбойГолоса).__name__}: {сбойГолоса}"
+            # Даже при одновременной ошибке записи главная новость —
+            # голос не вернулся. И о причине записи тоже скажем.
+            запись = (f"Запись тоже сорвалась: {type(сбойЗаписи).__name__}: "
+                       f"{сбойЗаписи}. " if сбойЗаписи is not None else "")
+            return {"ok": False, "voice_restored": False,
+                    "error": f"{запись}Голос не поднялся: {текст} — "
+                             "включи его сам, пультом или «Голос» в настройках"}
+        if сбойЗаписи is not None:
+            raise сбойЗаписи
+        if not ответ.get("ok"):
+            # Проба сорвалась, а голос вернулся: отказ остаётся отказом,
+            # просто «голос на месте» хозяину знать не обязательно.
+            return ответ
+        if былГолос and not getattr(self.voice, "running", False):
+            return {"ok": False, "voice_restored": False,
+                    "error": "проба прошла, но голос не поднялся — "
+                             "включи его сам, пультом или «Голос» в настройках"}
+        ответ["voice_restored"] = былГолос
+        return ответ
+
+    def _audio_record_once(self) -> dict:
+        """Одна запись с микрофона и прослушивание. Голосом не управляет."""
         import numpy as np
 
         import config
@@ -1950,7 +2372,11 @@ class WebRuntime:
             "possible": bool(проверка.get("ok")),
             "why": "" if проверка.get("ok") else str(проверка.get("error") or ""),
             "reason": "" if проверка.get("ok") else str(проверка.get("reason") or ""),
+            # `installed` — только библиотеки. Веса моделей качаются позже и
+            # лениво, поэтому пульт обязан говорить о них отдельно, иначе
+            # «модели скачаны» будет означать то, чего не было.
             "installed": bool(hardware.voices_installed()),
+            "weights": voices_install.weights_installed(),
         }
 
     def voices_install(self) -> dict:
@@ -2016,7 +2442,10 @@ class WebRuntime:
         import config
         from core.phone import local_addresses, phone_key
 
-        allowed = {f"http://{ip}:{config.PHONE_PORT}" for ip in local_addresses()}
+        # Порт — тот, на котором работает *этот* пульт, а не константа из
+        # config: у второй копии Трубы он свой, и адрес телефона в QR должен
+        # вести именно к ней.
+        allowed = {f"http://{ip}:{self._порт()}" for ip in local_addresses()}
         части = urlsplit(str(url or "").strip())
         основа = f"{части.scheme}://{части.netloc}"
         # С 29.09 в ссылке ещё ключ привязки телефона (`/?k=…`) — и ничего,
@@ -2299,6 +2728,17 @@ class WebRuntime:
                 errors.append(f"{key}: держись в пределах {low}…{high}")
                 continue
             to_save[key] = val
+        # Шаг мастера первого запуска. Строго целое 1…6: строкой «5», десятичной
+        # 5.5 или bool это не номер шага, а опечатка — такой запрос отвергаем
+        # целиком, как просил бы любой другой неверный ключ.
+        if "wizard_step" in payload:
+            значение = payload["wizard_step"]
+            if isinstance(значение, bool) or not isinstance(значение, int) \
+                    or not (settings.WIZARD_STEP_MIN <= значение
+                            <= settings.WIZARD_STEP_MAX):
+                errors.append("wizard_step: целое число от 1 до 6")
+            else:
+                to_save["wizard_step"] = значение
         choices = {"tts_engine": ("silero", "espeech", "higgs"),
                    "listen_mode": ("always", "name", "off"),
                    "web_search_mode": ("free", "paid", "auto"),
@@ -2320,13 +2760,23 @@ class WebRuntime:
         # Из запроса `proactive_last` не берём: хозяин это поле не видит.
         if to_save.get("proactive", "never") != "never":
             to_save["proactive_last"] = to_save["proactive"]
-        for key in ("silero_speaker", "silero_model", "voice_name"):
+        for key in ("silero_speaker", "silero_model"):
             if key in payload:
                 val = payload[key]
                 if not isinstance(val, str) or not val.strip() or len(val) > 64:
                     errors.append(f"{key}: короткое имя строкой")
                 else:
                     to_save[key] = val.strip()
+        # Образец голоса — исключение: пустым он бывает законно («образца ещё
+        # нет»), и это не причина отвергать весь запрос. Иначе выбор Higgs или
+        # ESpeech без готового образца не сохранялся бы вовсе, хозяин уходил
+        # со старым Silero и не понимал почему (29.09, отзыв о 0.9.6).
+        if "voice_name" in payload:
+            val = payload["voice_name"]
+            if not isinstance(val, str) or len(val.strip()) > 64:
+                errors.append("voice_name: короткое имя строкой")
+            else:
+                to_save["voice_name"] = val.strip()
         for key in ("require_name_when_noisy", "voice_app_guard", "owner_only",
                     "barge_instant", "web_search", "search_sound", "replay_guard",
                     "voice_autostart", "higgs_gentle", "proactive_look", "hedge",
@@ -2551,6 +3001,14 @@ class WebRuntime:
                 if heavy:
                     self._audio_stale = True
                     note = "Сохранено. Новый звук включится, когда выключишь и включишь голос"
+        # Голос по образцу без образца: выбор сохранён (иначе он бы потерялся
+        # молча), но говорить пока нечем. Говорим это словами и называем путь,
+        # а не возвращаем молча Silero.
+        if "tts_engine" in changed_settings and changed_settings["tts_engine"] in (
+                "espeech", "higgs") and not str(config.VOICE_NAME or "").strip():
+            note = ("Сохранено. Образца голоса ещё нет — добавь запись .wav или .mp3: "
+                    "«Голос → Озвучивание → Новый голос из записи». Пока образца нет, "
+                    "она молчит, а не переходит на Silero сама")
         # Ярлык трогаем, только когда галочку переключили: «Сохранить» жмут
         # ради любой настройки. Ошибка — у самой галочки («autostart: …»),
         # остальное к этому моменту уже сохранено.
@@ -2947,7 +3405,11 @@ class WebRuntime:
 
                 name = payload.get("voice_name")
                 if name not in voice_prep.available():
-                    raise ValueError("Выбери готовый образец голоса")
+                    # Не «выбери образец», когда их нет: в пульте есть кнопка
+                    # добавления, и причина должна называть её.
+                    raise ValueError(
+                        "Образца голоса нет — добавь запись .wav или .mp3: "
+                        "«Голос → Озвучивание → Новый голос из записи»")
                 # Голос выключен (проверено выше), значит видеопамять после
                 # пробы надо отдать обратно — до 9 ГБ.
                 voice = higgs_voice.shared()
@@ -2966,7 +3428,9 @@ class WebRuntime:
 
                 name = payload.get("voice_name")
                 if name not in voice_prep.available():
-                    raise ValueError("Выбери готовый образец голоса")
+                    raise ValueError(
+                        "Образца голоса нет — добавь запись .wav или .mp3: "
+                        "«Голос → Озвучивание → Новый голос из записи»")
                 nfe = int(payload.get("tts_nfe", 32))
                 if not 4 <= nfe <= 64:
                     raise ValueError("Качество голоса должно быть от 4 до 64")
@@ -3126,20 +3590,27 @@ class WebRuntime:
         for entry in items:
             if not isinstance(entry, dict):
                 return {"ok": False, "error": "каждая кнопка — объект"}
-            app_id = entry.get("id", "")
             title = entry.get("title", "")
             kind = entry.get("kind", "app")
-            if not isinstance(app_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", app_id.strip()):
-                return {"ok": False, "error": "id: латиница, цифры, точка, дефис или подчёркивание"}
-            app_id = app_id.strip()
+            if not isinstance(title, str) or not title.strip() or len(title) > 80:
+                return {"ok": False, "error": "у кнопки нужен title до 80"}
+            title = title.strip()
+            # Служебное имя (`id`) хозяин вправе не писать: название он задаёт
+            # обычное русское, а имя кнопки придумываем сами из него
+            # (`launcher.make_id` раскладывает кириллицу в латиницу). Раньше
+            # пустое или русское `id` отвергалось, и добавить ссылку, не
+            # переключаясь в латиницу, было нельзя вовсе.
+            # Написанное руками латинское имя уважаем — по нему телефон помнит
+            # кнопку и положение плитки.
+            app_id = launcher.чистое_id(entry.get("id"), title, seen)
+            if app_id is None:
+                return {"ok": False, "error": "не получилось придумать id из названия"}
             if app_id in seen:
                 return {"ok": False, "error": f"повторный id: {app_id}"}
             seen.add(app_id)
-            if not isinstance(title, str) or not title.strip() or len(title) > 80:
-                return {"ok": False, "error": "у кнопки нужен title до 80"}
             if kind not in launcher.APP_KINDS:
                 return {"ok": False, "error": f"вид бывает app/url/store/folder: {app_id}"}
-            item = {"id": app_id, "title": title.strip(), "kind": kind}
+            item = {"id": app_id, "title": title, "kind": kind}
             if kind == "folder":
                 # Своя папка хозяина: у неё, как у программы, есть только путь,
                 # и открывается она проводником. Без пути кнопка была бы
@@ -3222,10 +3693,10 @@ class WebRuntime:
                     item["aliases"] = прозвища
             menu = entry.get("menu")
             if menu is not None:
-                why = self._check_menu(app_id, menu)
+                why, разобранное = self._check_menu(app_id, menu)
                 if why:
                     return {"ok": False, "error": why}
-                item["menu"] = launcher.clean_menu(menu)
+                item["menu"] = launcher.clean_menu(разобранное)
             if entry.get("bookmarks") is not None:
                 if entry["bookmarks"] not in ("", "firefox"):
                     return {"ok": False, "error": f"у {app_id} bookmarks бывает firefox"}
@@ -3238,58 +3709,68 @@ class WebRuntime:
         return {"ok": True, "apps": clean}
 
     @staticmethod
-    def _check_menu(app_id: str, raw) -> str:
-        """Проверяет меню перед записью. Пустая строка — всё в порядке.
+    def _check_menu(app_id: str, raw):
+        """Проверяет меню перед записью. `(пустая строка, пункты)` — всё в порядке.
 
         Номер пункта попадает в текст ошибки, чтобы пульт показал ошибку у
         нужного поля, а не просто «что-то не так».
+
+        Вторым возвращаемым значением идут сами пункты с уже придуманными
+        именами: имя пункта хозяин может не писать (берётся из русского
+        названия), и записывать надо то, что сервер придумал, а не пустое
+        поле из формы.
         """
-        from core import hotkeys
+        from core import hotkeys, launcher
 
         if not isinstance(raw, list):
-            return f"у {app_id} меню — список пунктов"
+            return f"у {app_id} меню — список пунктов", None
         if len(raw) > 24:
-            return f"у {app_id} пунктов меню не больше 24"
+            return f"у {app_id} пунктов меню не больше 24", None
 
         seen = set()
+        разобранные = []
         for number, entry in enumerate(raw, 1):
             where = f"меню {number}: "
             if not isinstance(entry, dict):
-                return f"{where}пункт — объект"
+                return f"{where}пункт — объект", None
             kind = entry.get("kind")
             if kind not in ("hotkey", "site"):
-                return f"{where}вид бывает hotkey или site"
-            name = entry.get("id", "")
-            if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,40}", name.strip()):
-                return f"{where}имя пункта — латиница, цифры, точка, дефис"
-            name = name.strip()
-            if name in seen:
-                return f"{where}повтор имени «{name}»"
-            seen.add(name)
+                return f"{where}вид бывает hotkey или site", None
             title = entry.get("title", "")
             if not isinstance(title, str) or not title.strip() or len(title.strip()) > 60:
-                return f"{where}нужно название до 60 знаков"
+                return f"{where}нужно название до 60 знаков", None
+            # Имя пункта — как и у кнопки, придумываем из русского названия:
+            # хозяину «Мой профиль» не нужно переводить в `profile` руками.
+            name = launcher.чистое_id(entry.get("id"), title.strip(), seen, 40)
+            if not name:
+                return f"{where}не получилось придумать имя пункта из названия", None
+            if name in seen:
+                return f"{where}повтор имени «{name}»", None
+            seen.add(name)
+            готов = dict(entry)
+            готов["id"] = name
+            разобранные.append(готов)
             if kind == "hotkey":
                 keys = entry.get("keys", "")
                 try:
                     hotkeys.parse(keys if isinstance(keys, str) else "")
                 except ValueError as exc:
-                    return f"{where}{exc}"
+                    return f"{where}{exc}", None
             else:
                 url = entry.get("url", "")
                 if not isinstance(url, str) or not url.strip().startswith(("http://", "https://")):
-                    return f"{where}нужен адрес, начинающийся с http:// или https://"
+                    return f"{where}нужен адрес, начинающийся с http:// или https://", None
                 if len(url.strip()) > 500:
-                    return f"{where}адрес длиннее 500 знаков"
+                    return f"{where}адрес длиннее 500 знаков", None
             icon = entry.get("icon")
             if icon is not None and (not isinstance(icon, str) or len(icon) > 40):
-                return f"{where}значок — строкой до 40"
+                return f"{where}значок — строкой до 40", None
             if "toggle" in entry and entry["toggle"] is not None:
                 if not isinstance(entry["toggle"], bool):
-                    return f"{where}переключатель — галочка (true) или ничего"
+                    return f"{where}переключатель — галочка (true) или ничего", None
         # `implies` смотрит на весь список: связать можно только с пунктом
         # этой же программы, иначе подсветка была бы обещанием впустую.
-        for number, entry in enumerate(raw, 1):
+        for number, (entry, готов) in enumerate(zip(raw, разобранные), 1):
             if not isinstance(entry, dict):
                 continue
             other = entry.get("implies")
@@ -3298,13 +3779,13 @@ class WebRuntime:
             if not isinstance(other, str) or not re.fullmatch(
                 r"[A-Za-z0-9._-]{1,40}", other.strip()
             ):
-                return f"меню {number}: «включает также» — имя другого пункта"
+                return f"меню {number}: «включает также» — имя другого пункта", None
             if other.strip() not in seen:
                 return (f"меню {number}: «включает также» — нет пункта "
-                        f"«{other.strip()}» в этой программе")
-            if other.strip() == str(entry.get("id", "")).strip():
-                return f"меню {number}: пункт не может включать сам себя"
-        return ""
+                        f"«{other.strip()}» в этой программе"), None
+            if other.strip() == готов["id"]:
+                return f"меню {number}: пункт не может включать сам себя", None
+        return "", разобранные
 
     def apps_launch(self, app_id: str) -> dict:
         from core import launcher

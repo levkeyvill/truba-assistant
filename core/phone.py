@@ -238,8 +238,15 @@ def to_wav(wave: np.ndarray, sample_rate: int) -> bytes:
 class PhoneServer:
     """Держит страницу и соединение с телефоном."""
 
-    def __init__(self, port: int = config.PHONE_PORT, on_event=None):
-        self.port = port
+    def __init__(self, port: int = None, on_event=None):
+        # Порт по умолчанию — общий привычный (`core/instance.py`): у всех
+        # копий он такой же, второй пульт на компьютере не поднимается.
+        # Явный порт (тесты, макеты) по-прежнему главнее.
+        if port is None:
+            from core import instance
+
+            port = instance.порт()
+        self.port = int(port)
         self.url = f"http://{local_ip()}:{port}"
         # Слушателей может быть несколько: пульт показывает статус подключения,
         # голосовой цикл ловит отчёты о проигранной речи.
@@ -634,6 +641,24 @@ class PhoneServer:
 
             return StreamingResponse(chunks(), media_type="application/x-ndjson", headers=NO_CACHE)
 
+        @app.get("/api/install")
+        async def api_install(request: Request):
+            """Отпечаток этой установки — только с этого компьютера.
+
+            Им сверяются две копии Трубы на одном компьютере: «сервер на
+            порту отвечает» мало, надо «отвечает *моя* копия»
+            (`core/instance.py::our_copy`). Заодно им `Труба.vbs` узнаёт,
+            что пульт на этом порту — его собственный, и показывает окно,
+            а не заводит второй процесс.
+            """
+            if not _local_secret(request):
+                return JSONResponse(
+                    {"ok": False, "error": "доступен только с этого компьютера"},
+                    status_code=403)
+            from core import instance
+
+            return PlainTextResponse(instance.install_id(), headers=NO_CACHE)
+
         @app.get("/version")
         async def version():
             # Страница дёргает этот адрес раз в полминуты: так она заметит
@@ -850,6 +875,28 @@ class PhoneServer:
             from core import power
             return JSONResponse({"ok": True, "runtime": power.live_runtime()},
                                 headers=NO_CACHE)
+
+        # Только локальный пульт читает последние реплики.
+        # Служебные поля и произвольные пути наружу не отдаём.
+        @app.get("/api/settings/history")
+        async def api_settings_history(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            from core import memory
+
+            try:
+                turns = await asyncio.to_thread(memory.load_history, 0)
+            except Exception as exc:
+                return _fail(exc)
+            items = [
+                {"role": one.get("role"), "content": one.get("content"),
+                 "at": one.get("at", "")}
+                for one in turns
+                if isinstance(one.get("content"), str)
+            ]
+            return JSONResponse(
+                {"ok": True, "turns": items, "limit": config.HISTORY_TURNS},
+                headers=NO_CACHE)
 
         @app.post("/api/settings/clear-history")
         async def api_settings_clear(request: Request):
@@ -1251,6 +1298,22 @@ class PhoneServer:
             rt = getattr(self, "runtime", None)
             if rt is None:
                 return _no_runtime()
+            # `preview=1` — шаг 4 мастера: полоска показывает уровень того
+            # микрофона, который выбран в списке, даже если голос выключен.
+            # Обычная вкладка «Звук» параметр не шлёт и голос не трогает.
+            if request.query_params.get("preview") in ("1", "true"):
+                имя = request.query_params.get("mic_name", "")
+                try:
+                    вход = int(request.query_params.get("mic_channel", 0) or 0)
+                except ValueError:
+                    вход = -1
+                try:
+                    res = await asyncio.to_thread(rt.audio_level_preview, имя, вход)
+                except Exception as exc:
+                    return _fail(exc)
+                if not res.get("ok"):
+                    return JSONResponse(res, status_code=200)
+                return JSONResponse(res, headers=NO_CACHE)
             try:
                 res = await asyncio.to_thread(rt.audio_level)
             except Exception as exc:
@@ -1260,14 +1323,17 @@ class PhoneServer:
             return JSONResponse(res, headers=NO_CACHE)
 
         @app.post("/api/audio/test")
-        async def api_audio_test(request: Request):
+        async def api_audio_test(request: Request, probe: int = 0):
             if not _local_secret(request):
                 return _deny()
             rt = getattr(self, "runtime", None)
             if rt is None:
                 return _no_runtime()
             try:
-                res = await asyncio.to_thread(rt.audio_test)
+                # `probe=1` — проба мастера: сервер сам гасит голос на запись и
+                # включает обратно. Обычная форма настроек параметр не шлёт и
+                # голос не трогает.
+                res = await asyncio.to_thread(rt.audio_test, bool(probe))
             except Exception as exc:
                 return _fail(exc)
             if not res.get("ok"):
@@ -2104,6 +2170,42 @@ class PhoneServer:
                 "topic": data.get("topic", ""),
                 "entries": list(data.get("entries", []) or []),
             })
+        self._broadcast(lambda ws: ws.send_text(payload))
+
+    def send_reminders(self, items: list, error: str = "") -> None:
+        """Напоминания и таймеры для телефона: то же, что видит Панель.
+
+        Только то, что рисует строка, и **только авторизованным телефонам**:
+        список лежит в личном файле хозяина, и в сеть он попадает лишь после
+        проверки Origin и ключа в `ws_refusal`. Телефоны, которые её не прошли,
+        сокета не имеют вовсе, а локальный `GET /api/reminders` с телефона
+        недоступен — поэтому путь один и закрытый.
+
+        Ошибка чтения едет тем же сообщением: телефон напишет об этом словами,
+        а не останется с пустым списком.
+        """
+        payload = json.dumps({
+            "type": "reminders",
+            "items": list(items or []),
+            "error": str(error or ""),
+        })
+        self._broadcast(lambda ws: ws.send_text(payload))
+
+    def send_search_history(self, items: list, error: str = "") -> None:
+        """История реальных поисков для телефона: запросы и время.
+
+        Строки приходят из `core/search_history.py` и несут только слова,
+        ушедшие в поисковик, с датой: ни источников, ни ответов, ни ключей
+        там быть не может и не должно. Телефон по строке шлёт `open_search`
+        с самим запросом — адрес собирает сервер.
+
+        Как и напоминания, только авторизованным телефонам.
+        """
+        payload = json.dumps({
+            "type": "search_history",
+            "items": list(items or []),
+            "error": str(error or ""),
+        })
         self._broadcast(lambda ws: ws.send_text(payload))
 
 

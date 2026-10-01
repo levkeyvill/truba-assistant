@@ -24,6 +24,7 @@ import json
 import threading
 import unittest
 from collections import deque
+from datetime import datetime
 from types import SimpleNamespace as NS
 from unittest import mock
 
@@ -226,6 +227,44 @@ class КогоСпрашиваем(Обстановка):
         self.assertEqual(спросили[0][1]["max_tokens"], 5)
         self.assertEqual(спросили[0][1]["timeout"], 8.0)
 
+    def test_followup_to_another_task_cannot_create_a_reminder(self):
+        brain = _запуск(hands.SET_REM_NAME, {
+            "because": "с первого туда улетаем", "kind": "reminder",
+            "at": "2026-09-30T22:03", "text": "посмотреть авиабилеты"})
+        now = datetime.now().isoformat(timespec="seconds")
+        brain._history.extend([
+            {"role": "user", "content": "Посмотри стоимость билетов туда и обратно.",
+             "at": now},
+            {"role": "assistant", "content": "На какие даты?", "at": now},
+        ])
+        prompts = _судья(brain, "нет")
+        with mock.patch.object(hands, "run_set_reminder") as create:
+            list(brain.reply("С первого туда улетаем, второго обратно."))
+        create.assert_not_called()
+        self.assertEqual(len(prompts), 1)
+        self.assertIn("На какие даты?", prompts[0][0])
+        self.assertIn("стоимость билетов", prompts[0][0])
+        self.assertIn("поставить напоминание", prompts[0][0])
+
+    def test_explicit_reminder_is_allowed_after_semantic_check(self):
+        brain = _запуск(hands.SET_REM_NAME, {
+            "because": "напомни через двадцать минут", "kind": "reminder",
+            "seconds": 1200, "text": "налить кофе"})
+        prompts = _судья(brain, "да")
+        with mock.patch.object(hands, "run_set_reminder",
+                               return_value='{"ok":true,"text":"Напомню."}') as create:
+            list(brain.reply("Напомни через двадцать минут налить кофе."))
+        create.assert_called_once()
+        self.assertEqual(len(prompts), 1)
+
+    def test_mention_does_not_cancel_a_reminder(self):
+        brain = _запуск(hands.CANCEL_REM_NAME, {
+            "because": "не про напоминание", "id": "r1"})
+        _судья(brain, "нет")
+        with mock.patch.object(hands, "run_cancel_reminder") as cancel:
+            list(brain.reply("Я не про напоминание, а про другое дело."))
+        cancel.assert_not_called()
+
 
 class СловаСудьи(unittest.TestCase):
     """Разбор ответа судьи и действие словами — без сети и без модели."""
@@ -247,7 +286,8 @@ class СловаСудьи(unittest.TestCase):
         # наружу не уходит.
         self.assertEqual(hands.JUDGED, frozenset(
             {hands.NAME, hands.CLOSE_NAME, hands.YT_NAME,
-             hands.SHOT_NAME, hands.LOOK_NAME, hands.FOLDER_NAME,
+             hands.SHOT_NAME, hands.LOOK_NAME, hands.SAVED_LOOK_NAME,
+             hands.FOLDER_NAME, hands.SET_REM_NAME, hands.CANCEL_REM_NAME,
              hands.DOC_NAME, hands.FIND_NAME, hands.CLIP_NAME,
              hands.POWER_NAME}))
         self.assertNotIn(hands.MOMENT_NAME, hands.JUDGED)
@@ -266,6 +306,12 @@ class СловаСудьи(unittest.TestCase):
             # (снимок уйдёт тебе в облако)» — прочитает.
             (hands.SHOT_NAME, {}, "сделать снимок экрана и показать его на телефоне"),
             (hands.LOOK_NAME, {}, "посмотреть на его экран (снимок экрана уйдёт тебе в облако)"),
+            (hands.SAVED_LOOK_NAME, {}, "посмотреть на уже сделанные снимки экрана (они уйдут тебе в облако)"),
+            (hands.SET_REM_NAME, {"kind": "reminder", "seconds": 1200,
+                                  "text": "налить кофе"},
+             "поставить напоминание через 1200 секунд: налить кофе"),
+            (hands.CANCEL_REM_NAME, {"all": True},
+             "отменить все напоминания и таймеры"),
             # Буфер обмена — тем же способом: словами, с напоминанием, что при
             # переводе текст уйдёт в облако.
             (hands.CLIP_NAME, {"mode": "read"},

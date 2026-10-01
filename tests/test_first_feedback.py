@@ -46,6 +46,42 @@ class PhoneScreenHelpTests(unittest.TestCase):
         self.assertIn("Экран телефона гаснет — как это исправить", self.pult)
 
 
+class FullScreenHelpTests(unittest.TestCase):
+    """Полный экран на телефоне (Firefox Android и iPhone): хозяин спросил
+    01.10. Инструкция обязана быть и в мастере, и в «Настройки → Телефон»,
+    и обещать полный экран там, где браузер его не даёт, нельзя."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.pult = PULT.read_text(encoding="utf-8")
+        cls.readme = README.read_text(encoding="utf-8")
+        cls.index = (ROOT / "web" / "index.html").read_text(encoding="utf-8")
+
+    def test_the_helper_is_used_in_the_wizard_and_in_the_settings(self):
+        self.assertIn("function телефонВоВесьЭкран(", self.pult)
+        # Шаг телефона мастера и обычная форма — по одному вызову.
+        self.assertIn("телефонВоВесьЭкран(тело);", self.pult)
+        self.assertIn("телефонВоВесьЭкран(телефон);", self.pult)
+
+    def test_both_browsers_are_described_in_the_pult_and_the_readme(self):
+        for кусок in ("Как открыть Трубу на весь экран", "Firefox на Android",
+                      "Safari на iPhone", "Установить", "Открывать как веб-приложение",
+                      "с иконки"):
+            self.assertIn(кусок, self.pult, f"в пульте нет: {кусок}")
+            self.assertIn(кусок, self.readme, f"в README нет: {кусок}")
+
+    def test_the_firefox_shortcut_is_not_promised_as_fullscreen(self):
+        # Ярлык «Добавить на главный экран» — не приложение: обещать ему
+        # полный экран нельзя, и про это сказано прямо.
+        for кусок in ("Добавить на главный экран", "не гарантирует"):
+            self.assertIn(кусок, self.pult)
+            self.assertIn(кусок, self.readme)
+
+    def test_ios_meta_tag_is_present_but_not_the_only_way(self):
+        self.assertIn('<meta name="apple-mobile-web-app-capable" content="yes">',
+                      self.index)
+
+
 class DiskWarningOnceTests(unittest.TestCase):
     def test_the_disk_refusal_is_marked_for_the_pult(self):
         железо = {"gpus": [{"name": "NVIDIA GeForce RTX 5060 Ti", "vram_gb": 16,

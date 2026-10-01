@@ -325,15 +325,28 @@ def unfinished(text: str) -> bool:
 # большое, удачи тебе" — а она молчит». Раньше закрывала молча и только
 # телефон пиликал: молчание не отличить от «не услышала».
 BYE_WORDS = {
-    "luck": ("И тебе удачи!", "Спасибо, и тебе удачи!"),
-    "wish": ("И тебе!", "Взаимно!", "И тебе того же, кожаный."),
-    "night": ("Спокойной ночи!", "Сладких снов, кожаный."),
-    "thanks": ("Не за что, обращайся!", "Всегда пожалуйста.", "Обращайся, кожаный."),
-    "bye": ("Давай, пока!", "Пока-пока!", "На связи, если что."),
-    "quiet": ("Ок, молчу.", "Поняла, отстаю.", "Всё, молчу."),
+    "luck": ("И тебе, не проеби.", "Давай, удача пригодится.", "Взаимно, блин."),
+    "wish": ("И тебе!", "Не скучай там.", "Взаимно, блин."),
+    "night": ("Спокойной. Не залипай до утра.", "Сладких снов.", "Давай, вырубайся уже."),
+    "thanks": ("Да не за что.", "Ага, обращайся.", "Да ладно, фигня.",
+               "Бля, хоть что-то полезное сделала."),
+    "bye": ("Давай, не теряйся.", "Пока, если чё.", "На связи."),
+    "quiet": ("Ладно, заткнулась.", "Поняла, отстала.", "Всё, молчу."),
 }
 # Готова слушать — вслух, чтобы было понятно, что загрузка кончилась.
-READY_WORDS = ("Я на связи.", "Тут я, слушаю.", "На связи, кожаный.")
+READY_WORDS = ("Ага, я тут.", "Слушаю.", "Да, чё?", "На связи.")
+
+_last_quick: dict[str, str] = {}
+
+
+def _quick_choice(key: str, words) -> str:
+    """Не повторяет ту же короткую фразу два раза подряд."""
+    options = tuple(words)
+    previous = _last_quick.get(key)
+    pool = tuple(word for word in options if word != previous) or options
+    chosen = random.choice(pool)
+    _last_quick[key] = chosen
+    return chosen
 
 
 def goodbye_words(text: str) -> str:
@@ -353,8 +366,9 @@ def goodbye_words(text: str) -> str:
         kind = "quiet"
     from core import personas
 
-    words = personas.bye_words(getattr(config, "PERSONA_PRESET", personas.DEFAULT))
-    return random.choice(words.get(kind) or BYE_WORDS[kind])
+    preset = getattr(config, "PERSONA_PRESET", personas.DEFAULT)
+    words = personas.bye_words(preset)
+    return _quick_choice(f"{preset}:{kind}", words.get(kind) or BYE_WORDS[kind])
 
 
 def _trouble_words(exc: Exception) -> str:
@@ -2654,8 +2668,9 @@ class VoiceLoop:
             тихо = self.quiet_start or config.LISTEN_MODE == "off"
             self.quiet_start = False
             if not тихо:
-                self._say_back(random.choice(personas.ready_words(
-                    getattr(config, "PERSONA_PRESET", personas.DEFAULT)) or READY_WORDS))
+                preset = getattr(config, "PERSONA_PRESET", personas.DEFAULT)
+                self._say_back(_quick_choice(f"{preset}:ready",
+                    personas.ready_words(preset) or READY_WORDS))
             self._listen()
         except Exception as exc:
             self._emit("error", f"{type(exc).__name__}: {exc}")

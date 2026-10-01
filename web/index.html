@@ -5,6 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" id="цвет-панели" content="#15151a">
 <meta name="mobile-web-app-capable" content="yes">
+<!-- iOS: тот же смысл, что и метатег выше. Safari читает его при «На экран
+     „Домой“», но полный экран даёт только с галочкой «Открывать как
+     веб-приложение» — про это написано в настройках телефона и в README. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.json">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
@@ -451,6 +455,139 @@
     transform: rotate(-45deg);
   }
   .act.flip.on.done { border-color: var(--выключено); }
+
+  /* ---------- Две широкие карточки под нижними кнопками ----------
+     Постоянные: их нельзя ни настроить, ни убрать, и в режиме правки они
+     просто есть. Левая — янтарная «Напоминания», правая — синяя «История
+     поиска»: цвет здесь различает их боковым зрением, подписи мелкие.
+
+     В портрете (по умолчанию) они столбиком — в одну строку подписи
+     «История поиска» не помещались и обрезались многоточием. В альбомной
+     ориентации рядом: там ширины хватает, и это вид телефона. */
+  #cards { display: flex; flex-direction: column; gap: 8px; }
+  #cards .card {
+    flex: 1 1 0; min-width: 0;
+    display: flex; align-items: center; gap: 10px;
+    min-height: 56px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 16px;
+    font-size: 15px; font-weight: 600;
+    transition: transform .15s, background .2s, border-color .2s;
+  }
+  #cards .card svg { flex: none; width: 26px; height: 26px; }
+  #cards .card span {
+    min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  #cards .card:active { transform: scale(.97); background: var(--line); }
+  /* Цвет карточки — тот же, что у значка погоды и подсветки голоса, чтобы
+     телефон не выглядел пёстрым: янтарь и синий в оформлении уже есть. */
+  #cards .card { color: var(--text); }
+  #cards .card.rem .ico { color: var(--warn); }
+  #cards .card.hist .ico { color: var(--info); }
+  /* В макете пульта (`?edit=1`) карточки только для вида: данных с сервера
+     там нет, и нажатие ничего не спросит. */
+  body.edit #cards { pointer-events: none; }
+
+  /* ---------- Списки напоминаний и истории поиска ----------
+     Один оверлей на оба: шапка, крупный список, подпись снизу. Читают
+     издали, поэтому текст строки — 20 px, а время и подпись мельче. */
+  #remcard, #histcard {
+    display: none;
+    position: fixed; inset: 0; z-index: 28;
+    background: var(--bg);
+    flex-direction: column;
+    padding: 12px max(24px, env(safe-area-inset-right)) 10px
+             max(24px, env(safe-area-inset-left));
+  }
+  #remcard.on, #histcard.on { display: flex; }
+  #remcard .head, #histcard .head {
+    flex: none;
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--line);
+  }
+  #remcard .ttl, #histcard .ttl {
+    flex: 1; min-width: 0;
+    font-size: 24px; font-weight: 700;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #remcard.rem .ttl { color: var(--warn); }
+  #histcard.hist .ttl { color: var(--info); }
+  #remcard .x, #histcard .x {
+    flex: none;
+    width: 48px; height: 48px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  /* Список листается вниз; строки уходящие за край гаснут, а не срезаются. */
+  #remcard .list, #histcard .list {
+    flex: 1; min-height: 0;
+    overflow-y: auto; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px 0 14px;
+  }
+  #remcard .row {
+    display: flex; flex-direction: column; gap: 3px;
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--line);
+  }
+  #remcard .row:last-child { border-bottom: none; }
+  #remcard .row .t {
+    font-size: 20px; line-height: 1.25;
+    color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #remcard .row .w { font-size: 15px; color: var(--warn); }
+  /* Строка истории — кнопка: по ней открывается этот запрос в браузере на
+     компьютере, поэтому подложка и подпись про «на компе» обязательны. */
+  #histcard .row {
+    display: flex; flex-direction: row; align-items: center; gap: 10px;
+    padding: 12px 10px; margin: 0 0 6px;
+    background: rgba(255, 255, 255, .05);
+    border-radius: 12px;
+  }
+  #histcard .row:active { background: var(--line); }
+  #histcard .row .txt {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  #histcard .row .t {
+    font-size: 20px; line-height: 1.25; color: var(--text);
+    display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2; overflow: hidden;
+  }
+  #histcard .row .w { font-size: 14px; color: var(--info); }
+  #remcard .note, #histcard .note {
+    color: var(--muted); font-size: 18px; padding: 14px 2px;
+  }
+  #remcard .foot, #histcard .foot {
+    flex: none; text-align: center;
+    color: var(--dim); font-size: 12px;
+  }
+  /* Строки обоих списков: текст слева, маленькая кнопка справа. Текст ужимается
+     (`min-width: 0`), а кнопка — нет, иначе на 851×393 и в повороте подпись
+     «Удалить» не поместилась бы. */
+  #remcard .row { flex-direction: row; align-items: center; gap: 10px; }
+  #remcard .row .txt {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  /* Кнопка действия внутри строки. Отдельная от строки намеренно: нажатие на
+     «Удалить» не должно открывать запрос в браузере, поэтому она гасит
+     событие сама (см. `кнопкаСтроки`). */
+  #remcard .rbtn, #histcard .rbtn, #histcard .hbtn {
+    flex: none; padding: 11px 14px; border-radius: 12px;
+    font-size: 16px; line-height: 1;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--line);
+  }
+  #remcard .rbtn:active, #histcard .rbtn:active, #histcard .hbtn:active {
+    background: var(--line);
+  }
+  #histcard .hbtn { font-size: 15px; padding: 10px 12px; }
 
   /* ---------- Подменю программы ----------
      Поверх всего экрана: программа с меню открывает его вместо запуска, и
@@ -1085,6 +1222,7 @@
     /* Правый столбец: сверху программы, снизу действия. Действия прибиты
        к низу и никуда не уезжают — их ищут не глядя, во время игры. */
     #right {
+      container-type: inline-size;
       /* Ширину ставит страница: колонка занимает ровно столько свободного
          места между кругом и столбцом режимов, сколько нужно значкам, и
          ни пикселем больше — иначе разъезжается весь круг. */
@@ -1109,6 +1247,29 @@
        центрировать их нельзя, иначе левый край уезжает за невидимое. */
     #apps.narrow { justify-content: start; }
     #apps::-webkit-scrollbar { display: none; }
+    /* Две карточки в один ряд — вид телефона (макет согласован 30.09).
+       Ширина колонки `#right` считается по сетке значков, а карточки её
+       повторяют: на макете в пульте так и должно выглядеть. */
+    #cards { flex-direction: row; gap: 10px; }
+    #cards .card { min-height: 52px; padding: 6px 10px; font-size: 15px; }
+    #cards .card svg { width: 24px; height: 24px; }
+  }
+
+  /* Если программ три ряда или включены подписи, центральная колонка
+     сужается. В карточках остаются полные названия, вторая строка у истории
+     допустима; обрезанные «Напоми...» и «История...» не объясняют кнопку. */
+  @media (orientation: landscape) {
+    @container (max-width: 350px) {
+      #cards .card { gap: 5px; padding: 6px; font-size: 11px; line-height: 1.1; }
+      #cards .card svg { width: 20px; height: 20px; }
+      #cards .card span { white-space: normal; overflow: visible; text-overflow: clip; }
+    }
+  }
+
+  @media (orientation: portrait) {
+    #middle { gap: 10px; min-width: 0; }
+    #orb { width: min(28vw, 150px); height: min(28vw, 150px); }
+    #right { flex: 1; min-width: 0; }
   }
 
   @media (orientation: landscape) and (max-height: 400px) {
@@ -1167,6 +1328,17 @@
     <div id="right">
       <div id="apps"></div>
       <div id="actions"></div>
+      <!-- Две постоянные карточки под нижними кнопками. Не настраиваются:
+           в отличие от `#actions` их нельзя ни переставить, ни убрать, и в
+           макете пульта они на месте — ровно как на телефоне. -->
+      <div id="cards">
+        <div class="card rem" id="card-rem" role="button" aria-label="Напоминания">
+          <span class="ico"></span><span>Напоминания</span>
+        </div>
+        <div class="card hist" id="card-hist" role="button" aria-label="История поиска">
+          <span class="ico"></span><span>История поиска</span>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1220,6 +1392,31 @@
   <div class="foot"><span class="age"></span><span class="cap">коснись, чтобы убрать</span></div>
 </div>
 <div id="shot"><img alt=""><div class="cap">коснись, чтобы убрать</div></div>
+
+<!-- Напоминания: что стоит. У каждой строки «Отменить» — снять можно и
+     голосом, и в пульте, но хозяин попросил и с телефона. Данные приходят по
+     тому же авторизованному WebSocket, что и всё остальное для телефона. -->
+<div id="remcard" class="rem">
+  <div class="head">
+    <div class="ttl">Напоминания</div>
+    <div class="x" role="button" aria-label="Закрыть">✕</div>
+  </div>
+  <div class="list"></div>
+  <div class="foot">«Отменить» сразу снимает одно. коснись ✕, чтобы закрыть</div>
+</div>
+
+<!-- История поиска: что она на самом деле искала. Строка — кнопка: по ней тот
+     же запрос открывается в браузере на компьютере. У строки своя «Удалить»,
+     в шапке — «Очистить»; обе срабатывают с одного касания. -->
+<div id="histcard" class="hist">
+  <div class="head">
+    <div class="ttl">История поиска</div>
+    <div class="hbtn" id="hist-clear" role="button" aria-label="Очистить историю поиска">Очистить</div>
+    <div class="x" role="button" aria-label="Закрыть">✕</div>
+  </div>
+  <div class="list"></div>
+  <div class="foot">коснись запроса — откроется на компе. «Удалить» и «Очистить» — сразу</div>
+</div>
 
 <!-- Заметки: во весь экран, но под рамкой #edge. Темы — полосой сверху,
      листается влево-вправо; под ней текст выбранной темы во всю ширину.
@@ -1280,6 +1477,12 @@ const ICONS = {
   replay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v5h5"/><path d="M10.5 9.5l5 2.5-5 2.5z" fill="currentColor"/></svg>',
   search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/></svg>',
   note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>',
+  /* Две постоянные карточки под нижними кнопками: колокольчик у напоминаний
+     и часы с лупой у истории поиска — как на согласованном макете (30.09). */
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6z"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg>',
+  /* Часы с лупой в одной картинке: слева циферблат, справа увеличительное
+     стекло на «истории». Круг у лупы — ручка. */
+  searchtime: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4.5a7.5 7.5 0 1 0 4.9 13.2"/><path d="M9.5 8.5V12l2.5 1.5"/><path d="M14.5 13.5l5 5"/><circle cx="18.2" cy="14.2" r="2.3"/></svg>',
   /* Значки погоды. Сервер шлёт имя — те же слова, что в таблице WMO
      (core/weather.py), здесь только рисунок. Линейные, как все остальные. */
   sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.2M12 19.8V22M2 12h2.2M19.8 12H22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6"/></svg>',
@@ -1345,6 +1548,9 @@ const hint = $('hint'), orb = $('orb'), core = $('core'), glow = $('glow');
 const ring = $('ring'), spinner = $('spinner'), label = $('label');
 const offline = $('offline'), expand = $('expand'), appsBox = $('apps');
 const modesBox = $('modes'), actionsBox = $('actions');
+/* Две постоянные карточки под нижними кнопками. Их высота входит в расчёт
+   сетки программ (`layoutApps`), поэтому блок берём здесь, рядом с остальными. */
+const cardsBox = $('cards');
 const shotBox = $('shot'), shotImg = shotBox.querySelector('img'), toastBox = $('toast');
 const menuBox = $('menu'), menuTiles = menuBox.querySelector('.tiles');
 const findBox = $('find');
@@ -1809,7 +2015,11 @@ let findTimer = null;
 /* Запрос, по которому открывать: тот, что реально ушёл в поисковик
    (`query`), а если его нет — слова хозяина (`asked`). */
 let findQuery = '';
-const FIND_HIDE_MS = 60000;
+/* Минуту карточка висела и занимала пол-экрана, пока хозяин уходил за кофе.
+   Он просит нескольких секунд: успел прочитать, тыкнул источник — карточка
+   своё дело сделала. Ссылки никуда не делись — вся история поиска лежит в
+   отдельной карточке и открывает любой запрос на компьютере. */
+const FIND_HIDE_MS = 7000;
 
 function closeFind() {
   clearTimeout(findTimer);
@@ -1818,7 +2028,7 @@ function closeFind() {
 }
 
 /* Касание строки карточку не закрывает, а продлевает: хозяин читает
-   источники и тыкает, времени нужно больше, чем на чтение ответа. */
+   источники и тыкает, времени нужно чуть больше, чем на чтение ответа. */
 function armFind() {
   clearTimeout(findTimer);
   findTimer = setTimeout(closeFind, FIND_HIDE_MS);
@@ -1875,6 +2085,263 @@ findBox.addEventListener('click', (event) => {
   if (event.target.closest('.card')) return;
   closeFind();
 });
+
+/* ---------- Напоминания и история поиска ----------
+   Две постоянные карточки под нижними кнопками: что стоит и что она искала
+   в интернете. Обе только читают: отмены с телефона нет, а тап по строке
+   истории открывает тот же запрос в браузере на компьютере (тот же
+   `open_search`, что у карточки поиска — адрес собирает сервер).
+
+   Данные идут по тому же авторизованному WebSocket, что и всё остальное для
+   телефона: локальный `GET /api/reminders` с телефона недоступен, и снимать
+   это ограничение нельзя. В макете пульта (`?edit=1`) связи нет вовсе —
+   карточки там только для вида, и нажатие ничего не спрашивает. */
+const remBox = $('remcard'), remList = remBox.querySelector('.list');
+const histBox = $('histcard'), histList = histBox.querySelector('.list');
+
+/* Открытый список: пока ответ не пришёл, в нём написано «Открываю…», иначе
+   телефон мигнул бы пустым экраном, и это читалось бы как «ничего нет». */
+let listBox = null;
+
+/* Открыть карточку и попросить её список. `запрос` — что именно просим
+   (`reminders_list`, `search_history_list`). Переспроса здесь нет: это
+   только чтение, а кнопки действий работают с одного касания (см. `команда`). */
+function openList(box, list, запрос) {
+  closeMenu();
+  if (listBox && listBox !== box) listBox.classList.remove('on');
+  listBox = box;
+  box.classList.add('on');
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    /* Нет связи — говорим сразу, а не «Открываю…»: ждать ответа, которого не
+       будет, хозяин не станет. */
+    показатьОжидание(list, 'нет связи с компом');
+    return;
+  }
+  /* Список чистим и показываем ожидание, даже если он уже был открыт: хозяин
+     мог смотреть другой, а старые данные с новым ожиданием — враньё. */
+  показатьОжидание(list, 'Открываю…', 'не получила ответа — попробуй ещё раз');
+  send({ type: запрос });
+}
+
+/* Пока комп не ответил, в списке стоит одна строка-ожидание. Если ответа нет
+   и через `WAIT_MS`, а `тихо` сказано, строка меняется на честную: иначе
+   «Открываю…» висело бы вечно, и хозяин думал бы, что телефон завис. */
+const WAIT_MS = 8000;
+let waitTimer = null;
+
+function показатьОжидание(list, текст, тихо) {
+  clearTimeout(waitTimer);
+  list.textContent = '';
+  const надпись = cardNote(текст);
+  list.appendChild(надпись);
+  if (!тихо || тихо === текст) return;
+  waitTimer = setTimeout(() => {
+    /* Ответ пришёл и перерисовал список — надпись уже не наша, трогать нечего. */
+    if (надпись.parentNode !== list) return;
+    надпись.textContent = тихо;
+  }, WAIT_MS);
+}
+
+function closeList(box) {
+  box.classList.remove('on');
+  if (listBox === box) listBox = null;
+}
+
+function cardNote(text) {
+  const el = document.createElement('div');
+  el.className = 'note';
+  /* Текстом: сюда попадает и ошибка с компьютера, а чужой текст разметкой
+     быть не должен. */
+  el.textContent = text;
+  return el;
+}
+
+/* Команда с телефона: требует живую связь (в макете `?edit=1` её нет вовсе) и
+   показывает ожидание. Дальше список перерисует ответ компьютера — вместе с
+   ошибкой, если что-то пошло не так. Одно касание — одно действие: хозяин
+   просил убрать переспрос («нажал — и сделано»), а `confirm` на телефоне
+   выглядит как чужое окно. */
+function команда(list, что) {
+  if (EDIT) return;
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    показатьОжидание(list, 'нет связи с компом');
+    return;
+  }
+  показатьОжидание(list, 'Делаю…', 'не получила ответа — попробуй ещё раз');
+  send(что);
+}
+
+function openReminders() {
+  if (EDIT) return;
+  openList(remBox, remList, 'reminders_list');
+}
+
+function openHistory() {
+  if (EDIT) return;
+  openList(histBox, histList, 'search_history_list');
+}
+
+/* Значки карточек — из общего словаря, как у программ и нижних кнопок. */
+$('card-rem').querySelector('.ico').innerHTML = ICONS.bell;
+$('card-hist').querySelector('.ico').innerHTML = ICONS.searchtime;
+
+$('card-rem').addEventListener('click', openReminders);
+$('card-hist').addEventListener('click', openHistory);
+remBox.querySelector('.x').addEventListener('click', (event) => {
+  event.stopPropagation();
+  closeList(remBox);
+});
+histBox.querySelector('.x').addEventListener('click', (event) => {
+  event.stopPropagation();
+  closeList(histBox);
+});
+$('hist-clear').addEventListener('click', (event) => {
+  event.stopPropagation();
+  /* Одно касание — и вся история поиска убрана. Список перерисует ответ
+     компьютера, а если связь пропала, на месте кнопки будет «нет связи». */
+  команда(histList, { type: 'search_history_clear' });
+});
+
+/* Время строкой: «сегодня 17:00», «завтра 9:30», а на дату — «30.09 17:00».
+   Разбирает сам телефон (браузер понимает ISO с поясом), и слова «сегодня» и
+   «завтра» — его же часы: у него пояс свой. */
+function whenText(value) {
+  const момент = new Date(String(value || ''));
+  if (!value || isNaN(момент.getTime())) return '';
+  const часы = String(момент.getHours()).padStart(2, '0')
+    + ':' + String(момент.getMinutes()).padStart(2, '0');
+  const сегодня = new Date();
+  const завтра = new Date(сегодня.getTime() + 86400000);
+  if (момент.toDateString() === сегодня.toDateString()) return 'сегодня ' + часы;
+  if (момент.toDateString() === завтра.toDateString()) return 'завтра ' + часы;
+  return String(момент.getDate()).padStart(2, '0') + '.'
+    + String(момент.getMonth() + 1).padStart(2, '0') + ' ' + часы;
+}
+
+/* Сколько осталось: у таймера это главное. Считаем по часам телефона — пояс у
+   будильника и у телефона может разойтись, и честнее считать там, где
+   смотрят. */
+function leftText(item) {
+  const момент = new Date(String(item.due || ''));
+  if (!item.due || isNaN(момент.getTime())) return '';
+  const минут = Math.round((момент.getTime() - Date.now()) / 60000);
+  if (минут <= 0) return 'пора';
+  if (минут < 60) return 'через ' + минут + ' мин';
+  const часов = Math.floor(минут / 60);
+  if (часов < 24) return 'через ' + часов + ' ' + часовWord(часов);
+  return whenText(item.due);
+}
+
+function drawReminders(msg) {
+  if (!remBox.classList.contains('on')) return;
+  clearTimeout(waitTimer);
+  const items = Array.isArray(msg.items) ? msg.items : [];
+  remList.textContent = '';
+  /* Ошибку показываем и списком не молчим: после неудачной отмены хозяин
+     должен увидеть, что осталось стоять, а не пустую карточку. */
+  if (msg.error) remList.appendChild(cardNote('не получила: ' + String(msg.error)));
+  if (!items.length) {
+    if (!msg.error) {
+      remList.appendChild(cardNote('Пока пусто. Скажи «напомни…» — поставлю.'));
+    }
+    return;
+  }
+  items.forEach((item) => {
+    const one = item || {};
+    const row = document.createElement('div');
+    row.className = 'row';
+    const txt = document.createElement('div');
+    txt.className = 'txt';
+    /* Текст напоминания — слова хозяина: текстом, а не разметкой. */
+    const t = document.createElement('div');
+    t.className = 't';
+    t.textContent = String(one.text || '').slice(0, 200)
+      || (one.kind === 'timer' ? 'таймер' : 'напоминание');
+    const w = document.createElement('div');
+    w.className = 'w';
+    /* Вид записи — словами: телефон не знает, что значит `timer`. */
+    w.textContent = (one.kind === 'timer' ? 'таймер · ' : '') + leftText(one);
+    txt.append(t, w);
+    row.appendChild(txt);
+    const id = String(one.id || '').slice(0, 64);
+    if (id) row.appendChild(кнопкаСтроки('Отменить', () => {
+      /* Снять одно: `id` телефон знает с списка, а «всё» с телефона нельзя.
+         Одно касание — и напоминания нет, без переспроса. */
+      команда(remList, { type: 'reminders_cancel', id: id });
+    }));
+    remList.appendChild(row);
+  });
+}
+
+/* Маленькая кнопка действия в строке списка. Событие гасит сама: строка
+   истории — кнопка «открыть поиск», и нажатие «Удалить» не должно ещё и
+   открывать браузер на компьютере. Действие выполняется сразу: переспроса
+   больше нет (хозяин 1 октября — «нажал, и всё»). */
+function кнопкаСтроки(подпись, действие) {
+  const b = document.createElement('div');
+  b.className = 'rbtn';
+  b.setAttribute('role', 'button');
+  b.textContent = подпись;
+  b.addEventListener('click', (event) => {
+    event.stopPropagation();
+    действие();
+  });
+  return b;
+}
+
+function drawHistory(msg) {
+  if (!histBox.classList.contains('on')) return;
+  clearTimeout(waitTimer);
+  const items = Array.isArray(msg.items) ? msg.items : [];
+  histList.textContent = '';
+  if (msg.error) histList.appendChild(cardNote('не получила: ' + String(msg.error)));
+  const пусто = cardNote('Пока пусто: в интернете ещё не искала.');
+  if (!items.length) {
+    if (!msg.error) histList.appendChild(пусто);
+    return;
+  }
+  items.forEach((item) => {
+    const one = item || {};
+    const запрос = String(one.query || '').slice(0, 200);
+    if (!запрос) return;
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.setAttribute('role', 'button');
+    const txt = document.createElement('div');
+    txt.className = 'txt';
+    /* Запрос текстом: это слова хозяина, разметки тут быть не может. */
+    const t = document.createElement('div');
+    t.className = 't';
+    t.textContent = запрос;
+    const w = document.createElement('div');
+    w.className = 'w';
+    w.textContent = whenText(one.at);
+    txt.append(t, w);
+    row.appendChild(txt);
+    /* Убирается строго по `id`: тот же вопрос может лежать здесь дважды, и
+       снести надо ту, которую ткнули. */
+    const id = String(one.id || '').slice(0, 64);
+    if (id) {
+      /* Одно касание — и записи нет. Событие кнопка гасит сама, поэтому
+         браузер на компьютере из-за удаления не откроется. */
+      row.appendChild(кнопкаСтроки('Удалить', () => {
+        команда(histList, { type: 'search_history_delete', id: id });
+      }));
+    }
+    row.addEventListener('click', (event) => {
+      event.stopPropagation();
+      /* Только сам запрос: адрес собирает сервер (`_open_search`), телефон не
+         присылает ничего, кроме текста. В историю это повторно не пишется —
+         туда кладутся только настоящие поиски (core/search_history.py). */
+      send({ type: 'open_search', query: запрос });
+      closeList(histBox);
+    });
+    histList.appendChild(row);
+  });
+  /* Мусор в ответе (строки без запроса) — тогда список пуст, и сказать об
+     этом надо словами, а не оставить белый экран. */
+  if (!histList.childElementCount) histList.appendChild(пусто);
+}
 
 /* ---------- Заметки ----------
    Кнопка «заметка» открывает этот оверлей, а «✎ Записать» в его шапке — то
@@ -2157,15 +2624,16 @@ function flash(el) {
 }
 
 /* ---------- Раскладка значков ----------
-   Колонок всегда четыре, рядов 2 или 3 — как просил хозяин. Размер плитки
-   считаем по всей сетке 4 × рядов, даже когда программ три: иначе три
+   Колонок всегда четыре, рядов два — как просил хозяин. Размер плитки
+   считаем по всей сетке 4 × 2, даже когда программ три: иначе три
    плитки растянулись бы на весь экран и макет в пульте врал бы. Рядов,
-   занятых значками, не больше, чем нужно: одна программа в трёх рядах —
-   это одна огромная плитка посреди пустоты. Больше, чем влезает в 4 × ряды, —
-   колонок больше, и листаем вбок, как раньше. Портретная раскладка
-   (два столбца по центру) не трогаем. */
+   занятых значками, не больше, чем нужно: одна программа в двух рядах —
+   это одна огромная плитка посреди пустоты. Больше, чем влезает в 4 × 2, —
+   колонок больше, и листаем вбок, как раньше: лишние плитки остаются
+   доступны прокруткой, а не пропадают. Портретная раскладка (два столбца
+   по центру) не трогаем. */
 const TILE_MIN = 60, TILE_MAX = 92, TILE_GAP = 10, TILE_ROWS = 2;
-const TILE_COLS = 4, TILE_ROWS_MIN = 2, TILE_ROWS_MAX = 3;
+const TILE_COLS = 4, TILE_ROWS_MIN = 2, TILE_ROWS_MAX = 2;
 /* Подпись под значком: 15 px текст, 3 px зазор, округление на всякий
    случай. Столько высоты плитка теряет на каждый ряд. */
 const LABEL_H = 22;
@@ -2212,9 +2680,13 @@ function layoutApps(count, layout) {
      заполненной сетке, — иначе добавление первой программы «скакало» бы. */
   const byWidth = Math.floor((free - TILE_GAP * (TILE_COLS - 1)) / TILE_COLS);
   /* По высоте все ряды тоже должны поместиться, иначе значки уедут вниз
-     и появятся прокрученные ряды. Подписи под значками высоту едят. */
+     и появятся прокрученные ряды. Подписи под значками высоту едят.
+     Высота считается по факту: снизу под сеткой живут нижние кнопки и две
+     постоянные карточки, и обе могут стать выше или ниже (подписи, портрет,
+     поворот) — магическое число здесь быстро разъехалось бы с макетом. */
   const room = window.innerHeight - 10 - 12 - 10
-    - $('stats').offsetHeight - actionsBox.offsetHeight - 8;
+    - $('stats').offsetHeight - actionsBox.offsetHeight
+    - cardsBox.offsetHeight - 8 - 8;
   const label = вид.labels ? LABEL_H : 0;
   const byHeight = Math.floor(
     (room - TILE_GAP * (рядов - 1) - label * рядов) / рядов);
@@ -2231,10 +2703,11 @@ function layoutApps(count, layout) {
   $('right').style.setProperty('--right', Math.min(need, free) + 'px');
 }
 
-/* Вид сетки. Колонок всегда четыре: хозяин попросил «4 в ширину, рядов 2 или
-   3 — и всё», а серверное `cols` мы больше не читаем вовсе (в живом
-   `settings.json` от старой версии осталось «auto», и девятая программа
-   снова раздувала сетку до пяти колонок). Ряды — 2 или 3. */
+/* Вид сетки. Колонок всегда четыре: хозяин попросил «4 в ширину», а серверное
+   `cols` мы больше не читаем вовсе (в живом `settings.json` от старой версии
+   осталось «auto», и девятая программа снова раздувала сетку до пяти
+   колонок). Ряды — два: старые «3» (от прежней версии пульта) показываем
+   двумя, лишние плитки никуда не деваются — они уезжают вбок по прокрутке. */
 function gridView(layout) {
   const l = (layout && typeof layout === 'object') ? layout : {};
   const n = parseInt(l.rows, 10);
@@ -2716,7 +3189,7 @@ document.addEventListener(
     /* Заметки — те же кнопки под палец: 28.09 хозяин заметил, что «✕»
        закрывает их молча. Строки карточки поиска — тоже: там касание
        открывает браузер на компьютере, и хозяин ждёт отклика. */
-    if (event.target.closest('.act, .app, .mode, #orb, #expand, #s-wx, #язычок, .гром-шаг, .nclose, .nrec, .ntopic, #find .qrow, #find .srow, #find .x')) {
+    if (event.target.closest('.act, .app, .mode, #orb, #expand, #s-wx, #язычок, .гром-шаг, .nclose, .nrec, .ntopic, #find .qrow, #find .srow, #find .x, #cards .card, #remcard .x, #remcard .rbtn, #histcard .x, #histcard .row, #histcard .rbtn, #histcard .hbtn')) {
       playSound('tap');
     }
   },
@@ -3011,6 +3484,8 @@ function connect() {
     else if (msg.type === 'search_hum') searchHum(!!msg.on, Number(msg.gain) || 1);
     else if (msg.type === 'dictation') edgeDictation(!!msg.on);
     else if (msg.type === 'notes') drawNotes(msg.sections);
+    else if (msg.type === 'reminders') drawReminders(msg);
+    else if (msg.type === 'search_history') drawHistory(msg);
     else if (msg.type === 'note_topic') drawNoteTopic(msg);
     else if (msg.type === 'stop') {
       stopEpoch += 1;

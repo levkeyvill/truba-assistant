@@ -97,6 +97,8 @@ class БыстрыеФразыTests(unittest.TestCase):
     def setUp(self):
         было = config.PERSONA_PRESET
         self.addCleanup(setattr, config, "PERSONA_PRESET", было)
+        voice_loop._last_quick.clear()
+        self.addCleanup(voice_loop._last_quick.clear)
 
     def test_goodbye_comes_from_the_chosen_preset(self):
         config.PERSONA_PRESET = "calm"
@@ -104,10 +106,14 @@ class БыстрыеФразыTests(unittest.TestCase):
             self.assertEqual(voice_loop.goodbye_words("спасибо большое"), "Пожалуйста!")
             self.assertEqual(voice_loop.goodbye_words("спокойной ночи"), "Спокойной ночи!")
 
-    def test_pizdabol_says_it_as_before(self):
+    def test_pizdabol_thanks_are_not_polite_templates_or_nicknames(self):
         config.PERSONA_PRESET = "pizdabol"
         with mock.patch.object(random, "choice", side_effect=lambda v: v[-1]):
-            self.assertEqual(voice_loop.goodbye_words("спасибо"), "Обращайся, кожаный.")
+            first = voice_loop.goodbye_words("спасибо")
+            second = voice_loop.goodbye_words("спасибо")
+        self.assertNotEqual(first, second)
+        self.assertNotIn("пожалуйста", first.lower() + second.lower())
+        self.assertNotIn("кожан", first.lower() + second.lower())
 
 
 class НастройкаTests(unittest.TestCase):

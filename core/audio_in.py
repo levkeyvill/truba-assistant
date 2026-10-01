@@ -89,6 +89,74 @@ def voice_level(chunk: np.ndarray) -> float:
     return min(1.0, (rms / VOICE_FULL) ** 0.5)
 
 
+# --- Короткий замер уровня одного устройства ------------------------------
+#
+# Полоска шага 4 мастера должна показывать уровень **выбранного** микрофона
+# сразу, когда голос ещё не запущен или держит другой. Работающий голос туда
+# не годится: он слушает прошлый микрофон. Поэтому открываем нужное
+# устройство на доли секунды, меряем и закрываем — это измерение, а не запись.
+#
+# Длина куска и их число — как у голосового потока (`VAD_HOP` на частоте
+# устройства): иначе полоска мастера и полоска «Голоса» показывали бы разное.
+LEVEL_CHUNK_SECONDS = 0.05
+
+
+def measure_level(device, channel: int = 0, seconds: float = 0.25) -> float:
+    """Уровень 0…1 одного микрофона коротким замером.
+
+    Шкала та же, что у работающего голоса (`voice_level`), поэтому обе
+    полоски означают одно и то же. Устройство открывается на `seconds` и
+    сразу закрывается; голос, модель и колонки это не трогает.
+    """
+    info = sd.query_devices(device)
+    каналов = int(info["max_input_channels"])
+    if каналов < 1:
+        raise RuntimeError("устройство не принимает звук")
+    # Просим `channel` и все, что до него: так же, как это делает `Listener`,
+    # иначе Windows на двухвходовом устройстве возьмёт не тот канал.
+    channels = min(каналов, channel + 1)
+    rate, extra = _rate_for(device, info, channels)
+    recorded = sd.rec(int(rate * seconds), samplerate=rate, channels=channels,
+                      dtype="float32", device=device, blocking=True,
+                      extra_settings=extra)
+    track = recorded[:, min(channel, channels - 1)]
+    if not len(track):
+        raise RuntimeError("микрофон не отдал звук")
+    hop = max(1, int(rate * LEVEL_CHUNK_SECONDS))
+    лучший = 0.0
+    for начало in range(0, len(track) - hop + 1, hop):
+        лучший = max(лучший, voice_level(track[начало:начало + hop]))
+    return лучший
+
+
+def _rate_for(device, info, channels) -> tuple:
+    """Частота, на которой это устройство вообще отдаст звук.
+
+    Родная частота звуковой карты — как и в `Listener`. Если она не годится,
+    ищем ту, что даёт Windows, и напоследок пробуем 16 кГц.
+    """
+    try:
+        api = sd.query_hostapis(info["hostapi"])["name"]
+    except Exception:
+        api = ""
+    extra = None
+    if "wasapi" in api.lower() and hasattr(sd, "WasapiSettings"):
+        extra = sd.WasapiSettings(auto_convert=True)
+    for rate in (int(info.get("default_samplerate") or 0), 48000, 32000,
+                 config.SAMPLE_RATE):
+        if rate <= 0:
+            continue
+        try:
+            sd.check_input_settings(device=device, channels=channels,
+                                    samplerate=rate, dtype="float32",
+                                    extra_settings=extra)
+        except Exception:
+            continue
+        return rate, extra
+    raise RuntimeError(f"микрофон не отдаёт звук (родная частота "
+                       f"{int(info.get('default_samplerate') or 0)} Гц)")
+
+
 class StreamingVad:
     """Silero VAD в потоковом режиме: кадр за кадром, с сохранением состояния."""
 

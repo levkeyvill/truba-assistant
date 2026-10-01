@@ -101,6 +101,61 @@ def check(root=None) -> dict:
             "gpus": карты, "disk_free_gb": место}
 
 
+# --- Что уже скачано ---------------------------------------------------------
+#
+# Установщик ставит только библиотеки и torch с CUDA. Сами веса моделей нужны
+# позже и качаются лениво, при первом синтезе: Higgs весит около 9 ГБ. Поэтому
+# «качественные голоса стоят» и «модель скачана» — разные вещи, и пульт должен
+# говорить о каждой своей. Проверка идёт по локальному кешу Hugging Face, без
+# сети: файла нет — значит качать придётся.
+
+
+def _скачан_файл(репо: str, имя: str | None = None,
+                  нужны: tuple[str, ...] = ()) -> bool:
+    """Есть ли нужные файлы модели в локальном кеше, без обращения к сети."""
+    try:
+        from huggingface_hub import hf_hub_download, snapshot_download
+    except Exception:
+        return False
+    try:
+        if имя is None:
+            папка = Path(snapshot_download(репо, local_files_only=True))
+            return all((папка / файл).is_file() for файл in нужны)
+        else:
+            return Path(hf_hub_download(
+                repo_id=репо, filename=имя, local_files_only=True)).is_file()
+    except Exception:
+        return False
+
+
+def weights_installed() -> dict:
+    """Какие веса качественных голосов уже лежат на диске.
+
+    Ключи — те же, что у настройки `tts_engine`. Пульт показывает это рядом с
+    «библиотеки стоят», чтобы хозяин знал, что первый ответ будет ждать
+    скачивание, а не просто поднимать модель.
+    """
+    веса = {"espeech": False, "higgs": False}
+    try:
+        from core import tts
+
+        веса["espeech"] = (
+            _скачан_файл(tts.MODEL_REPO, tts.MODEL_FILE)
+            and _скачан_файл(tts.MODEL_REPO, tts.VOCAB_FILE)
+        )
+    except Exception:
+        pass
+    try:
+        from core import higgs_voice
+
+        веса["higgs"] = _скачан_файл(
+            higgs_voice.REPO, нужны=("config.json", "model.safetensors", "tokenizer.json")
+        )
+    except Exception:
+        pass
+    return веса
+
+
 # --- Команды ----------------------------------------------------------------
 
 

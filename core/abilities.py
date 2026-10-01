@@ -99,7 +99,9 @@ def describe(apps: list[dict] | None = None, web: bool = False) -> str:
     lines += [f"- {what}" for what in ACTIONS]
     lines.append(
         "- всё это — инструментами: take_screenshot (снимок на телефон), "
-        "look_at_screen (снимок тебе, чтобы ты описала, что видишь), "
+        "look_at_screen (новый снимок тебе, чтобы ты описала, что видишь), "
+        "look_at_recent_screenshots (посмотреть уже сделанные снимки без "
+        "нового захвата экрана), "
         "save_moment (клип через NVIDIA), save_note (записать мысль в "
         "заметку), start_dictation (включить диктовку: он говорит, а ты "
         "молчишь и ждёшь «всё»), read_notes (прочитать, что он уже "

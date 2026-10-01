@@ -558,13 +558,17 @@ def _код_ждуна(root: Path) -> str:
 
     Пульт сейчас закроется, и ждать освобождения порта станет некому —
     поэтому ждёт отдельный процесс, которому закрытие не мешает.
+
+    Порт — общий привычный (`core/instance.py`), такой же, как у всех копий.
     """
+    from core import instance
+
     return (
         "import socket,subprocess,time\n"
         f"край=time.monotonic()+{WAIT_PORT}\n"
         "while time.monotonic()<край:\n"
         f"    s=socket.socket(); s.settimeout(0.5)\n"
-        f"    занят=s.connect_ex(('127.0.0.1',{int(config.PHONE_PORT)}))==0\n"
+        f"    занят=s.connect_ex(('127.0.0.1',{int(instance.порт())}))==0\n"
         "    s.close()\n"
         "    if not занят: break\n"
         "    time.sleep(0.5)\n"

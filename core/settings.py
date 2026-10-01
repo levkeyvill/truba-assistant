@@ -60,6 +60,30 @@ PHONE_ACTION_FALLBACK_ICON = "keyboard"
 # Название под сочетанием на клавиатуре: длиннее на телефоне не прочитать.
 PHONE_ACTION_TITLE_MAX = 24
 
+# --- Мастер первого запуска -------------------------------------------------
+#
+# Шесть шагов, номера 1…6. Номер лежит в settings.json этой установки, чтобы
+# после закрытия пульта мастер открылся там же, где человек остановился.
+# По умолчанию — первый шаг: свежая установка начинается с начала, а если в
+# файле значение чужое (правка руками, версия из будущего), открываемся с
+# первого шага, а не падаем.
+WIZARD_STEP_MIN = 1
+WIZARD_STEP_MAX = 6
+WIZARD_STEP_DEFAULT = WIZARD_STEP_MIN
+
+
+def validate_wizard_step(value) -> int:
+    """Номер шага мастера: целое 1…6. Всё прочее — первый шаг."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return WIZARD_STEP_DEFAULT
+    if isinstance(value, float) and value != int(value):
+        return WIZARD_STEP_DEFAULT
+    шаг = int(value)
+    if WIZARD_STEP_MIN <= шаг <= WIZARD_STEP_MAX:
+        return шаг
+    return WIZARD_STEP_DEFAULT
+
+
 DEFAULTS = {
     "temperature": config.TEMPERATURE,
     "max_tokens": config.MAX_TOKENS,
@@ -147,6 +171,12 @@ DEFAULTS = {
     # Мастер первого запуска показывается, пока это не сделано. У кого папка
     # Трубы уже была, мастер не нужен — см. `load_settings`.
     "first_run_done": False,
+    # На каком шаге мастер первого запуска бросил человека в прошлый раз.
+    # Шаг живёт в данных этой установки: закрыл пульт на пятом шаге (после QR) —
+    # в следующий раз мастер открылся на нём же, а не на первом. Проверка
+    # мягкая (см. `validate_wizard_step`): чужое значение в settings.json — это
+    # первый шаг, а не отказ пульта запускаться.
+    "wizard_step": WIZARD_STEP_DEFAULT,
     # Тема оформления пульта и телефона. Меняет только пульт («Настройки →
     # Система»): на телефоне лишних кнопок быть не должно, поэтому страница
     # телефона берёт тему сообщением от сервера и помнит её в localStorage.
@@ -169,12 +199,16 @@ def validate_theme(value) -> str:
 
 # --- Сетка программ на телефоне -------------------------------------------
 #
-# Колонок всегда четыре: хозяин 28 сентября попросил «4 программы в ширину,
-# рядов 2 или 3 — и всё». Ключ `phone_cols` в `settings.json` остаётся (старые
-# файлы и `config.PHONE_COLS`), но значение в нём уже ничего не решает.
+# Колонок всегда четыре: хозяин 28 сентября попросил «4 программы в ширину».
+# Ключ `phone_cols` в `settings.json` остаётся (старые файлы и
+# `config.PHONE_COLS`), но значение в нём уже ничего не решает.
 PHONE_COLS = 4
-PHONE_ROWS_MIN = 2
-PHONE_ROWS_MAX = 3
+# Рядов теперь ровно два: хозяин попросил оставить два (третий ряд на телефоне
+# не помещался). Старое «3» из живых `settings.json` молча становится двумя —
+# иначе телефон нарисовал бы сетку, которой больше нет, а пульт врал бы.
+PHONE_ROWS = 2
+PHONE_ROWS_MIN = PHONE_ROWS
+PHONE_ROWS_MAX = PHONE_ROWS
 PHONE_ICON_STYLES = ("plate", "round", "bare")
 
 
@@ -189,14 +223,14 @@ def validate_phone_cols(value) -> int:
 
 
 def validate_phone_rows(value) -> int:
-    """Рядов сетки: 2 или 3. Всё прочее (в том числе 1) — два ряда."""
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return config.PHONE_ROWS
-    if PHONE_ROWS_MIN <= number <= PHONE_ROWS_MAX:
-        return number
-    return PHONE_ROWS_MIN
+    """Рядов сетки: всегда два.
+
+    Раньше хозяин выбирал «2 или 3», и значение три осталось в живых
+    `settings.json`. Теперь выбора нет, поэтому и тройка, и любая опечатка
+    молча становятся двумя рядами: телефон не должен рисовать сетку, которой
+    в пульте уже не выбрать, а пустым экраном пульт ругаться не должен.
+    """
+    return PHONE_ROWS
 
 
 def validate_phone_icon_style(value) -> str:
@@ -536,6 +570,9 @@ def load_settings() -> dict:
     # установка, мастер нужен.
     if "first_run_done" not in (сохранённые or {}):
         data["first_run_done"] = bool(файл_был)
+    # Шаг мастера нормализуем при чтении: правка руками не должна открывать
+    # пульт с несуществующего шага.
+    data["wizard_step"] = validate_wizard_step(data.get("wizard_step"))
 
     saved_models = data.get("models")
     data["models"] = {
@@ -550,6 +587,11 @@ def load_settings() -> dict:
 def save_settings(values: dict) -> None:
     data = load_settings()
     data.update(values)
+    # Ряды сетки нормализуем и здесь: `phone_rows` может прийти из старого
+    # пульта или из прежнего settings.json, а в файле должно лежать то, что
+    # телефон умеет рисовать. Остальные настройки пишем как прислали.
+    if "phone_rows" in data:
+        data["phone_rows"] = validate_phone_rows(data["phone_rows"])
     safe_files.write_text(SETTINGS_PATH, json.dumps(data, ensure_ascii=False, indent=2))
 
 

@@ -783,6 +783,9 @@ class Brain:
         # (`web_queries`), и карточка на телефоне должна открыть в браузере
         # именно этот запрос, а не слова хозяина.
         self.last_queries: list[str] = []
+        # Накопитель для истории: заполняется по ходу ответа, в историю уходит
+        # одной записью оттуда (см. `_note_search` и `_flush_search`).
+        self._search_seen: list[str] = []
         # Когда в этом ответе уходили в модель и когда от неё пришло первое
         # слово и первое готовое предложение — по каждому кругу инструментов.
         # Считает только perf_counter, голосовой цикл берёт это для замера
@@ -1250,6 +1253,10 @@ class Brain:
         # запросам и источникам, что были в нём, а не в прошлом.
         self.searched = False
         self.last_queries = []
+        # Запросы этого ответа, которые уже ушли в поисковик. В историю они
+        # попадают одной записью в самом конце ответа (см. `_flush_search`),
+        # а не на каждый выход: одна попытка хозяина — одна строка.
+        self._search_seen: list[str] = []
         # Быстрый поиск (29.09, хозяин: «YouTube она открывает сразу, а поиск
         # долго думает»). Раньше первый поход к модели нужен был только
         # затем, чтобы она сформулировала запрос, — а запрос и так известен:
@@ -1258,48 +1265,55 @@ class Brain:
         # ответ — одним кругом. Поисковики не ответили — тоже одним кругом:
         # она честно говорит, что интернет молчит (см. `_attach_found`).
         # Прежний путь через инструмент остался для поиска со снимком.
-        found = None
-        if search and first is None and image is None and self._tools_on():
-            found = yield from self._search_first(user_text)
-        fast = found is not None
-        messages = self._messages(user_text, context, image, aloud, search and not fast)
-        if fast:
-            _attach_found(messages, found["query"], found["result"], found["ok"])
-        # Заход первой — без инструментов вовсе. Пустой список в тело
-        # запроса не попадает: ниже `elif tools:` проверяет на
-        # непустоту, и провайдер получает запрос вообще без `tools`.
-        # На ходе с кнопки поиска набор — только интернет, а на заходе первой
-        # инструментов нет вовсе: там `not_to_me` нечего решать. Быстрый
-        # поиск уже сделан — отвечать по нему, без новых кругов.
-        tools = [] if first is not None or fast else self._tool_list(
-            aloud and can_end, user_text, search, named and not search
-        )
-        # Источники — только из этого ответа (сброшены выше, до быстрого
-        # поиска). Кнопка поиска показывает их телефону, и старые из прошлого
-        # запроса показывать нельзя.
-        # Замеры времени — тоже только про этот ответ: прошлые круги в записи
-        # о задержке только сбивали бы с толку.
-        self.last_timing = {"rounds": []}
-        # Расход этого ответа по всем кругам. Суммируется здесь, в журнал
-        # уходит одним событием в конце — в том числе когда разговор
-        # молча закрылся и до `_add_turn` не дошло.
+        # Расход этого ответа по всем кругам: суммируется в кругах, в журнал
+        # уходит одним событием в конце. Объявлен до `try`, чтобы `finally`
+        # видел его даже после сбоя.
         usage: dict = {}
-        # Страховка — на этот ответ: чужой провайдер из прошлого ответа
-        # не должен влиять на новый.
-        self._hedge_spare = None
-        self._hedge_model = None
-        # Ход с кнопки поиска: первый круг идёт с `tool_choice`, чтобы модель
-        # не ответила болтовнёй, не поискав. Снимаем в `finally` — обычный
-        # ответ `tool_choice` не должен получать никогда (см. `_open_stream_here`).
-        self._must_search = bool(search) and self._tools_on() and not fast
-
         try:
+            found = None
+            if search and first is None and image is None and self._tools_on():
+                found = yield from self._search_first(user_text)
+            fast = found is not None
+            messages = self._messages(user_text, context, image, aloud,
+                                      search and not fast)
+            if fast:
+                _attach_found(messages, found["query"], found["result"], found["ok"])
+            # Заход первой — без инструментов вовсе. Пустой список в тело
+            # запроса не попадает: ниже `elif tools:` проверяет на
+            # непустоту, и провайдер получает запрос вообще без `tools`.
+            # На ходе с кнопки поиска набор — только интернет, а на заходе первой
+            # инструментов нет вовсе: там `not_to_me` нечего решать. Быстрый
+            # поиск уже сделан — отвечать по нему, без новых кругов.
+            tools = [] if first is not None or fast else self._tool_list(
+                aloud and can_end, user_text, search, named and not search
+            )
+            # Источники — только из этого ответа (сброшены выше, до быстрого
+            # поиска). Кнопка поиска показывает их телефону, и старые из прошлого
+            # запроса показывать нельзя.
+            # Замеры времени — тоже только про этот ответ: прошлые круги в
+            # записи о задержке только сбивали бы с толку.
+            self.last_timing = {"rounds": []}
+            # Страховка — на этот ответ: чужой провайдер из прошлого ответа
+            # не должен влиять на новый.
+            self._hedge_spare = None
+            self._hedge_model = None
+            # Ход с кнопки поиска: первый круг идёт с `tool_choice`, чтобы
+            # модель не ответила болтовнёй, не поискав. Снимаем в `finally` —
+            # обычный ответ `tool_choice` не должен получать никогда
+            # (см. `_open_stream_here`).
+            self._must_search = bool(search) and self._tools_on() and not fast
+
             yield from self._reply_rounds(
                 messages, tools, user_text, voice, usage, first,
                 found=found["query"] if fast and found["ok"] else None,
             )
         finally:
             self._must_search = False
+            # Поиск уже сделан — его нельзя потерять из-за того, что генератор
+            # остановили («хватит») или он упал. Ответ без поиска, неудачный
+            # поход и открытие старой записи сюда не попадают: в `_search_seen`
+            # лежит только то, что поисковик правда ответил.
+            self._flush_search()
             if usage.get("calls"):
                 # `model` — тот, кто реально ответил: со страховкой это
                 # может быть запасной, а расход всё равно честный суммой
@@ -1361,8 +1375,48 @@ class Brain:
         if ok:
             self.searched = True
             self.last_queries = [str(q) for q in (box.get("queries") or []) if str(q).strip()]
+            # Собираем, а не пишем: в историю уйдёт одна запись на весь ответ
+            # (см. `_flush_search`) — иначе один вопрос с тремя вариантами
+            # показывался бы на телефоне тремя строками.
+            self._note_search(self.last_queries)
         return {"ok": ok, "query": "; ".join(box.get("queries") or [query]),
                 "result": result}
+
+    def _note_search(self, queries) -> None:
+        """Запомнить, что в этом ответе ушло в поисковик.
+
+        Только сбор: в историю это уходит из `_flush_search` одной записью на
+        ответ. Собирать надо всё, что поисковик ответил, — но писать по
+        одному запросу нельзя: `_search_first` формулирует несколько вариантов
+        одного и того же вопроса, и на телефоне это выглядело дублями (30.09).
+        """
+        for запрос in list(queries or []):
+            текст = " ".join(str(запрос or "").split())
+            if текст and текст not in self._search_seen:
+                self._search_seen.append(текст)
+
+    def _flush_search(self) -> None:
+        """Один ответ — одна запись в истории поиска.
+
+        Зовётся из `finally` в `reply`: и при нормальном конце, и когда
+        генератор остановили или он упал. Граница здесь — **ответ**, а не
+        отдельный `web_search` и не временное окно: два одинаковых вопроса
+        подряд в разные дни остаются двумя записями, а десять запросов внутри
+        одного ответа — одной.
+
+        Сбой диска или хранилища не должен ронять разговор: телефон спросит
+        историю и получит пустой список, а не услышит ошибку вместо ответа.
+        """
+        запросы = list(getattr(self, "_search_seen", None) or [])
+        self._search_seen = []
+        if not запросы:
+            return
+        try:
+            from core import search_history
+
+            search_history.add(запросы[0], also=запросы[1:])
+        except Exception:
+            pass
 
     def _search_queries(self, user_text: str, query: str) -> list[str]:
         """Вопрос человека — в запросы для поисковика (REWRITE_ASK).
@@ -1434,7 +1488,13 @@ class Brain:
         `found` — запрос быстрого поиска, уже сделанного до первого круга:
         он идёт в пометку истории, как если бы искала сама модель.
         """
+        import json
+
         from core import hands, web
+
+        reset_capture = (getattr(self, "actions", None) or {}).get("reset_capture")
+        if callable(reset_capture):
+            reset_capture()
 
         # Все поисковики разом отказали — повторять через секунду бесполезно.
         # 25 сентября на этом она молчала по 20 с: искала, ждала отказа,
@@ -1517,7 +1577,7 @@ class Brain:
             for call in ordered:
                 # Вызовы разводим по имени: интернет и действия — разные
                 # инструменты, и ни один не знает про другой.
-                shot = ""
+                call_shots: list[str] = []
                 if call["name"] in hands.GUARDED and not hands.asked_for(
                     call["name"], user_text,
                     because=str(_args_of(call).get("because") or ""),
@@ -1623,11 +1683,13 @@ class Brain:
                             call["name"], getattr(self, "actions", None) or {},
                         )
                     )
-                    if call["name"] == hands.LOOK_NAME and not results[-1].startswith(
-                        '{"error"'
-                    ):
-                        # Действие вернуло сам снимок, а не путь к нему.
-                        shot = results[-1]
+                    if not results[-1].startswith('{"error"'):
+                        if call["name"] == hands.LOOK_NAME:
+                            # Действие вернуло сам снимок, а не путь к нему.
+                            call_shots = [results[-1]]
+                        elif call["name"] == hands.SAVED_LOOK_NAME:
+                            # Уже сделанные кадры: экран больше не снимаем.
+                            call_shots = json.loads(results[-1])
                 else:
                     results.append(web.run_tool(call["name"], call["args"], self.on_event))
                     if results[-1].startswith('{"error"'):
@@ -1647,13 +1709,16 @@ class Brain:
                         запрос = _query_of(call)
                         if запрос:
                             self.last_queries.append(запрос)
+                            # Собираем: несколько `web_search` внутри одного
+                            # ответа — одна попытка и одна запись истории.
+                            self._note_search([запрос])
                 messages.append({
                     "role": "tool",
                     "tool_call_id": call["id"],
-                    "content": "снимок ниже" if shot else results[-1],
+                    "content": ("снимки ниже" if len(call_shots) > 1 else "снимок ниже")
+                    if call_shots else results[-1],
                 })
-                if shot:
-                    shots.append(shot)
+                shots.extend(call_shots)
             for shot in shots:
                 # Сообщение role: tool картинку не несёт, поэтому снимок
                 # для модели кладём отдельным сообщением пользователя — в
@@ -2165,10 +2230,29 @@ class Brain:
         from core import hands
 
         action = hands.action_words(name, args)
+        if name in (hands.SET_REM_NAME, hands.CANCEL_REM_NAME):
+            # Для короткого ответа важен ближайший вопрос Трубы. Не берём
+            # старый разговор: из него нельзя выводить новое разрешение.
+            context = "(нет)"
+            if len(self._history) >= 2:
+                previous_user, previous_answer = self._history[-2], self._history[-1]
+                when = _at_of(previous_answer)
+                now = datetime.now(when.tzinfo) if when is not None else None
+                fresh = when is None or (
+                    timedelta(0) <= now - when <= timedelta(minutes=5)
+                )
+                if (fresh and previous_user.get("role") == "user"
+                        and previous_answer.get("role") == "assistant"):
+                    context = (f"Человек: {previous_user.get('content', '')}\n"
+                               f"Помощница: {previous_answer.get('content', '')}")
+            prompt = hands.REMINDER_JUDGE_PROMPT.format(
+                context=context, said=str(said or ""), action=action)
+        else:
+            prompt = hands.JUDGE_PROMPT.format(said=str(said or ""), action=action)
         started = time.monotonic()
         try:
             answer = self._ask_plainly(
-                hands.JUDGE_PROMPT.format(said=str(said or ""), action=action),
+                prompt,
                 max_tokens=5, note="проверка", timeout=8.0,
             )
             text = (answer.choices[0].message.content or "").strip()

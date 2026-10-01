@@ -183,21 +183,35 @@ class ВидСеткиТесты(unittest.TestCase):
         cls.js = PULT_JS.read_text(encoding="utf-8")
 
     def test_the_columns_group_is_not_there_anymore(self):
-        # Хозяин попросил «4 программы в ширину, рядов 2 или 3 — и всё»: выбор
-        # колонок и был причиной жалобы «добавил OBS — колонок стало пять».
+        # Хозяин попросил «4 программы в ширину»: выбор колонок и был причиной
+        # жалобы «добавил OBS — колонок стало пять».
         блок = _тело(self.js, "прогНарисоватьСетку")
         self.assertNotIn("Колонки", блок)
         self.assertNotIn("'cols'", блок)
+
+    def test_three_rows_are_not_offered_anymore(self):
+        # Рядов осталось два: «3» в пульте предлагать нечего, а старое
+        # значение из живого settings.json пульт показывает и сохраняет как два.
+        блок = _тело(self.js, "прогНарисоватьСетку")
         ряды = [строка for строка in блок.splitlines() if "'Ряды'" in строка]
         self.assertTrue(ряды, "в пульте нет переключателя рядов")
-        self.assertIn("[['2', '2'], ['3', '3']]", ряды[0])
+        self.assertIn("[['2', '2']]", ряды[0])
+        self.assertNotIn("'3'", ряды[0])
         self.assertNotIn("'1'", ряды[0])
+        чтение = _тело(self.js, "прогЗагрузитьСетку")
+        self.assertIn("прогСетка.rows = ПРОГ_РЯДЫ;", чтение)
+        # Макет в пульте тоже всегда два ряда — иначе врал бы телефону.
+        self.assertIn("rows: ПРОГ_РЯДЫ", _тело(self.js, "прогВидСетки"))
 
     def test_the_three_keys_are_read_from_settings(self):
         блок = _тело(self.js, "прогЗагрузитьСетку")
         self.assertIn("fetch('/api/settings'", блок)
-        for ключ in ("phone_rows", "phone_icon_style", "phone_labels"):
+        for ключ in ("phone_icon_style", "phone_labels"):
             self.assertIn(ключ, блок)
+        # Рядов выбор больше не читаем: в пульте он один, поэтому и значение
+        # из живого settings.json не может в нём что-то изменить.
+        self.assertNotIn("s.phone_rows", блок)
+        self.assertIn("прогСетка.rows = ПРОГ_РЯДЫ;", блок)
         # Старое `phone_cols` в живом settings.json больше не решает ничего.
         self.assertNotIn("s.phone_cols", блок)
 

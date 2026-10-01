@@ -244,6 +244,13 @@ class ПроверкаJsonТесты(unittest.TestCase):
         return основа
 
     def _ошибка(self, меню):
+        # `_check_menu` отвечает парой (текст ошибки, готовые пункты): имя
+        # пункта придумывает сервер, и пульту нужно то, что он записал.
+        from ui.web_runtime import WebRuntime
+
+        return WebRuntime._check_menu("discord", меню)[0]
+
+    def _проверка(self, меню):
         from ui.web_runtime import WebRuntime
 
         return WebRuntime._check_menu("discord", меню)
@@ -282,6 +289,15 @@ class ПроверкаJsonТесты(unittest.TestCase):
 
     def test_пустое_implies_не_ошибка(self):
         self.assertEqual(self._ошибка([self._пункт(toggle=True, implies="")]), "")
+
+    def test_имя_пункта_придумывается_из_русского_названия(self):
+        # Хозяину не нужно переводить «Микрофон» в `microphone` руками: сервер
+        # придумывает имя сам и отдаёт его пульту вместе с проверкой.
+        why, пункты = self._проверка([{"kind": "hotkey", "id": "",
+                                        "title": "Микрофон",
+                                        "keys": "ctrl+shift+alt+m"}])
+        self.assertEqual(why, "")
+        self.assertEqual(пункты[0]["id"], "mikrofon")
 
     def test_мусорный_toggle_в_apps_json_пункт_убирает(self):
         # apps.json правят руками; плохой пункт молча пропускается, а не

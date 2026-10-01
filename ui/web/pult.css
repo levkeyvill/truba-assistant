@@ -183,6 +183,38 @@ body {
 }
 .подменю-настроек button.с-обновлением::after { float: right; margin: 6px 2px 0 0; }
 
+/* Плашка «вышла версия N». Ненавязчивая: угол пульта, акцент на кнопке,
+   крестик рядом. Установку не предлагает — только ведёт в «О программе». */
+.обн-плашка {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 10px 12px;
+  border: 1px solid var(--акцент);
+  border-radius: 12px;
+  background: var(--панель-выше);
+  color: var(--текст);
+  font-size: 13px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+}
+.обн-плашка span { min-width: 0; }
+.обн-плашка-скрыть {
+  flex: none;
+  border: 0;
+  padding: 2px 6px;
+  background: transparent;
+  color: var(--тусклый);
+  font: inherit;
+  font-size: 16px;
+  cursor: pointer;
+}
+.обн-плашка-скрыть:hover { color: var(--текст); }
+
 .низ { margin-top: auto; padding: 10px 6px 0; border-top: 1px solid var(--линия); }
 
 /* Пункты меню листаются в своей полосе, а шапка «Труба» и «Поддержать» стоят
@@ -1289,6 +1321,19 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .настр-адреса { padding: 4px 0; font-size: 13px; color: var(--приглушён); overflow-wrap: anywhere; }
 .настр-телряд { display: flex; align-items: center; gap: 12px; padding: 6px 0 2px; }
 .настр-телряд[hidden] { display: none; }
+
+/* Последние реплики разговора («Показать историю» в «Памяти»). Список
+   длинный, поэтому своя прокрутка: иначе он растягивал бы всю форму.
+   Реплика — дословная, с переносами: `pre-line` держит их, а текст выбирается
+   целиком, чтобы можно было скопировать. */
+.история-список { max-height: 340px; margin-top: 10px; padding: 4px 2px; border: 1px solid var(--линия); border-radius: 10px; background: var(--панель-выше); overflow-y: auto; }
+.история-список[hidden] { display: none; }
+.история-реплика { padding: 7px 11px; border-bottom: 1px solid var(--линия); }
+.история-реплика:last-child { border-bottom: 0; }
+.история-шапка { display: flex; align-items: baseline; gap: 9px; }
+.история-кто { font-size: 12px; font-weight: 600; color: var(--акцент); }
+.история-когда { font-size: 11px; color: var(--тусклый); }
+.история-текст { margin-top: 3px; font-size: 13px; line-height: 1.5; white-space: pre-line; overflow-wrap: anywhere; user-select: text; }
 .образец-заголовок { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--линия); font-weight: 600; font-size: 13px; }
 .образец-добавить { margin-top: 0; }
 /* «Новый голос из записи» — три пронумерованных шага (хозяин 28.09: «всё в
@@ -1638,6 +1683,12 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .прог-левая { min-width: 0; position: sticky; top: 12px; }
 .прог-правая { min-width: 0; }
 .прог-правая-шапка { margin-bottom: 8px; font-size: 12px; color: var(--приглушён); font-weight: 600; }
+/* Ряд шапки: подпись слева, «← Все программы» справа. Путь назад должен быть
+   виден всегда, пока есть из чего возвращаться, поэтому он в одной строке с
+   подписью, а не где-то внизу под полями. */
+.прог-правая-шапка-ряд { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.прог-правая-шапка-ряд .прог-правая-шапка { margin-bottom: 0; }
+.прог-назад { flex: none; white-space: nowrap; }
 .прог-свойства { min-width: 0; }
 
 /* Телефон: тёмный корпус со скруглением, как настоящий, а внутри — рамка

@@ -33,7 +33,10 @@ class МастерПультаTests(unittest.TestCase):
     def test_it_starts_only_for_a_fresh_install(self):
         # У хозяина `first_run_done` уже true, и мастера он не видит никогда.
         self.assertIn("first_run_done", self.js)
-        self.assertIn("if (s.first_run_done === false) мастерОткрыть(1);", self.js)
+        # Мастер открывается на сохранённом шаге, а не всегда с первого.
+        self.assertIn("if (s.first_run_done === false) {", self.js)
+        self.assertIn("Number(s.wizard_step)", self.js)
+        self.assertNotIn("if (s.first_run_done === false) мастерОткрыть(1);", self.js)
         self.assertIn("спроситьПервыйЗапуск();", self.js)
         # С «Начать» и «Пропустить настройку» флаг тоже ставится.
         self.assertIn("мастерСохранить({ first_run_done: true })", self.js)
@@ -53,13 +56,17 @@ class МастерПультаTests(unittest.TestCase):
 
     def test_sound_and_weather_are_reused_not_copied(self):
         # Мастер зовёт те же функции, что и «Звук»/«Телефон», со своей
-        # проверкой «жив» вместо формы настроек.
+        # проверкой «жив» вместо формы настроек. Полоска уровня — исключение:
+        # на шаге 4 она смотрит на **выбранный** микрофон, а не на тот, который
+        # держит голос, поэтому у неё свой опрос (`мастерУровень*`).
         for кусок in ("await загрузитьЗвук(эл, мастерЖива);",
-                      "звукУровеньВключить(эл, мастерЖива)",
-                      "проверитьЗвук(эл, мастерЖива)",
+                      "звукЗаписать(эл, мастерЖива, '/api/audio/test?probe=1')",
                       "найтиГород(эл, мастерЖива)",
-                      "звукПоказатьВход(эл, мастерЖива)"):
+                      "звукПоказатьВход(эл, мастерЖива)",
+                      "звукУровеньПоказать(эл, level, тихо, мастерЖива)"):
             self.assertIn(кусок, self.js)
+        self.assertIn("мастерУровеньВключить(эл)", self.js)
+        self.assertNotIn("звукУровеньВключить(эл, мастерЖива)", self.js)
         # Вторых копий этих функций быть не должно.
         for функция in ("function звукЗаполнить(", "async function загрузитьЗвук(",
                         "async function найтиГород(", "function погодаВыбрать("):
@@ -117,6 +124,27 @@ class МастерПультаTests(unittest.TestCase):
         self.assertIn("Пропустить первую настройку?", пропуск)
         self.assertIn("«Настройках» и «Голосе»", пропуск)
         self.assertIn("мастерСохранить({ first_run_done: true })", пропуск)
+
+    def test_the_step_is_remembered_after_next_and_back(self):
+        # Закрыл пульт на пятом шаге (после QR) — в следующий раз откроется на
+        # нём же, а не на первом.
+        self.assertIn("function мастерШагЗапомнить(шаг)", self.js)
+        self.assertIn("мастерСохранить({ wizard_step: шаг })", self.js)
+        дальше = self.js.split("async function мастерДальше()")[1].split("\n}\n")[0]
+        self.assertIn("мастерШагЗапомнить(мастерШаг);", дальше)
+        # Шаг пишется после перехода, а не до проверки: при ошибке сохранения
+        # шага «Дальше» не перелистывает.
+        self.assertLess(дальше.index("if (ошибка) { мастерСтатус(эл, ошибка, true); return; }"),
+                        дальше.index("мастерШагЗапомнить(мастерШаг);"))
+        назад = self.js.split("function мастерНазад()")[1].split("\n}\n")[0]
+        self.assertIn("мастерШагЗапомнить(мастерШаг);", назад)
+
+    def test_the_step_lives_in_settings_not_in_the_browser(self):
+        # Шаг — часть данных установки, поэтому в localStorage его нет.
+        for строка in re.finditer(r"localStorage[^\n]*", self.js):
+            self.assertNotIn("wizard_step", строка.group(0))
+        for строка in re.finditer(r"wizard_step[^\n]*", self.js):
+            self.assertNotIn("localStorage", строка.group(0))
 
     def test_back_does_not_throw_away_what_was_typed(self):
         # Введённый ключ и город не должны пропадать от «Назад»: значения

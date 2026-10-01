@@ -49,6 +49,7 @@ CLOSE_NAME = "close_app"
 SHOT_NAME = "take_screenshot"
 MOMENT_NAME = "save_moment"
 LOOK_NAME = "look_at_screen"
+SAVED_LOOK_NAME = "look_at_recent_screenshots"
 YT_NAME = "youtube"
 NOTE_NAME = "save_note"
 READ_NAME = "read_notes"
@@ -111,14 +112,16 @@ DRIVE_LETTERS = tuple(str(one.get("title", "")).rsplit(" ", 1)[-1]
 
 # Ключи в brain.actions — те же слова, что в core/commands.py, чтобы словарь
 # читался одинаково с обеих сторон.
-KEY_OF = {SHOT_NAME: "screenshot", MOMENT_NAME: "moment", LOOK_NAME: "look"}
+KEY_OF = {SHOT_NAME: "screenshot", MOMENT_NAME: "moment", LOOK_NAME: "look",
+          SAVED_LOOK_NAME: "look_saved"}
 # Всё, что делается на компе. Интернет (core/web.py) сюда не входит: там нужен
 # живой ответ из сети, а эти действия мгновенные. YouTube сюда тоже: поиск
 # ролика занимает полторы секунды, а ответ всё равно не разговорный.
 # `save_note` — записать мысль в файл: дело на месте, и второй круг в облако
 # ушёл бы ради одного слова «записала». `read_notes` сюда НЕ входит: там
 # модель нужна сама, чтобы пересказать прочитанное хозяину своими словами.
-LOCAL = frozenset({NAME, CLOSE_NAME, SHOT_NAME, MOMENT_NAME, LOOK_NAME, YT_NAME,
+LOCAL = frozenset({NAME, CLOSE_NAME, SHOT_NAME, MOMENT_NAME, LOOK_NAME,
+                   SAVED_LOOK_NAME, YT_NAME,
                    NOTE_NAME, DICTATE_NAME, LAYOUT_NAME, MEDIA_NAME, PCVOL_NAME,
                    FOLDER_NAME, SET_REM_NAME, CANCEL_REM_NAME, POWER_NAME})
 # Инструменты, у которых спрашивается «просил ли он об этом в этой фразе».
@@ -147,11 +150,10 @@ GUARDED = LOCAL | {READ_NAME, LIST_REM_NAME, DOC_NAME, FIND_NAME, CLIP_NAME}
 # Папки (`FOLDER_NAME`) входят: открытая папка — это окно на экране, ровно как
 # у запуска программы, и лишняя секунда проверки тут дешевле окна, которое
 # открылось само.
-# Напоминания и таймеры сюда НЕ входят: их дело — лежать в файле до срока,
-# наружу (в облако, на экран) не уходит ничего, а хозяин просит их прямо и
-# часто. Судья тут только задержал бы «напомни через двадцать минут» лишней
-# секундой — и на спорном месте могла бы ответить отказом, хотя просьба
-# ясная.
+# Создание и отмена напоминаний теперь тоже требуют проверки смысла. 30.09
+# хозяин ответил на уточнение дат перелёта, а модель приняла даты за просьбу
+# поставить напоминание. Цитата `because` была настоящей, но относилась к
+# другой задаче. Список напоминаний остаётся чтением без этой проверки.
 # Документы (`DOC_NAME`) сюда входят по тому же правилу, что снимок экрана:
 # текст файла уходит в облако целиком, а хозяин может сказать «файл с отчётом
 # попался» в разговоре, в котором просил не о документе. Лишняя секунда
@@ -170,7 +172,8 @@ GUARDED = LOCAL | {READ_NAME, LIST_REM_NAME, DOC_NAME, FIND_NAME, CLIP_NAME}
 # судьи: на фразе «а он умеет выключаться?» модель вполне может решить, что
 # хозяин хвалится, и позвать инструмент. Лишняя секунда против выключенного
 # рабочего компьютера — размен негодный.
-JUDGED = frozenset({NAME, CLOSE_NAME, YT_NAME, SHOT_NAME, LOOK_NAME, FOLDER_NAME,
+JUDGED = frozenset({NAME, CLOSE_NAME, YT_NAME, SHOT_NAME, LOOK_NAME,
+                    SAVED_LOOK_NAME, FOLDER_NAME, SET_REM_NAME, CANCEL_REM_NAME,
                     DOC_NAME, FIND_NAME, CLIP_NAME, POWER_NAME})
 
 # Сколько секунд снимок лежит на телефоне, пока не уберётся сам.
@@ -262,11 +265,24 @@ MOMENT_TOOL = _spec(
 
 LOOK_TOOL = _spec(
     LOOK_NAME,
-    "Посмотреть, что сейчас на экране, и ответить по увиденному: снимок "
-    "уходит тебе, а не ему. Вызывай только когда он прямо просит посмотреть "
-    "на экран — «что у меня на экране», «глянь на экран». Если непонятно, о "
+    "Посмотреть, что СЕЙЧАС на экране, и ответить по увиденному. Это создаёт "
+    "один новый снимок и показывает его на телефоне. Если хозяин одновременно "
+    "просит сделать скриншот и рассказать, что на нём, вызывай только этот "
+    "инструмент: отдельный take_screenshot не нужен. Для УЖЕ сделанных "
+    "снимков используй look_at_recent_screenshots. Вызывай только когда он "
+    "прямо просит посмотреть на экран. Если непонятно, о "
     "чём он, переспроси: снимок уходит в облако, лишний раз его слать нельзя. "
     "Слова «попью», «посмотрю» и подобные — это не просьба смотреть.",
+)
+
+SAVED_LOOK_TOOL = _spec(
+    SAVED_LOOK_NAME,
+    "Посмотреть последние уже сделанные снимки экрана и ответить по ним, "
+    "НЕ снимая экран заново. Вызывай, когда хозяин прямо просит посмотреть "
+    "предыдущие снимки: «посмотри на те скриншоты», «что было на снимке», "
+    "«ты же их уже сделала». Если снимков с текущего запуска нет, скажи об "
+    "этом честно. Сами картинки уйдут тебе в облако только после проверки "
+    "просьбы хозяина.",
 )
 
 # Объявление не зависит от `apps.json`: YouTube в нём одна кнопка, и ролики с
@@ -523,6 +539,7 @@ ACTION_TOOLS = {
     "screenshot": SHOT_TOOL,
     "moment": MOMENT_TOOL,
     "look": LOOK_TOOL,
+    "look_saved": SAVED_LOOK_TOOL,
 }
 
 
@@ -1042,7 +1059,9 @@ JUDGE_PROMPT = (
     "канале или о самом YouTube; просьба что-то найти или узнать без этого — "
     "не просьба открыть YouTube. Посмотреть на экран или снять его — только "
     "когда он сам просит об этом: «глянь на экран», «что у меня на экране», "
-    "«сделай скриншот». Рассказ о компьютере, о памяти, о программах и "
+    "«сделай скриншот». Посмотреть экран сейчас и посмотреть уже сделанные "
+    "снимки — разные действия; просьба о старых снимках не разрешает новый "
+    "захват экрана. Рассказ о компьютере, о памяти, о программах и "
     "разговорам о них просьбой смотреть не считается. Прочитать или перевести "
     "то, что хозяин скопировал, — только когда он сам об этом просит («прочитай, "
     "что я скопировал», «переведи скопированное на английский»); упоминание "
@@ -1054,6 +1073,23 @@ JUDGE_PROMPT = (
     "в разговоре — не просьба. Ответь одним словом: "
     "да или нет.\n\n"
     "Реплика: «{said}»\n"
+    "Действие: {action}"
+)
+
+# Проверка изменения напоминаний получает только ближайший обмен репликами:
+# короткий ответ человека может быть продолжением просьбы, а может быть
+# ответом на совсем другой вопрос. Это решение по смыслу, без списка слов.
+REMINDER_JUDGE_PROMPT = (
+    "Ты независимо проверяешь, разрешил ли человек выполнить действие прямо "
+    "сейчас. Смотри смысл последней реплики в контексте ближайшего обмена. "
+    "Предыдущий обмен нужен только для связи короткого ответа с вопросом "
+    "помощницы: он сам по себе не разрешает новое действие. Если человек "
+    "продолжает именно запрошенное им действие, ответь «да». Если он отвечает "
+    "на вопрос по другой задаче, просто сообщает параметры или отрицает "
+    "действие, ответь «нет». Не решай по совпадению отдельных слов. "
+    "Ответь одним словом: да или нет.\n\n"
+    "Предыдущий обмен:\n{context}\n"
+    "Последняя реплика человека: «{said}»\n"
     "Действие: {action}"
 )
 
@@ -1081,6 +1117,17 @@ def action_words(name: str, args: dict) -> str:
         return "сделать снимок экрана и показать его на телефоне"
     if name == LOOK_NAME:
         return "посмотреть на его экран (снимок экрана уйдёт тебе в облако)"
+    if name == SAVED_LOOK_NAME:
+        return "посмотреть на уже сделанные снимки экрана (они уйдут тебе в облако)"
+    if name == SET_REM_NAME:
+        kind = "таймер" if args.get("kind") == "timer" else "напоминание"
+        when = str(args.get("at") or f'через {args.get("seconds")} секунд')
+        about = str(args.get("text") or "").strip()
+        return f"поставить {kind} {when}" + (f": {about}" if about else "")
+    if name == CANCEL_REM_NAME:
+        if args.get("all") is True:
+            return "отменить все напоминания и таймеры"
+        return f"отменить напоминание или таймер {str(args.get('id') or '').strip()}"
     if name == FOLDER_NAME:
         # Судье нужна папка словами, а не её id: он не видит перечисления.
         return f"открыть папку «{folders.title_of(args.get('folder'))}»"
@@ -2450,6 +2497,12 @@ def confirm(calls: list[dict], apps: list[dict] | None = None,
 
 # --- Действия: одно и то же для голоса, для телефона и для модели ---------
 
+def recent_shots() -> list[str]:
+    """Последние кадры из папки снимков Трубы, от старого к новому."""
+    from core import screen
+
+    return [image for _path, image in screen.recent(3)]
+
 
 def shoot(emit: Event, phone: Phone | None = None,
           hide: float = SHOT_HIDE) -> tuple[Path, str]:
@@ -2520,8 +2573,22 @@ def actions_for(emit: Event, phone: Phone | None = None) -> dict:
     один и тот же снимок с тем же звуком.
     """
 
+    captured: tuple[Path, str] | None = None
+
+    def reset_capture() -> None:
+        # Новый ответ хозяину может попросить новый кадр. Внутри одного
+        # ответа оба инструмента пользуются одним и тем же снимком.
+        nonlocal captured
+        captured = None
+
+    def capture(hide: float) -> tuple[Path, str]:
+        nonlocal captured
+        if captured is None:
+            captured = shoot(emit, phone, hide=hide)
+        return captured
+
     def screenshot() -> str:
-        path, _image = shoot(emit, phone)
+        path, _image = capture(SHOT_HIDE)
         return f"готово, снимок на телефоне: {path.name}"
 
     def moment() -> str:
@@ -2536,10 +2603,17 @@ def actions_for(emit: Event, phone: Phone | None = None) -> dict:
         # Модели нужен сам снимок, а не путь к нему: телефон его всё равно
         # видит, а в облако уходит только то, что вернулось отсюда. На телефоне
         # он лежит недолго: этот кадр хозяину не его, а ей.
-        _path, image = shoot(emit, phone, hide=LOOK_HIDE)
+        _path, image = capture(LOOK_HIDE)
         return image
 
-    return {"screenshot": screenshot, "moment": moment, "look": look}
+    def look_saved() -> str:
+        images = recent_shots()
+        if not images:
+            return _error("сохранённых снимков экрана пока нет")
+        return json.dumps(images, ensure_ascii=False)
+
+    return {"screenshot": screenshot, "moment": moment, "look": look,
+            "look_saved": look_saved, "reset_capture": reset_capture}
 
 
 def run_action(name: str, actions: dict) -> str:

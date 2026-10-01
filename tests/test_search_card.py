@@ -520,8 +520,10 @@ class СтраницаКарточкиTests(unittest.TestCase):
         self.assertNotIn("open_source', url", блок)
         self.assertNotIn("source.url", блок)
 
-    def test_the_card_hangs_a_minute_and_a_touch_extends_it(self):
-        self.assertIn("const FIND_HIDE_MS = 60000;", self.страница)
+    def test_the_card_hangs_a_few_seconds_and_a_touch_extends_it(self):
+        # Минута держала пол-экрана телефона (хозяин, 30.09): теперь несколько
+        # секунд — успел прочитать и тыкнуть. Ссылки остались в истории поиска.
+        self.assertIn("const FIND_HIDE_MS = 7000;", self.страница)
         # Каждое касание строки перевзводит таймер, а не гасит карточку.
         self.assertGreaterEqual(self.страница.count("armFind();"), 3)
 

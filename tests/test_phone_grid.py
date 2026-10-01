@@ -71,6 +71,8 @@ class НастройкиСеткиTests(unittest.TestCase):
         self.addCleanup(подмена.stop)
         # `apply_to_config` переносит в config и папку заметок — возвращаем.
         self.addCleanup(setattr, config, "NOTES_DIR", config.NOTES_DIR)
+        # Старый settings.json в новом тесте трогает и температуру.
+        self.addCleanup(setattr, config, "TEMPERATURE", config.TEMPERATURE)
         self._было = (config.PHONE_COLS, config.PHONE_ROWS,
                       config.PHONE_ICON_STYLE, config.PHONE_LABELS)
         self.addCleanup(self._вернуть)
@@ -95,21 +97,23 @@ class НастройкиСеткиTests(unittest.TestCase):
         # Колонок всегда четыре: что бы ни прислали — и «авто», и пять.
         for значение in ("auto", 3, 4, 5, 6, None, "сколько"):
             self.assertEqual(settings.validate_phone_cols(значение), 4, значение)
-        for число in (2, 3):
-            self.assertEqual(settings.validate_phone_rows(число), число)
         for вид in ("plate", "round", "bare"):
             self.assertEqual(settings.validate_phone_icon_style(вид), вид)
         self.assertTrue(settings.validate_phone_labels(True))
         self.assertFalse(settings.validate_phone_labels(False))
+
+    def test_only_two_rows_are_possible_now(self):
+        # Хозяин оставил два ряда: выбор «3» убран из пульта, потому что три
+        # ряда на телефоне не помещались. Старое «3» из живого settings.json
+        # и любая опечатка молча становятся двумя рядами.
+        for число in (2, "2", 3, "3", None, "", "два", 1, 0, 4, -1, 9, [], {}):
+            self.assertEqual(settings.validate_phone_rows(число), 2, число)
 
     def test_bad_values_fall_back_to_the_default_without_raising(self):
         # Опечатка в настройке — не причина оставить телефон пустым и не
         # причина бросить исключение в пульте.
         for мусор in (None, "", "сколько", 0, 2, 7, 99, [], {}, True):
             self.assertEqual(settings.validate_phone_cols(мусор), config.PHONE_COLS,
-                             мусор)
-        for мусор in (None, "", "два", 0, 4, -1, [], {}):
-            self.assertEqual(settings.validate_phone_rows(мусор), config.PHONE_ROWS,
                              мусор)
         for мусор in (None, "", "квадрат", 1, [], {}):
             self.assertEqual(settings.validate_phone_icon_style(мусор),
@@ -119,14 +123,44 @@ class НастройкиСеткиTests(unittest.TestCase):
                              bool(config.PHONE_LABELS), мусор)
 
     def test_saved_values_reach_config_and_the_phone_layout(self):
-        settings.save_settings({"phone_cols": 4, "phone_rows": 3,
+        settings.save_settings({"phone_cols": 4, "phone_rows": 2,
                                 "phone_icon_style": "round", "phone_labels": True})
         settings.apply_to_config()
         self.assertEqual((config.PHONE_COLS, config.PHONE_ROWS,
                           config.PHONE_ICON_STYLE, config.PHONE_LABELS),
-                         (4, 3, "round", True))
+                         (4, 2, "round", True))
         self.assertEqual(settings.grid_layout(),
-                         {"cols": 4, "rows": 3, "style": "round", "labels": True})
+                         {"cols": 4, "rows": 2, "style": "round", "labels": True})
+
+    def test_the_old_three_rows_setting_becomes_two(self):
+        # Старый settings.json хозяина: выбор был «2 или 3», и тройка там
+        # осталась. Загрузка и grid_layout должны показать два ряда, а
+        # остальные настройки — те же, что лежали в файле.
+        settings.SETTINGS_PATH.write_text(json.dumps({
+            "phone_cols": 4, "phone_rows": 3, "phone_icon_style": "round",
+            "phone_labels": True, "temperature": 0.4,
+            "phone_actions": [{"kind": "builtin", "id": "screenshot"},
+                              {"kind": "builtin", "id": "moment"},
+                              {"kind": "builtin", "id": "search"},
+                              {"kind": "builtin", "id": "note_start"}]}),
+            encoding="utf-8")
+        settings.apply_to_config()
+        self.assertEqual(config.PHONE_ROWS, 2)
+        self.assertEqual(settings.grid_layout(),
+                         {"cols": 4, "rows": 2, "style": "round", "labels": True})
+        # Прочие настройки тройка не тронула — и список программ тоже.
+        self.assertEqual(config.TEMPERATURE, 0.4)
+        self.assertEqual(settings.phone_actions(),
+                         [dict(ячейка) for ячейка in settings.DEFAULT_PHONE_ACTIONS])
+
+    def test_saving_three_rows_writes_two(self):
+        # Старая страница пульта или живой клиент может ещё прислать тройку:
+        # в файл должно лечь два, а не то, что прислали.
+        settings.save_settings({"phone_rows": 3})
+        self.assertEqual(self._сохранено()["phone_rows"], 2)
+        settings.save_settings({"phone_rows": 3})
+        settings.apply_to_config()
+        self.assertEqual(config.PHONE_ROWS, 2)
 
     def test_broken_settings_json_does_not_break_the_grid(self):
         settings.SETTINGS_PATH.write_text(json.dumps({
@@ -206,6 +240,13 @@ class СообщениеТелефонуTests(unittest.TestCase):
         self.assertEqual(msg["layout"],
                          {"cols": 4, "rows": 2, "style": "plate",
                           "labels": False})
+
+    def test_the_old_three_rows_from_config_become_two(self):
+        # Старый config мог получить тройку из прежнего settings.json: телефон
+        # всё равно должен получить два ряда.
+        config.PHONE_ROWS = 3
+        msg = self._сообщение([])
+        self.assertEqual(msg["layout"]["rows"], 2)
 
     def test_explicit_layout_wins(self):
         config.PHONE_COLS = 6
@@ -326,14 +367,28 @@ class СтраницаТелефонаTests(unittest.TestCase):
         блок = self._блок("function drawApps(items, layout) {", "\n\n")
         self.assertIn("layoutApps(items.length, вид)", блок)
 
-    def test_the_grid_is_always_four_columns_and_two_or_three_rows(self):
-        # Раньше колонки считались от числа программ («авто» давало пять).
+    def test_the_grid_is_always_four_columns_and_two_rows(self):
+        # Раньше колонки считались от числа программ («авто» давало пять),
+        # а рядов было два или три. Сейчас — четыре колонки и два ряда.
         блок = self._блок("function gridView(layout) {", "\n\n")
         self.assertIn("const TILE_COLS = 4", self.js)
+        self.assertIn("const TILE_COLS = 4, TILE_ROWS_MIN = 2, TILE_ROWS_MAX = 2;",
+                      self.js)
         self.assertIn("cols: TILE_COLS", блок)
         self.assertNotIn("l.cols", блок)
         # Плитка меряется по всей сетке 4 × рядов, даже когда программ три.
         self.assertIn("free - TILE_GAP * (TILE_COLS - 1)) / TILE_COLS", self.js)
+
+    def test_three_rows_from_an_old_message_become_two(self):
+        # Старая страница или сервер пришлёт `rows: 3` — показываем два ряда.
+        # Лишние плитки при этом не пропадают: сетка становится шире и листается
+        # вбок (`scroll` в `layoutApps`), то есть текущим способом.
+        self.assertIn("TILE_ROWS = 2", self.js)
+        блок = self._блок("function gridView(layout) {", "\n\n")
+        self.assertIn("n <= TILE_ROWS_MAX", блок)
+        self.assertIn("? n : TILE_ROWS", блок)
+        self.assertIn("const scroll = неВлезает || need > free;", self.js)
+        self.assertIn("appsBox.classList.toggle('narrow', scroll);", self.js)
 
     def test_program_names_go_in_through_text_content(self):
         # Название программы — текст, а не разметка из сети.

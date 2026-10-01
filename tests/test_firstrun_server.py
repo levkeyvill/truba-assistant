@@ -33,9 +33,12 @@ def _свободный_порт() -> int:
         return probe.getsockname()[1]
 
 
-def _пульт() -> WebRuntime:
+def _пульт(сервер=None) -> WebRuntime:
     """Настоящий runtime без конструктора: тот тянет сервер и голос."""
     среда = object.__new__(WebRuntime)
+    # Адрес телефона и QR собираются по порту этого пульта: у двух копий
+    # Трубы на одном компьютере порты разные.
+    среда.server = сервер
     среда._lock = threading.Lock()
     среда._update_lock = threading.Lock()
     среда._bg = lambda func, *args: None
@@ -73,7 +76,7 @@ class ApiBase(unittest.TestCase):
         ПОРТ.append(cls.server.port)
 
     def setUp(self):
-        self.server.runtime = _пульт()
+        self.server.runtime = _пульт(self.server)
         self.client = TestClient(self.server._app,
                                  base_url=f"http://127.0.0.1:{ПОРТ[0]}")
         # Тот же сервер, но клиент из сети: телефон хозяина.
@@ -180,9 +183,12 @@ class QrTests(ApiBase):
     """QR-код адреса телефона: только свой адрес, и без segno — не падать."""
 
     def _свой(self) -> str:
+        # Адрес — с портом *этого* пульта: у двух копий Трубы на одном
+        # компьютере порты разные, и QR обязан вести к той, чьё окно открыто
+        # (`core/instance.py`).
         from core.phone import local_addresses
 
-        return f"http://{local_addresses()[0]}:{config.PHONE_PORT}"
+        return f"http://{local_addresses()[0]}:{self.server.port}"
 
     def test_another_address_is_refused(self):
         # Маршрут рисует адрес на экране телефона. Генератор QR для чужой
@@ -280,6 +286,61 @@ class FirstRunTests(unittest.TestCase):
         self.файл.write_text("не json", encoding="utf-8")
         # Настройки не прочитались, но папка явно не свежая — мастер не крутим.
         self.assertTrue(settings.load_settings()["first_run_done"])
+
+    def test_saved_step_is_read_back(self):
+        # Свежая установка открывает мастер с первого шага, а закрытый на
+        # пятом (после QR) пульт в следующий раз открывает мастер на пятом.
+        self.assertEqual(settings.load_settings()["wizard_step"], 1)
+        settings.save_settings({"wizard_step": 5})
+        self.assertEqual(settings.load_settings()["wizard_step"], 5)
+
+    def test_step_from_the_file_is_kept_with_the_rest(self):
+        # Чужие настройки не стираются: шаг добавляется, остальное на месте.
+        self.файл.write_text('{"voice_name": "мой", "wizard_step": 3}',
+                             encoding="utf-8")
+        значения = settings.load_settings()
+        self.assertEqual(значения["wizard_step"], 3)
+        self.assertEqual(значения["voice_name"], "мой")
+
+
+class WizardStepTests(unittest.TestCase):
+    """Номер шага мастера: целое 1…6, остальное — первый шаг."""
+
+    def setUp(self):
+        self.папка = Path(tempfile.mkdtemp(prefix="truba-step-"))
+        self.addCleanup(shutil.rmtree, self.папка, True)
+        self.файл = self.папка / "settings.json"
+        self._был = settings.SETTINGS_PATH
+        settings.SETTINGS_PATH = self.файл
+        self.addCleanup(self._вернуть)
+
+    def _вернуть(self):
+        settings.SETTINGS_PATH = self._был
+
+    def test_the_allowed_steps(self):
+        for шаг in range(1, 7):
+            self.assertEqual(settings.validate_wizard_step(шаг), шаг)
+
+    def test_anything_else_is_the_first_step(self):
+        for значение in (0, 7, -1, 2.5, "5", "", None, True, [5], {"шаг": 5}):
+            self.assertEqual(settings.validate_wizard_step(значение), 1, значение)
+
+    def test_the_default_is_the_first_step(self):
+        self.assertEqual(settings.DEFAULTS["wizard_step"], 1)
+
+    def test_the_server_takes_only_a_whole_number_from_one_to_six(self):
+        пульт = _пульт()
+        for шаг in range(1, 7):
+            итог = пульт.save_settings({"wizard_step": шаг})
+            self.assertTrue(итог.get("ok"), итог)
+            self.assertEqual(settings.load_settings()["wizard_step"], шаг)
+        for значение in (0, 7, 2.5, "5", None, True):
+            итог = пульт.save_settings({"wizard_step": значение})
+            self.assertFalse(итог.get("ok"), значение)
+            self.assertTrue(any("wizard_step" in e for e in итог.get("errors", [])),
+                            итог)
+        # Отказ не записал ничего: прошлый шаг на месте.
+        self.assertEqual(settings.load_settings()["wizard_step"], 6)
 
 
 class WeatherApiTests(ApiBase):
@@ -384,6 +445,341 @@ class VoicesApiTests(ApiBase):
                          ["качественные голоса поставлены — перезапусти пульт"])
         self.assertIn("не поставились",
                       строки("voices_failed", {"error": "сеть отвалилась"})[0])
+
+
+class WizardMicLevelTests(unittest.TestCase):
+    """Полоска уровня на шаге 4 мастера: уровень **выбранного** микрофона.
+
+    Голос тут либо выключен, либо слушает другое устройство — ровно тот случай,
+    из-за которого полоска на чистой установке молчала. Сам замер подменён
+    (`core.audio_in.measure_level`): настоящий микрофон не открывается.
+    """
+
+    УСТРОЙСТВА = [
+        {"index": 3, "name": "Новый микрофон (USB)", "channels": 2,
+         "rate": 48000, "default": False},
+        {"index": 7, "name": "Старый микрофон", "channels": 1,
+         "rate": 44100, "default": True},
+    ]
+
+    def setUp(self):
+        self.rt = _пульт()
+        self.rt._level_preview_lock = threading.Lock()
+        self.rt._level_capture_lock = threading.Lock()
+        self.rt._level_preview_at = 0.0
+        self.rt._level_preview_key = None
+        self.rt._level_preview_level = None
+        self.замеры: list[tuple] = []
+        self.результат = 0.5
+        self.сбой = None
+
+    def _замер(self, индекс, вход=0, секунды=0.0):
+        self.замеры.append((индекс, вход))
+        if self.сбой is not None:
+            raise RuntimeError(self.сбой)
+        return self.результат
+
+    def _позвать(self, имя="Новый микрофон (USB)", вход=0):
+        with mock.patch("config.list_inputs", return_value=list(self.УСТРОЙСТВА)), \
+                mock.patch("core.audio_in.measure_level", self._замер):
+            return self.rt.audio_level_preview(имя, вход)
+
+    def test_the_chosen_microphone_is_measured_with_the_voice_off(self):
+        # Голос выключен, микрофон уже выбран: полоска обязана показать его
+        # уровень, иначе на чистой установке она молчала до перезапуска.
+        self.assertFalse(getattr(self.rt.voice, "running", False))
+        ответ = self._позвать()
+        self.assertTrue(ответ["ok"], ответ)
+        self.assertAlmostEqual(ответ["level"], 0.5, places=2)
+        self.assertEqual(self.замеры, [(3, 0)])
+        self.assertEqual(ответ["source"], "measure")
+
+    def test_the_choice_wins_over_the_device_the_voice_hears(self):
+        # Голос работает, но держит другой микрофон: его уровень здесь был бы
+        # враньём, поэтому меряем выбранный.
+        self.rt.voice = NS(running=True,
+                           _listener=NS(device=7, channel=0, last_level=0.9),
+                           _speaker_idle=lambda: True, in_conversation=False)
+        ответ = self._позвать("Новый микрофон (USB)")
+        self.assertTrue(ответ["ok"], ответ)
+        self.assertEqual(self.замеры, [(3, 0)])
+        self.assertNotAlmostEqual(ответ["level"], 0.9, places=2)
+
+    def test_the_same_device_is_taken_from_the_listener_without_a_second_open(self):
+        # Тот же микрофон и тот же вход: голос уже меряет его сам, а второго
+        # захвата Windows бы не дал.
+        self.rt.voice = NS(running=True,
+                           _listener=NS(device=3, channel=0, last_level=0.42),
+                           _speaker_idle=lambda: True, in_conversation=False)
+        ответ = self._позвать("Новый микрофон (USB)")
+        self.assertTrue(ответ["ok"], ответ)
+        self.assertAlmostEqual(ответ["level"], 0.42, places=2)
+        self.assertEqual(self.замеры, [], "второго захвата быть не должно")
+        self.assertEqual(ответ["source"], "voice")
+
+    def test_another_input_of_the_same_device_is_measured(self):
+        # Микрофон тот же, вход другой — голос слушает не тот канал.
+        self.rt.voice = NS(running=True,
+                           _listener=NS(device=3, channel=0, last_level=0.42),
+                           _speaker_idle=lambda: True, in_conversation=False)
+        ответ = self._позвать("Новый микрофон (USB)", 1)
+        self.assertEqual(self.замеры, [(3, 1)])
+        self.assertEqual(ответ["source"], "measure")
+
+    def test_an_unknown_microphone_is_refused_by_name(self):
+        # Такого устройства в списке нет: молча отдавать уровень чужого
+        # микрофона здесь нельзя.
+        ответ = self._позвать("Нет такого микрофона")
+        self.assertFalse(ответ["ok"])
+        self.assertIn("не подключён", ответ["error"])
+        self.assertEqual(self.замеры, [])
+
+    def test_an_impossible_input_is_refused(self):
+        # У устройства один вход, а выбран второй — это ошибка выбора.
+        ответ = self._позвать("Старый микрофон", 3)
+        self.assertFalse(ответ["ok"])
+        self.assertIn("вход", ответ["error"])
+        self.assertEqual(self.замеры, [])
+
+    def test_a_negative_input_is_refused(self):
+        ответ = self._позвать("Старый микрофон", -1)
+        self.assertFalse(ответ["ok"])
+        self.assertEqual(self.замеры, [])
+
+    def test_a_busy_device_gives_the_reason_not_another_microphone(self):
+        # Windows не дал открыть устройство — это ответ «почему молчит».
+        self.сбой = "устройство занято другим приложением"
+        ответ = self._позвать()
+        self.assertFalse(ответ["ok"])
+        self.assertIn("занято", ответ["error"])
+        self.assertNotIn("level", ответ)
+
+    def test_an_empty_name_means_the_system_microphone(self):
+        # Ничего не выбрано — значит системный, как и в голосе.
+        ответ = self._позвать("")
+        self.assertTrue(ответ["ok"], ответ)
+        self.assertEqual(self.замеры, [(7, 0)])
+
+    def test_no_microphones_at_all(self):
+        with mock.patch("config.list_inputs", return_value=[]):
+            ответ = self.rt.audio_level_preview("", 0)
+        self.assertFalse(ответ["ok"])
+        self.assertIn("микрофон", ответ["error"])
+
+    def test_repeated_questions_do_not_measure_more_often_than_allowed(self):
+        # Полоска спрашивает часто, а открывать микрофон каждые 150 мс — это
+        # и есть щелчки. Частота замеров ограничена `PREVIEW_MIN_GAP`.
+        self.assertTrue(self._позвать()["ok"])
+        for _ in range(5):
+            self.assertTrue(self._позвать()["ok"])
+        self.assertEqual(len(self.замеры), 1, "замер должен быть один")
+        # Прошло достаточно времени — следующий вопрос меряет заново.
+        self.rt._level_preview_at -= self.rt.PREVIEW_MIN_GAP + 0.01
+        self._позвать()
+        self.assertEqual(len(self.замеры), 2)
+
+    def test_a_changed_microphone_is_measured_immediately(self):
+        # Смена выбора не должна ждать конца паузы: иначе полоска полсекунды
+        # показывала бы предыдущий микрофон.
+        self._позвать("Новый микрофон (USB)")
+        self._позвать("Старый микрофон")
+        self.assertEqual(self.замеры, [(3, 0), (7, 0)])
+
+    def test_the_settings_page_still_answers_from_the_voice_alone(self):
+        # Обычная вкладка «Голос → Звук» не шлёт `preview` и осталась как была.
+        self.assertFalse(self.rt.audio_level()["ok"])
+
+    def test_the_level_stays_inside_zero_and_one(self):
+        self.результат = 7.5
+        self.assertEqual(self._позвать()["level"], 1.0)
+
+
+class ЗамерИПробаНеМешаютДругДругуTests(unittest.TestCase):
+    """Замер полоски и проба «Записать и послушать» — один захват микрофона.
+
+    Раньше у них были разные замки, и 0,25-секундный замер попадал в трёхсекундную
+    пробу: Windows отдавал пробе «устройство занято». Здесь обе стороны подменены и
+    запущены из разных потоков, а события вместо `time.sleep` делают гонку
+    настоящей и не затягивают тест: микрофона, звука и сети тут нет вовсе.
+    """
+
+    УСТРОЙСТВА = [{"index": 3, "name": "Новый микрофон (USB)", "channels": 1,
+                   "rate": 48000, "default": True}]
+
+    def setUp(self):
+        self.rt = _пульт()
+        self.rt._level_preview_lock = threading.Lock()
+        self.rt._level_preview_at = 0.0
+        self.rt._level_preview_key = None
+        self.rt._level_preview_level = None
+        self.rt._level_capture_lock = threading.Lock()
+        self.rt._audio_probe_lock = threading.Lock()
+        self.rt._audio_stale = False
+        self.rt._warm_stop = lambda: None
+        self.rt._warm_start = lambda: None
+        # Счётчик одновременного захвата: если оба войдут в микрофон разом,
+        # здесь окажется 2 — ровно тот дефект, который чиним.
+        self.в_микрофоне = 0
+        self.максимум = 0
+        self.замеры = 0
+        self.записи = 0
+        self.замер_начат = threading.Event()
+        self.проба_начата = threading.Event()
+        # Отпускаем замер и пробу по отдельности: иначе «отпустить» означало бы
+        # «оба кончились» и гонку нельзя было бы рассмотреть в нужный момент.
+        self.отпустить = threading.Event()
+        self.отпустить_пробу = threading.Event()
+        self.ошибкаЗаписи = None
+        self.rt._audio_record_once = self._записать
+
+    def _во_шли(self, имя):
+        self.в_микрофоне += 1
+        if имя == "замер":
+            self.замеры += 1
+            self.замер_начат.set()
+        else:
+            self.записи += 1
+            self.проба_начата.set()
+        self.максимум = max(self.максимум, self.в_микрофоне)
+
+    def _вышли(self):
+        self.в_микрофоне -= 1
+
+    def _замер(self, индекс, вход=0, секунды=0.0):
+        self._во_шли("замер")
+        try:
+            self.отпустить.wait(5)
+            return 0.5
+        finally:
+            self._вышли()
+
+    def _записать(self):
+        self._во_шли("проба")
+        try:
+            self.отпустить_пробу.wait(5)
+            if self.ошибкаЗаписи is not None:
+                raise self.ошибкаЗаписи
+            return {"ok": True, "seconds": 3.0}
+        finally:
+            self._вышли()
+
+    def _замерить(self, имя="Новый микрофон (USB)"):
+        with mock.patch("config.list_inputs", return_value=list(self.УСТРОЙСТВА)), \
+                mock.patch("core.audio_in.measure_level", self._замер):
+            return self.rt.audio_level_preview(имя, 0)
+
+    def _в_потоке(self, функция):
+        поток = threading.Thread(target=функция, daemon=True)
+        поток.start()
+        self.addCleanup(поток.join, 5)
+        return поток
+
+    def _проба(self):
+        self.rt.audio_test(True)
+
+    def test_a_measure_and_a_probe_never_hold_the_microphone_together(self):
+        # Замер начался и держит устройство. Проба стартует и должна дождаться
+        # его — но не входить в захват второй разом.
+        замер = self._в_потоке(self._замерить)
+        self.assertTrue(self.замер_начат.wait(5), "замер должен был начаться")
+        проба = self._в_потоке(self._проба)
+        self.assertFalse(self.проба_начата.wait(0.3),
+                         "проба не должна была начаться, пока замер держит микрофон")
+        self.отпустить.set()
+        замер.join(5)
+        self.assertTrue(self.проба_начата.wait(5),
+                        "после конца замера проба обязана начаться")
+        self.отпустить_пробу.set()
+        проба.join(5)
+        self.assertEqual(self.максимум, 1, "замер и проба не должны входить в захват разом")
+
+    def test_the_measure_answers_busy_instead_of_opening_the_microphone(self):
+        # Идёт проба: полоска спрашивает уровень, но устройство не трогает —
+        # иначе Windows сказал бы пробе «занято».
+        проба = self._в_потоке(self._проба)
+        self.assertTrue(self.проба_начата.wait(5))
+        ответ = self._замерить()
+        self.assertFalse(ответ["ok"])
+        self.assertIn("идёт проверка", ответ["error"])
+        self.assertEqual(self.замеры, 0, "во время пробы микрофон не замеряют")
+        self.отпустить_пробу.set()
+        проба.join(5)
+
+    def test_a_second_probe_is_refused_without_touching_the_microphone(self):
+        первая = self._в_потоке(self._проба)
+        self.assertTrue(self.проба_начата.wait(5))
+        ответ = self.rt.audio_test(True)
+        self.assertFalse(ответ["ok"])
+        self.assertIn("уже идёт", ответ["error"])
+        self.отпустить_пробу.set()
+        первая.join(5)
+        self.assertEqual(self.записи, 1, "микрофон пишется ровно один раз")
+
+    def test_a_probe_record_error_still_frees_the_capture_for_the_level(self):
+        # Захват берётся в общем `try/finally`: после сорвавшейся записи
+        # полоска обязана снова мерить, иначе шаг 4 замолчит навсегда.
+        self.ошибкаЗаписи = RuntimeError("микрофон пропал")
+        with self.assertRaises(RuntimeError):
+            self.rt.audio_test(True)
+        self.rt._level_preview_at = 0.0
+        self.rt._level_preview_key = None
+        self.отпустить.set()
+        ответ = self._замерить()
+        self.assertTrue(ответ["ok"], ответ)
+        self.assertEqual(self.замеры, 1)
+
+
+class WizardMicLevelRouteTests(ApiBase):
+    """Маршрут `/api/audio/level?preview=1` — запрос шага 4 мастера."""
+
+    def setUp(self):
+        super().setUp()
+        self.server.runtime._level_preview_lock = threading.Lock()
+        self.server.runtime._level_capture_lock = threading.Lock()
+        self.server.runtime._level_preview_at = 0.0
+        self.server.runtime._level_preview_key = None
+        self.server.runtime._level_preview_level = None
+
+    def test_the_request_carries_the_wizard_selection(self):
+        # Имя и вход приходят в запросе: сервер отвечает по ним, а не по
+        # сохранённым настройкам.
+        видел: dict = {}
+
+        def замер(индекс, вход, секунды):
+            видел.update(index=индекс, channel=вход)
+            return 0.25
+
+        with mock.patch("config.list_inputs", return_value=[
+                {"index": 4, "name": "Микрофон выбора", "channels": 2,
+                 "rate": 48000, "default": False}]), \
+                mock.patch("core.audio_in.measure_level", замер):
+            тело = self.client.get("/api/audio/level", params={
+                "preview": "1", "mic_name": "Микрофон выбора",
+                "mic_channel": "1"}).json()
+        self.assertTrue(тело["ok"], тело)
+        self.assertAlmostEqual(тело["level"], 0.25, places=2)
+        self.assertEqual(видел, {"index": 4, "channel": 1})
+
+    def test_a_broken_channel_is_an_answer_not_a_crash(self):
+        # `mic_channel=abc` должен дать понятный отказ, а не 500.
+        ответ = self.client.get("/api/audio/level", params={
+            "preview": "1", "mic_name": "Любой", "mic_channel": "abc"})
+        self.assertEqual(ответ.status_code, 200)
+        self.assertFalse(ответ.json()["ok"])
+
+    def test_the_plain_request_is_still_the_voice_level(self):
+        # Вкладка «Звук» шлёт адрес без `preview` — поведение не тронуто.
+        self.server.runtime.voice = NS(
+            running=True, _listener=NS(device=3, channel=0, last_level=0.6),
+            _speaker_idle=lambda: True, in_conversation=False)
+        тело = self.client.get("/api/audio/level").json()
+        self.assertTrue(тело["ok"])
+        self.assertAlmostEqual(тело["level"], 0.6, places=2)
+
+    def test_it_is_not_available_from_the_phone(self):
+        # Полоска открывает микрофон: со страницы телефона — никак.
+        self.assertEqual(self.вдали.get(
+            "/api/audio/level", params={"preview": "1"}).status_code, 403)
 
 
 class ДляВсехТест(unittest.TestCase):

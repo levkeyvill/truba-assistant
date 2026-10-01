@@ -499,11 +499,11 @@ class НаборыИнструментов(unittest.TestCase):
         self.assertEqual(hands.CONFIRM[hands.SET_REM_NAME], ("{text}",))
         self.assertEqual(hands.CONFIRM[hands.CANCEL_REM_NAME], ("{text}",))
         self.assertNotIn(hands.LIST_REM_NAME, hands.CONFIRM)
-        # В судью не идут: наружу от напоминания не уходит ничего, а лишняя
-        # секунда проверки задержала бы ясную просьбу.
-        for имя in (hands.SET_REM_NAME, hands.LIST_REM_NAME,
-                    hands.CANCEL_REM_NAME):
-            self.assertNotIn(имя, hands.JUDGED)
+        # Создание и отмена меняют состояние; одних совпавших слов в цитате
+        # недостаточно, когда человек отвечает на вопрос по другой задаче.
+        self.assertIn(hands.SET_REM_NAME, hands.JUDGED)
+        self.assertIn(hands.CANCEL_REM_NAME, hands.JUDGED)
+        self.assertNotIn(hands.LIST_REM_NAME, hands.JUDGED)
 
     def test_because_обязателен(self):
         for spec in hands.REMINDER_TOOLS:

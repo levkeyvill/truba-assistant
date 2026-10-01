@@ -6,11 +6,15 @@
 """
 
 import json
+import tempfile
 import threading
 import unittest
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest import mock
+
+from PIL import Image
 
 import config
 from core import abilities, hands, hotkeys, launcher, replay, screen
@@ -181,6 +185,47 @@ class ActionToolsTests(unittest.TestCase):
         self.assertEqual(messages[-1]["content"][1]["image_url"]["url"], SHOT)
         # В историю разговора картинка не идёт: дорого тащить в каждый запрос.
         turn = brain._history[-1]
+        self.assertIsInstance(turn["content"], str)
+
+    def test_screenshot_and_look_in_one_request_capture_once(self):
+        events = []
+        actions = hands.actions_for(lambda kind, payload: events.append((kind, payload)))
+        calls = [
+            _chunk(calls=[
+                _call(0, "shot", hands.SHOT_NAME,
+                      '{"because":"сделай скриншот"}'),
+                _call(1, "look", hands.LOOK_NAME,
+                      '{"because":"скажи что на экране"}'),
+            ]),
+        ]
+        brain = _brain([calls, [_chunk("На экране фильм.")]], actions)
+        path = NS(name="shot.jpg")
+        with mock.patch.object(screen, "take", return_value=(path, SHOT)) as take:
+            self.assertEqual(list(brain.reply(
+                "Сделай скриншот и скажи что на экране")), ["На экране фильм."])
+        take.assert_called_once_with("primary")
+        self.assertEqual(events, [("shot_ready", str(path))])
+        self.assertEqual(brain._client.bodies[1]["messages"][-1]["content"][1]
+                         ["image_url"]["url"], SHOT)
+
+    def test_looking_at_saved_shots_does_not_capture_again(self):
+        actions = hands.actions_for(lambda *_: None)
+        brain = _brain([_tool_call(hands.SAVED_LOOK_NAME,
+                                   '{"because":"посмотри на прошлые снимки"}'),
+                        [_chunk("На первом кадре фильм.")]], actions)
+        saved = [(NS(name="one.png"), "data:image/jpeg;base64,ONE"),
+                 (NS(name="two.png"), "data:image/jpeg;base64,TWO")]
+        with mock.patch.object(screen, "recent", return_value=saved), \
+                mock.patch.object(screen, "take") as take:
+            said = list(brain.reply("Посмотри на прошлые снимки"))
+        self.assertEqual(said, ["На первом кадре фильм."])
+        take.assert_not_called()
+        messages = brain._client.bodies[1]["messages"]
+        self.assertEqual(messages[-3]["content"], "снимки ниже")
+        self.assertEqual([m["content"][1]["image_url"]["url"]
+                          for m in messages[-2:]],
+                         ["data:image/jpeg;base64,ONE",
+                          "data:image/jpeg;base64,TWO"])
 
 
 class ToolSetTests(unittest.TestCase):
@@ -301,16 +346,34 @@ class HandsActionTests(unittest.TestCase):
         self.assertTrue(spawn.call_args.kwargs["daemon"])
         thread.start.assert_called_once()
 
-    def test_actions_for_gives_three_callables(self):
+    def test_actions_for_reuses_a_capture_within_one_reply(self):
         actions = hands.actions_for(self.emit, lambda: self.server)
-        self.assertEqual(sorted(actions), ["look", "moment", "screenshot"])
-        with mock.patch.object(hands, "shoot", return_value=(self.path, SHOT)):
+        self.assertEqual(sorted(actions), ["look", "look_saved", "moment",
+                                           "reset_capture", "screenshot"])
+        with mock.patch.object(hands, "shoot", return_value=(self.path, SHOT)) as shoot:
             self.assertIn("готово", actions["screenshot"]())
             # «посмотри» отдаёт модели сам снимок, а не путь к нему.
             self.assertEqual(actions["look"](), SHOT)
+            shoot.assert_called_once()
+            actions["reset_capture"]()
+            self.assertEqual(actions["look"](), SHOT)
+            self.assertEqual(shoot.call_count, 2)
 
     def test_run_action_without_an_action_says_it_is_unavailable(self):
         self.assertIn("недоступно", json.loads(hands.run_action(hands.SHOT_NAME, {}))["error"])
+
+    def test_previous_screenshots_survive_a_restart(self):
+        with tempfile.TemporaryDirectory() as folder, \
+                mock.patch.object(screen, "shots_dir", return_value=Path(folder)):
+            for number in range(1, 4):
+                Image.new("RGB", (2, 2), (number * 30, 0, 0)).save(
+                    Path(folder) / f"2026-09-30_21-00-0{number}.png")
+            (Path(folder) / "2026-09-30_21-00-04.png").write_bytes(b"broken")
+            found = screen.recent(3)
+        self.assertEqual([path.name for path, _image in found],
+                         ["2026-09-30_21-00-02.png", "2026-09-30_21-00-03.png"])
+        self.assertTrue(all(image.startswith("data:image/jpeg;base64,")
+                            for _path, image in found))
 
 
 class PromptTests(unittest.TestCase):
@@ -358,9 +421,9 @@ class WiringTests(unittest.TestCase):
         # запись заметки (27.09 — слова «диктуй» без режима). И чтение вслух:
         # без него модель на «прочитай вслух» не знала бы, что читать некому.
         self.assertEqual(sorted(brain.actions),
-                         ["dictation", "look", "moment", "read_aloud",
-                          "screenshot"])
-        self.assertEqual(len(hands.action_tools(brain.actions)), 3)
+                         ["dictation", "look", "look_saved", "moment",
+                          "read_aloud", "reset_capture", "screenshot"])
+        self.assertEqual(len(hands.action_tools(brain.actions)), 4)
 
     def test_voice_loop_without_a_brain_survives(self):
         from core.voice_loop import VoiceLoop
@@ -383,8 +446,8 @@ class WiringTests(unittest.TestCase):
         pult._wire_brain()
         # Чат пульта ходит в тот же мозг: действия те же, что и голосом.
         self.assertEqual(sorted(brain.actions),
-                         ["dictation", "look", "moment", "read_aloud",
-                          "screenshot"])
+                         ["dictation", "look", "look_saved", "moment",
+                          "read_aloud", "reset_capture", "screenshot"])
         self.assertIsNotNone(brain.on_event)
 
 

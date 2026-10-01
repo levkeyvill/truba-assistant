@@ -17,9 +17,9 @@ import unittest
 from pathlib import Path
 
 import config
-from core import (app_icons, autostart, bookmarks, launcher, memory, notes, phone,
-                  replay, reminders, settings, speaker, usage, voices_install,
-                  weather)
+from core import (app_icons, autostart, bookmarks, instance, launcher, memory,
+                  notes, phone, replay, reminders, search_history, settings,
+                  speaker, usage, voices_install, weather)
 
 SAFE = Path(tempfile.mkdtemp(prefix="truba-tests-"))
 atexit.register(shutil.rmtree, SAFE, True)
@@ -70,6 +70,12 @@ launcher.APPS_FILE = SAFE / "apps.json"
 # Напоминания и таймеры: тест ставит их пачками, и файл в живой `data/`
 # после прогона означал бы, что хозяину остались чужие напоминания.
 reminders.PATH = SAFE / "reminders.json"
+# История поиска: тест наполняет её запросами, и файл в живой `data/` после
+# прогона означал бы, что у хозяина в истории чужие фразы.
+search_history.PATH = SAFE / "search_history.json"
+# Отпечаток установки: тест личности пульта пишет его, а в живой `data/`
+# попадание сюда означало бы, что вторая копия получила личность основной.
+instance.ID_FILE = SAFE / "install_id.txt"
 
 
 class DataGuardTests(unittest.TestCase):
@@ -81,9 +87,28 @@ class DataGuardTests(unittest.TestCase):
                      usage.USAGE_PATH, usage.OPENROUTER_PRICES_PATH,
                      usage.USD_RUB_PATH, weather.CACHE_PATH,
                      voices_install.LOG_PATH, phone.VIEWPORT_FILE, phone.KEY_FILE,
-                     launcher.APPS_FILE, reminders.PATH,
+                     launcher.APPS_FILE, reminders.PATH, search_history.PATH,
+                     instance.ID_FILE,
                      autostart.STARTUP_DIR, notes.root()):
             self.assertTrue(str(path).startswith(str(SAFE)), path)
+
+    def test_история_ищется_и_чистится_только_в_своей_папке(self):
+        # С телефона теперь приходит `id` записи, и его нельзя превратить в
+        # путь: `delete`/`clear` обязаны трогать ровно один файл — подменённый
+        # выше. Ничего рядом не создаётся и не открывается.
+        прежний_путь = search_history.PATH
+        with tempfile.TemporaryDirectory(dir=SAFE) as folder:
+            search_history.PATH = Path(folder) / "search_history.json"
+            try:
+                поиск = search_history.add("курс доллара")
+                self.assertIsNotNone(поиск)
+                self.assertTrue(search_history.delete(поиск["id"]))
+                search_history.add("ещё раз")
+                self.assertEqual(search_history.clear(), 1)
+                self.assertEqual(set(Path(folder).iterdir()), {search_history.PATH},
+                                 "поиск задела не только свой файл")
+            finally:
+                search_history.PATH = прежний_путь
 
 
 if __name__ == "__main__":
