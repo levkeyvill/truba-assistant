@@ -102,11 +102,23 @@ class НастройкиСеткиTests(unittest.TestCase):
         self.assertTrue(settings.validate_phone_labels(True))
         self.assertFalse(settings.validate_phone_labels(False))
 
-    def test_only_two_rows_are_possible_now(self):
-        # Хозяин оставил два ряда: выбор «3» убран из пульта, потому что три
-        # ряда на телефоне не помещались. Старое «3» из живого settings.json
-        # и любая опечатка молча становятся двумя рядами.
-        for число in (2, "2", 3, "3", None, "", "два", 1, 0, 4, -1, 9, [], {}):
+    def test_one_and_two_rows_are_possible_now(self):
+        # 02.10 хозяин: «сделать 2 и 1 ряд приложений». Значит, оба ряда —
+        # законные значения, и сервер их принимает и числом, и строкой.
+        self.assertEqual(settings.PHONE_ROWS_MIN, 1)
+        self.assertEqual(settings.PHONE_ROWS_MAX, 2)
+        for число in (1, 2, "1", "2", " 1 "):
+            self.assertEqual(settings.validate_phone_rows(число),
+                             int(str(число).strip()), число)
+        # Целое дробное — обычная запись единицы, а полтора ряда не бывает.
+        self.assertEqual(settings.validate_phone_rows(1.0), 1)
+        self.assertEqual(settings.validate_phone_rows(2.0), 2)
+
+    def test_three_rows_and_junk_become_two(self):
+        # Выбора «3» больше нет: три ряда на телефоне не помещались. Старое
+        # «3» из живого settings.json и любая опечатка молча становятся двумя
+        # рядами — телефон не рисует сетку, которой в пульте не выбрать.
+        for число in (3, "3", 0, 4, -1, 9, None, "", "два", [], {}, True, 1.5):
             self.assertEqual(settings.validate_phone_rows(число), 2, число)
 
     def test_bad_values_fall_back_to_the_default_without_raising(self):
@@ -123,14 +135,15 @@ class НастройкиСеткиTests(unittest.TestCase):
                              bool(config.PHONE_LABELS), мусор)
 
     def test_saved_values_reach_config_and_the_phone_layout(self):
-        settings.save_settings({"phone_cols": 4, "phone_rows": 2,
+        # Ряд один — законный выбор (02.10), и он доезжает до телефона.
+        settings.save_settings({"phone_cols": 4, "phone_rows": 1,
                                 "phone_icon_style": "round", "phone_labels": True})
         settings.apply_to_config()
         self.assertEqual((config.PHONE_COLS, config.PHONE_ROWS,
                           config.PHONE_ICON_STYLE, config.PHONE_LABELS),
-                         (4, 2, "round", True))
+                         (4, 1, "round", True))
         self.assertEqual(settings.grid_layout(),
-                         {"cols": 4, "rows": 2, "style": "round", "labels": True})
+                         {"cols": 4, "rows": 1, "style": "round", "labels": True})
 
     def test_the_old_three_rows_setting_becomes_two(self):
         # Старый settings.json хозяина: выбор был «2 или 3», и тройка там
@@ -180,12 +193,27 @@ class НастройкиСеткиTests(unittest.TestCase):
                                        "phone_icon_style": "bare",
                                        "phone_labels": True})
         self.assertTrue(ответ["ok"], ответ)
-        # Пять колонок и один ряд — мимо: колонок всегда четыре, рядов 2 или 3.
+        # Пять колонок — мимо: колонок всегда четыре. Один ряд — законный
+        # выбор (02.10), его сохраняем как есть, не заменяя на два.
         self.assertEqual(self._сохранено()["phone_cols"], 4)
-        self.assertEqual(self._сохранено()["phone_rows"], 2)
+        self.assertEqual(self._сохранено()["phone_rows"], 1)
         self.assertTrue(self._сохранено()["phone_labels"])
         # Вид сетки телефон берёт из сообщения со списком — список ушёл заново.
         self.assertTrue(переслано)
+
+    def test_the_pult_cannot_save_a_third_row(self):
+        # Старый пульт (или живой клиент) может прислать «3»: в файл ложится
+        # два, и телефон получает два ряда, а не сетку, которой больше нет.
+        # Файл настроек готовим сами: пока в нём лежит один ряд, «3» — это
+        # изменение, и пульт правда пишет; пустой папки он не создаёт.
+        settings.SETTINGS_PATH.write_text(json.dumps({"phone_rows": 1}),
+                                         encoding="utf-8")
+        runtime = _runtime()
+        runtime._send_apps = lambda: None
+        runtime.save_settings({"phone_rows": 3})
+        self.assertEqual(self._сохранено()["phone_rows"], 2)
+        settings.apply_to_config()
+        self.assertEqual(settings.grid_layout()["rows"], 2)
 
     def test_another_setting_saved_alone_does_not_resend_the_list(self):
         runtime = _runtime()
@@ -234,11 +262,12 @@ class СообщениеТелефонуTests(unittest.TestCase):
                          {"cols": 4, "rows": 2, "style": "round", "labels": True})
 
     def test_without_an_argument_the_layout_comes_from_config(self):
+        # Один ряд из живого config — законный выбор, телефон получает его.
         config.PHONE_COLS, config.PHONE_ROWS = "auto", 1
         config.PHONE_ICON_STYLE, config.PHONE_LABELS = "plate", False
         msg = self._сообщение([])
         self.assertEqual(msg["layout"],
-                         {"cols": 4, "rows": 2, "style": "plate",
+                         {"cols": 4, "rows": 1, "style": "plate",
                           "labels": False})
 
     def test_the_old_three_rows_from_config_become_two(self):
@@ -343,12 +372,10 @@ class СтраницаТелефонаTests(unittest.TestCase):
                     "truba-edit-action"):
             self.assertIn(f"'{что}'", self.js, что)
         self.assertIn("type: 'truba-edit'", self.js)
-        # 28 сентября: плитка «+» убрана из СЕТКИ — при восьми программах
-        # девятая плитка попадала в счёт, сетка становилась 4 × 3 вместо 4 × 2,
-        # и макет в пульте врал. 1 октября хозяин попросил «+» на макете снова —
-        # но кнопкой поверх сетки, а не плиткой в ней (см.
-        # tests/test_programs_mockup.py). Сообщение `truba-edit-add` поэтому
-        # на странице есть, а узла «+» в сетке — нет.
+        # «+» добавления с 02.10 — это пустые клетки самой сетки макета, а не
+        # плавающая кнопка в углу (она у хозяина исчезала) и не девятая плитка
+        # (28.09: она ломала раскладку). Сообщение `truba-edit-add` шлёт
+        # нажатие на пустую клетку — см. tests/test_programs_mockup.py.
         self.assertIn("type: 'truba-edit-add'", self.js)
 
     def test_touching_a_tile_picks_it_and_dragging_reorders(self):
@@ -360,33 +387,52 @@ class СтраницаТелефонаTests(unittest.TestCase):
         self.assertIn("elementFromPoint", блок)
         self.assertIn("if (!перенесли) { editSay(", блок)
 
-    def test_the_add_tile_is_gone_from_the_grid(self):
-        # Ни функции, ни класса плитки: плитка «+» в сетке была причиной того,
-        # что макет в пульте показывал другую сетку. Добавление теперь кнопкой
-        # поверх сетки — она в `#apps` не входит вовсе.
+    def test_the_floating_add_button_is_gone(self):
+        # 02.10: плавающая кнопка «+» в углу убирается — хозяину она исчезала
+        # при четырёх программах в одном ряду. Её заменили пустые клетки сетки.
+        # Ищем узел `#edit-add`, а не подстроку `edit-add`: она законно живёт
+        # в сообщении `truba-edit-add`, которое шлёт нажатие на пустую клетку.
+        for кусок in ("#edit-add", "editСоздатьКнопку", "editПоставитьКнопку",
+                      "EDIT_ADD_SIZE"):
+            self.assertNotIn(кусок, self.js, кусок)
+            self.assertNotIn(кусок, self.html, кусок)
+        # И прежней плитки «+» в сетке (28.09) тоже нет: девятая плитка
+        # ломала раскладку. Пустая клетка — другое, у неё свой класс.
         for кусок in ("editAddTile", "'app add'", ".app.add"):
-            self.assertNotIn(кусок, self.js)
-            self.assertNotIn(кусок, self.html)
-        # Раскладка считается по числу программ, а не по числу узлов в сетке.
+            self.assertNotIn(кусок, self.js, кусок)
+            self.assertNotIn(кусок, self.html, кусок)
+        # Раскладка по-прежнему считается по числу программ, а не по числу
+        # узлов в сетке (пустые клетки — узлы `#apps`, но не программы).
         блок = self._блок("function drawApps(items, layout) {", "\n\n")
         self.assertIn("layoutApps(items.length, вид)", блок)
-        # Кнопка «+» — вне сетки: иначе `appsBox.childElementCount` (resize)
-        # и `querySelectorAll('.app')` (перетаскивание) считали бы её девятой
-        # программой. Живёт в `document.body` и позиционируется рамками.
-        self.assertIn("document.body.appendChild(кнопка)", self.js)
-        self.assertIn("getBoundingClientRect()", self.js)
 
-    def test_the_grid_is_always_four_columns_and_two_rows(self):
+    def test_the_grid_is_always_four_columns_and_one_or_two_rows(self):
         # Раньше колонки считались от числа программ («авто» давало пять),
-        # а рядов было два или три. Сейчас — четыре колонки и два ряда.
+        # а рядов было два или три. Сейчас — четыре колонки и ряд по выбору.
         блок = self._блок("function gridView(layout) {", "\n\n")
         self.assertIn("const TILE_COLS = 4", self.js)
-        self.assertIn("const TILE_COLS = 4, TILE_ROWS_MIN = 2, TILE_ROWS_MAX = 2;",
+        self.assertIn("const TILE_COLS = 4, TILE_ROWS_MIN = 1, TILE_ROWS_MAX = 2;",
                       self.js)
         self.assertIn("cols: TILE_COLS", блок)
         self.assertNotIn("l.cols", блок)
         # Плитка меряется по всей сетке 4 × рядов, даже когда программ три.
         self.assertIn("free - TILE_GAP * (TILE_COLS - 1)) / TILE_COLS", self.js)
+
+    def test_one_row_is_understood_by_the_phone_page(self):
+        # Один ряд — законный выбор (02.10): `gridView` его принимает, и
+        # раскладка считает по сетке 4 × 1 (плитка крупнее, но не больше
+        # `TILE_MAX` — ограничение сверху остаётся).
+        блок = self._блок("function gridView(layout) {", "\n\n")
+        self.assertIn("n >= TILE_ROWS_MIN && n <= TILE_ROWS_MAX", блок)
+        self.assertIn("? n : TILE_ROWS", блок)
+        self.assertIn("Math.min(TILE_MAX, byWidth, byHeight)", self.js)
+        # Число клеток в ряду считается по `рядов`, а не по константе «2».
+        # Берём всю функцию `layoutApps` (в ней пустые строки, поэтому
+        # разрез по `\n\n` отсёк бы её после вертикальной раскладки).
+        раскладка = self.js.split("function layoutApps(count, layout) {")[1]
+        раскладка = раскладка.split("\n}\n")[0]
+        self.assertIn("const рядов = Math.max(1, Math.min(вид.rows,", раскладка)
+        self.assertIn("Math.ceil(клеток / TILE_COLS)", раскладка)
 
     def test_three_rows_from_an_old_message_become_two(self):
         # Старая страница или сервер пришлёт `rows: 3` — показываем два ряда.

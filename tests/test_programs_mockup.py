@@ -159,59 +159,106 @@ class Перетаскивание(СтраницаТелефона):
         for кусок in ("elementFromPoint", "over.after(el)", "over.before(el)",
                       "type: 'truba-edit-order'"):
             self.assertIn(кусок, блок, кусок)
-class КнопкаПлюс(СтраницаТелефона):
-    """«+» добавляет программу — кнопкой поверх сетки, а не плиткой в ней."""
+class ПустыеКлетки(СтраницаТелефона):
+    """«+» добавляет программу — пустыми клетками самой сетки макета.
 
-    def test_the_button_lives_outside_the_grid(self):
-        # В `#apps` она была бы девятой программой: и `layoutApps`, и
-        # `childElementCount` на повороте считали бы её. Поэтому она в `body`.
-        блок = self._блок("function editСоздатьКнопку() {")
-        self.assertIn("document.body.appendChild(кнопка)", блок)
-        self.assertNotIn("appsBox.appendChild", блок)
+    02.10 хозяин: «плюсик должен быть как приложение, только которое не
+    стоит, а не сбоку». Плавающая кнопка в углу у него исчезала при четырёх
+    программах в одном ряду, поэтому её убрали, а в сетку добавили пустые
+    клетки — до конца `рядов × 4`. Проверяем, что легко разъехаться:
+    клетки только в макете, их ровно столько, сколько надо, нажатие шлёт
+    `truba-edit-add`, и ни порядок программ, ни перетаскивание их не видят.
+    """
 
-    def test_the_button_is_only_in_the_mockup(self):
-        # На настоящем телефоне её нет: `editСоздатьКнопку` зовётся только
-        # внутри `if (EDIT)`, и до блока правки её нет вовсе.
-        код = self._правка()
-        self.assertIn("editСоздатьКнопку();", код)
-        вне = self.js.split("/* ---------- Режим правки ----------")[0]
-        self.assertNotIn("editСоздатьКнопку(", вне)
+    def _считает_пустые(self, программ, рядов) -> int:
+        """Сколько клеток дорисует макет — считаем в node, а не разбором текста."""
+        if not node():
+            self.skipTest("node не найден")
+        скрипт = (
+            # Из реальной страницы нужны только эти две вещи: колонок всегда
+            # четыре, а программы считаются по `data-app`.
+            "const TILE_COLS = 4;\n"
+            "const appsBox = { querySelectorAll: () => [" + ", ".join(
+                "{ dataset: { app: 'p%d' } }" % i for i in range(программ)
+            ) + "] };\n"
+            + self._блок("function editСколькоПустых(вид) {")
+            + "console.log(editСколькоПустых({ rows: " + str(рядов) + " }));\n"
+        )
+        return int(json.loads(через_node(скрипт)))
 
-    def test_it_is_a_round_amber_button_of_forty_pixels(self):
-        блок = self._правило("body.edit #edit-add {")
-        self.assertIn("width: 40px; height: 40px;", блок)
-        self.assertIn("border-radius: 50%", блок)
-        self.assertIn("var(--accent)", блок)
-        # Поверх сетки, а не в потоке: иначе она тянула бы за собой плитки.
-        self.assertIn("position: fixed", блок)
-        self.assertIn("z-index: 12", блок)
-        self.assertIn("const EDIT_ADD_SIZE = 40;", self.js)
+    def test_they_fill_the_grid_up_to_rows_times_four(self):
+        # Два ряда — восемь мест, один — четыре: хозяин именно это и просил.
+        self.assertEqual(self._считает_пустые(0, 2), 8)
+        self.assertEqual(self._считает_пустые(3, 2), 5)
+        self.assertEqual(self._считает_пустые(1, 1), 3)
+        self.assertEqual(self._считает_пустые(4, 1), 0)
 
-    def test_it_avoids_the_tiles_by_their_boxes(self):
-        # При восьми программах сетка заполнена целиком: считаем рамки и ищем
-        # свободное место, иначе «+» накрыла бы восьмой значок.
-        блок = self._блок("function editПоставитьКнопку() {")
-        self.assertIn("appsBox.getBoundingClientRect()", блок)
-        self.assertIn(".app[data-app]", блок)
-        self.assertIn("рамка.right", блок)
-        self.assertIn("кнопка.hidden", блок)
+    def test_there_are_none_when_there_is_no_room(self):
+        # Программ больше, чем клеток: пустых клеток нет вовсе, лишние
+        # программы по-прежнему листаются вбок.
+        self.assertEqual(self._считает_пустые(8, 2), 0)
+        self.assertEqual(self._считает_пустые(7, 1), 0)
+        self.assertEqual(self._считает_пустые(12, 2), 0)
+
+    def test_they_are_only_drawn_in_the_mockup(self):
+        # На настоящем телефоне пустых клеток нет: рисует их `drawApps` под
+        # `if (EDIT)`, и больше их не зовёт никто.
+        блок = self._блок("function drawApps(items, layout) {")
+        self.assertIn("if (EDIT) editНарисоватьПустые(вид);", блок)
+        вне = self.js.replace(блок, "")
+        self.assertEqual(вне.count("editНарисоватьПустые("), 1,
+                         "пустые клетки рисуются не только в макете")
+        # И у них свой класс — прежней плитки «+» в сетке (28.09) нет.
+        клетка = self._блок("function editПустаяКлетка() {")
+        self.assertIn("el.className = 'app пусто'", клетка)
+        self.assertNotIn("data-app", клетка)
 
     def test_a_click_asks_the_pult_to_add(self):
-        блок = self._блок("function editСоздатьКнопку() {")
-        self.assertIn("editSay({ type: 'truba-edit-add' })", блок)
-        self.assertIn("кнопка.textContent = '+'", блок)
+        клетка = self._блок("function editПустаяКлетка() {")
+        self.assertIn("editSay({ type: 'truba-edit-add' })", клетка)
+        self.assertIn("el.textContent = '+'", клетка)
 
-    def test_the_grid_layout_is_still_about_programs_only(self):
-        блок = self._блок("function drawApps(items, layout) {")
-        self.assertIn("layoutApps(items.length, вид)", блок)
-        # Кнопки нет внутри `drawApps` — её место не влияет на сетку.
-        self.assertNotIn("edit-add", блок)
+    def test_they_look_like_tiles_but_empty(self):
+        # Того же размера, что и программы (размер задаёт `layoutApps` общий
+        # `--tile`), рамка пунктирная, «+» приглушённый и янтарный при наведении.
+        блок = self._правило("body.edit #apps .app.пусто {")
+        self.assertIn("border: 1px dashed var(--line);", блок)
+        self.assertIn("color: var(--muted);", блок)
+        self.assertIn("cursor: pointer;", блок)
+        наведение = self._правило("body.edit #apps .app.пусто:hover {")
+        self.assertIn("color: var(--accent);", наведение)
 
-    def test_it_is_placed_after_every_update(self):
-        # Размер плиток и положение сетки меняются после каждого сообщения —
-        # кнопку надо ставить заново, иначе она останется в старом углу.
+    def test_the_order_of_programs_does_not_see_them(self):
+        # `editOrder` ищет `.app[data-app]` — у пустой клетки такого нет,
+        # поэтому порядок программ «+» не портит. Там же и перетаскивание.
+        self.assertIn(".app[data-app]", self._блок("function editOrder() {"))
+        блок = self._блок("function editBindTile(el, item) {")
+        self.assertIn("под.closest('.app[data-app]')", блок)
+        self.assertIn(".app[data-app]", self._блок("function editPick(id) {"))
+
+    def test_the_mockup_layout_counts_them(self):
+        # Иначе при трёх программах в двух рядах макет показал бы один ряд,
+        # и клетке «+» было бы некуда встать. Раскладка получает число
+        # программ, а клетки добавляет сама — только в макете.
+        блок = self._блок("function layoutApps(count, layout) {")
+        self.assertIn("const клеток = EDIT ? Math.max(count, вид.rows * TILE_COLS) : count;",
+                      блок)
+        # Считаем по клеткам, а не по программам: иначе при пустых клетках
+        # сетка поехала бы вбок.
+        self.assertIn("клеток > TILE_COLS * вид.rows", блок)
+        self.assertIn("Math.ceil(клеток / рядов)", блок)
+
+    def test_the_floating_button_is_gone(self):
+        # Её заменили клетки: ни узла, ни функции постановки, ни стилей.
+        # Ищем `#edit-add`, а не подстроку `edit-add`: она законно живёт в
+        # сообщении `truba-edit-add`, которое шлёт нажатие на пустую клетку.
+        for кусок in ("#edit-add", "editСоздатьКнопку", "editПоставитьКнопку",
+                      "EDIT_ADD_SIZE"):
+            self.assertNotIn(кусок, self.js, кусок)
+            self.assertNotIn(кусок, self.html, кусок)
         код = self._правка()
-        self.assertIn("editПоставитьКнопку();", код)
+        self.assertNotIn("editСоздатьКнопку();", код)
+        self.assertNotIn("editПоставитьКнопку();", код)
 class ПодменюМакета(СтраницаТелефона):
     """Касание значка в макете открывает подменю — и оно ничего не выполняет."""
 

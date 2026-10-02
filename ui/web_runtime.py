@@ -10,6 +10,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 
 # Ниже этого процента без зарядки телефон считается «пора зарядить».
@@ -214,6 +215,32 @@ def _update_что(итог: dict) -> str:
     return str(итог.get("error", "не получилось"))
 
 
+def _пустое_скачивание() -> dict:
+    """Состояние скачивания моделей, когда ничего не качается.
+
+    Ключи те же, что ждёт пульт в `voices_status()["download"]`, иначе
+    страница ловила бы `undefined` на пустом поле.
+    """
+    return {"active": False, "model": "", "title": "", "done": 0, "total": 0,
+            "queue": [], "error": "", "finished": []}
+
+
+def _пустое_библиотеки() -> dict:
+    """Состояние установки библиотек, когда ничего не ставится.
+
+    Ключи те же, что ждёт пульт в `voices_status()["libs"]`: `active` — идёт ли
+    установка, `step`/`steps`/`title` — где она сейчас, `downloaded` — прирост
+    кеша uv в байтах (столько хозяин скачал), `error` — честный текст отказа,
+    `done` — поставилось.
+    """
+    from core import voices_install
+
+    # `total` — сколько всего ляжет на диск: по нему полоса считает процент.
+    return {"active": False, "step": 0, "steps": 2, "title": "",
+            "downloaded": 0, "total": sum(voices_install.STEP_BYTES),
+            "error": "", "done": False}
+
+
 class WebRuntime:
     """Связывает PhoneServer, Brain и VoiceLoop для веб-пульта."""
 
@@ -255,6 +282,26 @@ class WebRuntime:
         self._voices_running = False
         self._voices_steps: deque = deque(maxlen=30)
         self._voices_result: dict | None = None
+        # Скачивание моделей качественных голосов. Одна загрузка за раз,
+        # по очереди; состояние живёт здесь же, чтобы пульт спрашивал его в
+        # `/api/voices/status` и рисовал проценты, а не ждал событий (02.10:
+        # панель стояла на «0,0 ГБ», пока качалось 257 МБ).
+        self._download_lock = threading.Lock()
+        self._download_state: dict = _пустое_скачивание()
+        self._download_stop: threading.Event | None = None
+        # Установка библиотек качественных голосов — та же схема: одна за раз,
+        # в фоне, с отменой и шагами (`voices_status()["libs"]`). Отдельно от
+        # скачивания моделей: там хозяин тянет веса, здесь uv ставит пакеты с
+        # torch (02.10).
+        self._libs_lock = threading.Lock()
+        self._libs_state: dict = _пустое_библиотеки()
+        self._libs_stop: threading.Event | None = None
+        # Перенос настроек: принесённый файл держим в памяти до применения.
+        # На диск его раньше времени класть нельзя (а на «Документы» он и не
+        # просился), и второй файл не нужен — хозяин переносит по одному.
+        self._transfer_lock = threading.Lock()
+        self._transfer_blob: bytes | None = None
+        self._transfer_token = ""
         # Железо спрашивают часто, а `nvidia-smi` занимает до пяти секунд:
         # ответ держим минуту. Формат — (время, {"hw", "recommend"}).
         self._hw_cache = None
@@ -616,6 +663,10 @@ class WebRuntime:
         if kind == "voices_failed":
             return [f"качественные голоса не поставились: "
                     f"{str(data.get('error', ''))[:160]}"]
+        if kind == "voices_download":
+            return [f"качественные голоса: {str(payload or '')[:120]}"]
+        if kind == "voices_download_failed":
+            return [f"модель не скачалась: {str(data.get('error', ''))[:160]}"]
         if kind == "provider_fallback":
             why = ("не пускает из этой страны" if data.get("why") == "region"
                    else "не отвечает")
@@ -636,6 +687,12 @@ class WebRuntime:
                     f"{data.get('to', '?')} отменён — он уже оплачен"]
         if kind == "web_start":
             return [f"решила искать в интернете через {float(data.get('after', 0)):.1f} с"]
+        if kind == "continue":
+            # Ответ упёрся в потолок токенов. Хозяин должен видеть, что молчание
+            # было не пустотой, а обрезанным ответом, который мы договариваем.
+            return [f"ответ упёрся в потолок {int(data.get('limit', 0))} токенов — "
+                    f"продолжаю ({int(data.get('step', 0))} из "
+                    f"{int(data.get('of', 0))})"]
         if kind == "action_check":
             # Хозяин должен видеть, что программа открывалась не сама: судил
             # отдельный короткий вопрос, и сколько он занял.
@@ -696,6 +753,11 @@ class WebRuntime:
             return ["память: разобрала разговор, нового о тебе нет"]
         if kind == "note":
             return [f"заметка: {payload}"]
+        if kind == "analysis_saved":
+            # Разбор самой Трубы в заметки — по её собственному вопросу. В
+            # журнал идёт тема, а не текст разбора: разбор это слова о чужом
+            # документе, и читать его тут незачем.
+            return [f"разбор сохранён в заметки: {str(payload or '').strip()[:80]}"]
         if kind == "reminder_fired":
             # Строка уже с названием: «напоминание: вытащить пиццу» или
             # «таймер вышел». Журнал — то, что хозяин увидит и без телефона.
@@ -727,12 +789,22 @@ class WebRuntime:
             # «чтение остановлено на 14 из 80». Текст документа и здесь не
             # уходит: в журнале его быть не должно.
             return [str(payload or "")] if payload else []
-        if kind in ("clipboard", "clipboard_aloud", "clipboard_failed"):
+        if kind in ("clipboard", "clipboard_analyze", "clipboard_aloud",
+                      "clipboard_failed"):
             # Буфер обмена: строки готовые — «буфер обмена: 840 знаков» и
             # «продолжаю вслух: буфер обмена». Сам скопированный текст сюда
             # не уходит никогда: в буфере у хозяина всё, что он нашёл в сети.
+            # `clipboard_analyze` — тот же текст на разбор, не на перевод, но
+            # строка от него такая же: хозяин видит, что буфер взяли, и не
+            # видит, что в нём было.
             if kind == "clipboard_failed":
                 return [f"буфер не прочитан: {payload}"]
+            return [str(payload or "")] if payload else []
+        if kind in ("clipboard_put", "clipboard_put_failed"):
+            # Запись в буфер по просьбе: «буфер обмена: положено 840 знаков».
+            # Сам текст — ни здесь, ни в журнале.
+            if kind == "clipboard_put_failed":
+                return [f"в буфер не положено: {payload}"]
             return [str(payload or "")] if payload else []
         if kind == "pc":
             # Раскладка, музыка, звук компьютера: строка уже готова в
@@ -938,6 +1010,31 @@ class WebRuntime:
         except Exception as exc:
             self._remember("error", f"голос не включился сам: {exc}")
 
+    def voices_wanted_startup(self) -> None:
+        """Продолжить начатое при запуске пульта.
+
+        Если хозяин выбрал модели, но скачивание не кончилось (закрыл пульт,
+        выключил компьютер, сбилась сеть), докачиваем сами. Это не
+        самовольство: выбор он сделал сам, и кнопка обещала, что выбранное
+        скачается. Если библиотек нет — модель всё равно не заработает, и
+        ждать её тут нечего: об этом уже сказала кнопка установки.
+        """
+        from core import hardware, settings, voice_models
+
+        try:
+            if not hardware.voices_installed():
+                return
+            выбрано = settings.voices_wanted()
+            if not выбрано:
+                return
+            очередь = voice_models.needed(выбрано)
+            if очередь:
+                self.voices_download(очередь)
+        except Exception as exc:
+            # Плохой settings.json или сломанный импорт не должны ронять пульт
+            # при старте: голос и так работает, а модели можно скачать кнопкой.
+            self._remember("voices_download_failed", {"error": str(exc)})
+
     def _phone_state_now(self) -> str:
         """Что показать на только что подключившемся телефоне."""
         voice = self.voice
@@ -955,6 +1052,11 @@ class WebRuntime:
             self.voice.stop()
             self._warm_stop()
         else:
+            # Голос загрузил бы torch, который uv сейчас меняет на диске
+            # (`voices_install.запрет_torch`) — говорим словами сразу.
+            if self._libs().get("active"):
+                raise RuntimeError("Ставлю библиотеки голосов — голос включу "
+                                   "после установки")
             with self._lock:
                 if self._enroll is not None:
                     raise RuntimeError("Сначала закончи запись образца голоса")
@@ -2502,7 +2604,7 @@ class WebRuntime:
     # `_bg`, тот же «уже идёт» при повторном нажатии.
 
     def voices_status(self) -> dict:
-        from core import hardware, voices_install
+        from core import hardware, settings, voices_install
 
         проверка = voices_install.check()
         return {
@@ -2513,30 +2615,364 @@ class WebRuntime:
             "possible": bool(проверка.get("ok")),
             "why": "" if проверка.get("ok") else str(проверка.get("error") or ""),
             "reason": "" if проверка.get("ok") else str(проверка.get("reason") or ""),
-            # `installed` — только библиотеки. Веса моделей качаются позже и
-            # лениво, поэтому пульт обязан говорить о них отдельно, иначе
-            # «модели скачаны» будет означать то, чего не было.
+            # `installed` — только библиотеки. Веса моделей качает пульт и
+            # только по выбору хозяина, поэтому пульт обязан говорить о них
+            # отдельно, иначе «модели скачаны» будет означать то, чего не было.
             "installed": bool(hardware.voices_installed()),
             "weights": voices_install.weights_installed(),
+            "wanted": list(settings.voices_wanted()),
+            # Ход скачивания: пульт спрашивает это по таймеру, а проценты шли
+            # без событий, и панель стояла на «0,0 ГБ» (02.10).
+            "download": self._download(),
+            # Ход установки библиотек: та же полоса в пульте, только вместо
+            # процентов — шаг («1 из 2») и сколько скачано на диск.
+            "libs": self._libs(),
         }
 
-    def voices_install(self) -> dict:
-        """Поставить качественные голоса: установщик в своём окне, пульт — закрыть.
+    # --- Скачивание моделей качественных голосов ----------------------------
 
-        Изнутри пульта torch с CUDA не поставить: пульт держит torch
-        загруженным, и Windows не даст заменить его файлы. Установщик в конце
-        откроет пульт сам (см. core/voices_install.launch_external).
+    def _download(self) -> dict:
+        """Копия состояния загрузки — под замком, иначе пульт ловит половину.
+
+        Замок и состояние заводятся здесь же, а не только в конструкторе: в
+        тестах и в заглушках мастера runtime собирается без `__init__`, и
+        спрашивание статуса не должно из-за этого падать.
+        """
+        with self._замок_скачивания():
+            return dict(self._download_state,
+                        queue=list(self._download_state["queue"]),
+                        finished=list(self._download_state["finished"]))
+
+    @contextmanager
+    def _замок_скачивания(self):
+        """Замок состояния загрузки, заводя его при первом обращении."""
+        lock = getattr(self, "_download_lock", None)
+        if lock is None:
+            lock = self._download_lock = threading.Lock()
+        lock.acquire()
+        try:
+            if getattr(self, "_download_state", None) is None:
+                self._download_state = _пустое_скачивание()
+            yield
+        finally:
+            lock.release()
+
+    def voices_download(self, models=None) -> dict:
+        """Скачать выбранные модели — по очереди, в фоне.
+
+        Уже скачанные пропускаем, повторный запуск во время загрузки — отказ
+        («уже качаю»), а место на диске проверяем до старта: обрыв в середине
+        9 ГБ хозяину понравился бы меньше, чем честный отказ с цифрами.
+        """
+        from core import settings, voice_models
+
+        выбрано = settings.validate_voices_wanted(models if models is not None
+                                                  else settings.voices_wanted())
+        if not выбрано:
+            return {"ok": False, "error": "выбери модель: Higgs или ESpeech"}
+        очередь = voice_models.needed(выбрано)
+        if not очередь:
+            return {"ok": True, "already": выбрано}
+        with self._замок_скачивания():
+            if self._download_state["active"]:
+                return {"ok": False, "error": "уже качаю — дождись окончания"}
+            место = voice_models.disk_check(очередь)
+            if not место.get("ok"):
+                return {"ok": False, "error": место["error"]}
+            self._download_stop = threading.Event()
+            self._download_state = _пустое_скачивание()
+            self._download_state.update({
+                "active": True, "model": очередь[0],
+                "title": voice_models.title(очередь[0]),
+                "total": voice_models.size_bytes(очередь[0]),
+                "queue": очередь[1:],
+            })
+            стоп = self._download_stop
+        # Отдельным потоком: скачивание идёт минутами, а страница спрашивает
+        # состояние по таймеру и не должна висеть.
+        threading.Thread(target=self._качать_модели, args=(очередь, стоп),
+                         daemon=True).start()
+        self._remember("voices_download",
+                       f"качаю {', '.join(voice_models.title(и) for и in очередь)}")
+        return {"ok": True, "queue": очередь}
+
+    def _голос_после_скачивания(self, имя: str) -> None:
+        """Скачалась модель выбранного голоса — голос включается сам.
+
+        Только если он и так должен был включиться при запуске пульта
+        (`voice_autostart`) и сейчас выключен: при запуске он не поднялся
+        ровно потому, что модели ещё не было. Выключенный хозяином голос с
+        выключенным автостартом не трогаем.
+        """
+        import config
+
+        try:
+            if str(getattr(config, "TTS_ENGINE", "")) != имя:
+                return
+            if not getattr(config, "VOICE_AUTOSTART", False):
+                return
+            if getattr(self.voice, "running", False):
+                return
+            self.voice_autostart()
+        except Exception as exc:
+            self._remember("error", f"голос после скачивания не включился: {exc}")
+
+    def voices_download_cancel(self) -> dict:
+        """Остановить скачивание. Процесс гасится вместе с потомками."""
+        стоп = getattr(self, "_download_stop", None)
+        if стоп is not None:
+            стоп.set()
+        return {"ok": True}
+
+    def _качать_модели(self, очередь: list, стоп: threading.Event) -> None:
+        """Фоновая загрузка: по очереди, с отменой и честной ошибкой."""
+        from core import voice_models
+
+        for имя in очередь:
+            if стоп.is_set():
+                break
+            всего = voice_models.size_bytes(имя)
+            голос = voice_models.title(имя)
+            with self._замок_скачивания():
+                self._download_state.update({"model": имя, "title": голос,
+                                             "done": 0, "total": всего})
+            voice_models.set_progress(имя, 0, всего)
+            последний = [-1]
+
+            def показать(байт: int, _имя=имя, _всего=всего, _голос=голос,
+                         _последний=последний) -> None:
+                с = voice_models.процент(байт, _всего)
+                with self._замок_скачивания():
+                    self._download_state["done"] = int(байт)
+                voice_models.set_progress(_имя, байт, _всего)
+                # В журнал — раз в 5 %: панель спрашивает состояние сама, а
+                # журнал не должен забиваться сотнями одинаковых строк.
+                if с // 5 != _последний[0]:
+                    _последний[0] = с // 5
+                    self._remember(
+                        "voices_download",
+                        f"{_голос}: {voice_models.гб(байт)} из "
+                        f"~{voice_models.size_text(_имя)} ({с} %)")
+
+            try:
+                сошлось = voice_models.download(имя, стоп, показать)
+            except Exception as exc:
+                voice_models.clear_progress(имя)
+                with self._замок_скачивания():
+                    self._download_state["error"] = f"{type(exc).__name__}: {exc}"
+                self._remember("voices_download_failed", {"error": str(exc)})
+                break
+            voice_models.clear_progress(имя)
+            if not сошлось:
+                # Отменили: тишина, а не ошибка, и очередь остаётся на месте —
+                # в следующий раз докачается с того же места.
+                self._remember("voices_download", f"{голос}: остановил")
+                break
+            with self._замок_скачивания():
+                self._download_state["finished"].append(имя)
+                self._download_state["done"] = всего
+            self._remember("voices_download", f"{голос} скачана")
+            self._голос_после_скачивания(имя)
+        with self._замок_скачивания():
+            self._download_state.update({"active": False, "model": "",
+                                         "title": "", "done": 0, "queue": []})
+
+    # --- Установка библиотек качественных голосов --------------------------
+    #
+    # Ставит `core/voices_install.install` — тот же uv и те же команды, что у
+    # установщика, но отдельными процессами без окна и с выводом в
+    # `data/voices_install.log`. Отличие от скачивания моделей одно и главное:
+    # библиотеки ставит сам пульт, а не хозяин в чёрном окне (02.10).
+
+    def _libs(self) -> dict:
+        """Копия состояния установки — под замком, иначе полоса ловит половину."""
+        with self._замок_библиотек():
+            return dict(self._libs_state)
+
+    @contextmanager
+    def _замок_библиотек(self):
+        """Замок установки, заводя его при первом обращении — как у загрузки."""
+        lock = getattr(self, "_libs_lock", None)
+        if lock is None:
+            lock = self._libs_lock = threading.Lock()
+        lock.acquire()
+        try:
+            if getattr(self, "_libs_state", None) is None:
+                self._libs_state = _пустое_библиотеки()
+            yield
+        finally:
+            lock.release()
+
+    def voices_libs_cancel(self) -> dict:
+        """Остановить установку библиотек. Процесс гасится вместе с потомками."""
+        стоп = getattr(self, "_libs_stop", None)
+        if стоп is not None:
+            стоп.set()
+        return {"ok": True}
+
+    def voices_libs_start(self, models=None) -> dict:
+        """Поставить библиотеки в фоне — оттуда же, где работает пульт.
+
+        Так можно ровно тогда, когда torch ещё не загружен в этом процессе:
+        пока его файлы не открыты, Windows даёт их заменить. Если голос уже
+        работал — torch в памяти, и пульт один раз перезапускается «без
+        голоса», а установку начинает уже он (см. `voices_install`).
+        """
+        from core import settings
+
+        with self._замок_библиотек():
+            if self._libs_state["active"]:
+                return {"ok": False, "error": "библиотеки уже ставятся — "
+                                             "дождись окончания"}
+            self._libs_stop = threading.Event()
+            self._libs_state = _пустое_библиотеки()
+            self._libs_state["active"] = True
+            стоп = self._libs_stop
+        self._bg(self._ставить_библиотеки, стоп,
+                 list(models or settings.voices_wanted()))
+        return {"ok": True, "started": True}
+
+    def _ставить_библиотеки(self, стоп: threading.Event, модели: list) -> None:
+        """Фоновая установка: два шага, с честной ошибкой и тихим отказом."""
+        import config
+        from core import settings, voices_install
+
+        def шаг(**п) -> None:
+            with self._замок_библиотек():
+                if п.get("step"):
+                    self._libs_state.update({
+                        "step": int(п.get("step") or 0),
+                        "steps": int(п.get("steps") or 2),
+                        "title": str(п.get("title") or "")})
+                текст = str(п.get("text") or "")
+            if текст:
+                self._remember("voices_step", текст)
+
+        def прогресс(байт) -> None:
+            with self._замок_библиотек():
+                self._libs_state["downloaded"] = max(0, int(байт))
+
+        try:
+            итог = voices_install.install(on_step=шаг, on_progress=прогресс,
+                                          stop=стоп)
+        except Exception as exc:
+            итог = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        with self._замок_библиотек():
+            self._libs_state["active"] = False
+            self._libs_state["done"] = bool(итог.get("ok"))
+            # Отменённый шаг — не ошибка: хозяин сам нажал «Отменить», и красная
+            # строка сбила бы его с толку.
+            self._libs_state["error"] = ("" if итог.get("cancelled")
+                                         else str(итог.get("error") or ""))
+        if итог.get("cancelled"):
+            self._remember("voices_step", "остановил установку библиотек")
+            return
+        if not итог.get("ok"):
+            self._remember("voices_failed", итог)
+            return
+
+        self._remember("voices_step",
+                       "библиотеки качественных голосов поставлены")
+        # Дальше — то, ради чего хозяин и нажимал кнопку: скачать выбранные
+        # модели. Голос после этого включится сам (`_голос_после_скачивания`).
+        выбрано = list(модели) or list(settings.voices_wanted())
+        if выбрано:
+            итог_качки = self.voices_download(выбрано)
+            if not итог_качки.get("ok"):
+                self._remember("voices_failed", итог_качки)
+        # Пульт мог подняться «без голоса» ради этой установки (перезапуск из
+        # `voices_install`). Если хозяин так и оставил обычный Silero, включаем
+        # его как обычно: иначе голос молчал бы до следующего перезапуска.
+        if str(getattr(config, "TTS_ENGINE", "")) == "silero":
+            self.voice_autostart()
+
+    def voices_libs_startup(self) -> bool:
+        """Продолжить установку после перезапуска пульта.
+
+        Пульт, который не смог поставить torch сам (тот был в памяти), оставил
+        флаг и перезапустился. Новый пульт читает флаг, убирает его и ставит
+        библиотеки сам: голос в этот раз он не запускал, поэтому torch в
+        процессе нет и его файлы можно менять. Началось ли что-то — `True`:
+        `ui/window.py` по этому знает, что голос в этот раз не включать.
         """
         from core import voices_install
 
-        итог = voices_install.launch_external()
+        флаг = voices_install.read_pending()
+        if not флаг:
+            return False
+        voices_install.clear_pending()
+        self._remember("voices_step", "ставлю библиотеки после перезапуска")
+        if not voices_install.uv_есть():
+            # uv в папке не оказалось, а окно установщика мы только что закрыли
+            # вместе с пультом. Честно говорим и ждём кнопки хозяина.
+            отказ = {"ok": False, "error": "в папке Трубы нет uv — библиотеки "
+                                           "придётся поставить установщиком"}
+            with self._замок_библиотек():
+                self._libs_state["error"] = отказ["error"]
+            self._remember("voices_failed", отказ)
+            return True
+        self.voices_libs_start(list(флаг.get("models") or []))
+        return True
+
+    def voices_install(self, models=None) -> dict:
+        """Кнопка «Установить качественные голоса».
+
+        Выбор хозяина запоминается (`voices_wanted`), и дальше по обстановке:
+        библиотеки уже стоят → качаем модели прямо здесь, пульт не закрываем
+        (хозяин нажал «установить» и ждёт голоса, а не окно установщика);
+        не стоят → ставим их тут же, в фоне, с полосой и отменой. Прямо отсюда
+        ставить можно, пока torch не загружен в процессе и `uv` нашёлся в папке;
+        иначе — перезапуск пульта «без голоса» и установка уже в нём, а если нет
+        и `uv`, остаётся старый путь с отдельным окном установщика
+        (`core/voices_install.launch_external`).
+        """
+        from core import hardware, settings, voices_install
+
+        выбрано = settings.save_voices_wanted(
+            models if models is not None else settings.voices_wanted())
+        if not выбрано:
+            return {"ok": False, "error": "выбери модель: Higgs или ESpeech"}
+        if hardware.voices_installed():
+            # Библиотеки на месте — установщик не нужен, качаем сами.
+            итог = self.voices_download(выбрано)
+            if not итог.get("ok"):
+                self._remember("voices_failed", итог)
+            return итог
+
+        if not voices_install.uv_есть():
+            # Ставить нечем: отдаём хозяину прежнее окно установщика.
+            итог = voices_install.launch_external()
+            if not итог.get("ok"):
+                self._remember("voices_failed", итог)
+                return итог
+            self._remember("voices_step", "открыла установщик — пульт "
+                                          "закрывается, после установки "
+                                          "откроется сам")
+            # Ответ странице — раньше, чем окно исчезнет.
+            threading.Timer(1.5, self.close_pult).start()
+            return итог
+
+        if voices_install.torch_в_процессе():
+            # torch уже в памяти (голос работал) — его файлы не дадут менять.
+            # Оставляем флаг и перезапускаем пульт: новый пульт стартует без
+            # голоса, и поставить библиотеки сможет уже он.
+            if not voices_install.write_pending(выбрано):
+                return {"ok": False, "error": "не получилось запомнить, что "
+                                              "поставить — попробуй ещё раз"}
+            self._remember("voices_step", "перезапускаю пульт без голоса — "
+                                          "потом поставлю библиотеки")
+            перезапуск = self.update_restart()
+            if not перезапуск.get("ok"):
+                voices_install.clear_pending()
+                return перезапуск
+            # Ответ странице уходит раньше, чем окно исчезнет (таймер внутри
+            # `update_restart`), и хозяин видит, что это не ошибка.
+            return {"ok": True, "restart": True}
+
+        итог = self.voices_libs_start(выбрано)
         if not итог.get("ok"):
             self._remember("voices_failed", итог)
-            return итог
-        self._remember("voices_step", "открыла установщик — пульт закрывается, "
-                                      "после установки откроется сам")
-        # Ответ странице — раньше, чем окно исчезнет.
-        threading.Timer(1.5, self.close_pult).start()
         return итог
 
     # --- Погода: поиск города и QR телефона --------------------------------
@@ -2706,6 +3142,58 @@ class WebRuntime:
         # окно исчезнет, иначе пульт покажет хозяину ошибку вместо успеха.
         threading.Timer(1.0, self.close_pult).start()
         return {"ok": True, "restart": True}
+
+    # --- Перенос настроек: экспорт, разбор и применение --------------------
+    #
+    # Всё в `core/transfer.py`, а здесь только то, что знает пульт: файл,
+    # принесённый хозяином, лежит в памяти (не на диске) и ждёт применения.
+    # Токен — чтобы файл применился тот, который хозяин только что выбрал, а не
+    # тот, что остался от прошлого раза.
+
+    def transfer_parts(self) -> dict:
+        """Список частей с подписью и тем, что есть на диске сейчас."""
+        from core import transfer
+
+        return {"ok": True, "parts": transfer.части()}
+
+    def transfer_export(self, parts) -> dict:
+        from core import transfer
+
+        итог = transfer.export(parts)
+        self._remember("transfer_export", {"parts": итог.get("parts", [])})
+        self.log_message(f"перенос: {итог['path']}")
+        return итог
+
+    def transfer_reveal(self, path: str) -> dict:
+        from core import transfer
+
+        return transfer.reveal(path)
+
+    def transfer_inspect(self, blob: bytes) -> dict:
+        """Разобрать принесённый файл и запомнить его до применения."""
+        from core import transfer
+
+        разбор = transfer.inspect(blob)
+        with self._transfer_lock:
+            self._transfer_blob = bytes(blob)
+            self._transfer_token = uuid.uuid4().hex
+        return {**разбор, "token": self._transfer_token}
+
+    def transfer_apply(self, token: str, parts) -> dict:
+        """Применить файл, который хозяин только что разобрал."""
+        from core import transfer
+
+        with self._transfer_lock:
+            blob = self._transfer_blob
+            if not blob or str(token) != self._transfer_token:
+                raise ValueError("этот файл переноса не помню — выбери его заново")
+        итог = transfer.apply(blob, parts)
+        with self._transfer_lock:
+            self._transfer_blob = None
+            self._transfer_token = ""
+        self._remember("transfer_apply", {"parts": итог.get("parts", [])})
+        self.log_message("перенос применён: " + ", ".join(итог.get("parts", [])))
+        return итог
 
     def close_pult(self) -> None:
         """Закрыть пульт штатно, как по крестику.
@@ -2921,7 +3409,7 @@ class WebRuntime:
         for key in ("require_name_when_noisy", "voice_app_guard", "owner_only",
                     "barge_instant", "web_search", "search_sound", "replay_guard",
                     "voice_autostart", "higgs_gentle", "proactive_look", "hedge",
-                    "update_check", "first_run_done"):
+                    "update_check", "first_run_done", "offer_analysis_note"):
             if key in payload:
                 if not isinstance(payload[key], bool):
                     errors.append(f"{key}: нужно true/false")

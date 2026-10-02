@@ -498,6 +498,19 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .панель-голос-режим { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--тусклый); }
 .панель-голос .голос-кнопка, .панель-голос .голос-выбор { padding-block: 6px; }
 @media (max-width: 760px) { .панель-голос { align-items: flex-start; flex-direction: column; } }
+/* Кнопка включения не должна прыгать от длины строки состояния: «Включить
+   голос» и «Выключить голос» — разная длина, а место одно (02.10). */
+.панель-голос .голос-кнопка.главная { min-width: 148px; }
+/* Подробность загрузки голоса и полоса скачивания модели — под карточкой, во
+   всю ширину: длинный текст в строке состояния рвал карточку (02.10). */
+.панель-голос-подробности[hidden] { display: none; }
+.панель-голос-подробности { padding: 0 0 12px; }
+/* Голос — своя карточка (02.10): черта под строкой голоса нужна, только когда
+   под ней что-то есть — подробности загрузки. */
+.панель-голос-блок .панель-голос { padding: 0; margin-bottom: 0; border-bottom: none; }
+.панель-голос-блок .панель-голос-подробности { margin-top: 12px; padding: 12px 0 0; border-top: 1px solid var(--линия); }
+.панель-голос-подробности-текст { color: var(--тусклый); font-size: 11px; overflow-wrap: anywhere; }
+.панель-голос-подробности-текст:empty { display: none; }
 .панель-голос-подписи strong { white-space: nowrap; }
 /* У окна 1000 px «Настроить →» в строке голоса сталкивал кнопки на вторую
    строку. Туда же ведёт карточка «Голос» наверху — на узком окне хватит её. */
@@ -1349,6 +1362,11 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .образец-файл-инфо { font-size: 12px; color: var(--приглушён); overflow-wrap: anywhere; }
 .образец-файл-инфо:empty { display: none; }
 .образец-подсказка { font-size: 11px; color: var(--тусклый); }
+/* Перенос настроек: блок один и в «Системе», и на первом шаге мастера, поэтому
+   стили общие. Галочки — те же `.настр-ряд`, свод пуст, пока не разобрали файл. */
+.перенос-блок .настр-ряд .настр-имя { width: auto; min-width: 180px; }
+.перенос-свод { margin: 6px 0 0; }
+.перенос-свод:empty { display: none; }
 /* Адреса в «Чтобы экран телефона не гас» набирают на телефоне руками —
    они должны читаться целиком и выделяться мышью одним движением. */
 .не-гасить-адрес { color: var(--текст); font-weight: 600; overflow-wrap: anywhere; user-select: all; }
@@ -1363,6 +1381,13 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .железо-имя { flex: none; font-weight: 600; }
 .железо-итог { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--приглушён); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .железо-стрелка { flex: none; color: var(--тусклый); }
+/* Идёт загрузка или установка, а карточка свёрнута: вместо строки про железо —
+   мигающая точка и процент, чтобы ход было видно, не раскрывая (02.10). */
+.железо-ход { display: none; flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--синий); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.железо-ход::before { content: ''; display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: var(--синий); vertical-align: 1px; animation: железо-мигает 1s ease-in-out infinite; }
+.железо-шапка.идёт:not(.раскрыто) .железо-ход { display: block; }
+.железо-шапка.идёт:not(.раскрыто) .железо-итог { display: none; }
+@keyframes железо-мигает { 0%, 100% { opacity: 1; } 50% { opacity: .15; } }
 .железо-тело { max-height: 0; overflow: hidden; opacity: 0; padding: 0 12px; transition: max-height .22s ease, opacity .18s ease, padding-bottom .22s ease; }
 .железо-тело.раскрыто { max-height: 560px; opacity: 1; padding-bottom: 12px; }
 
@@ -1411,6 +1436,30 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .железо-строка b { font-weight: 600; text-align: right; overflow-wrap: anywhere; }
 .железо-совет { font-size: 12px; color: var(--тусклый); padding: 3px 2px; line-height: 1.45; }
 .железо-совет.плохо { color: var(--тревога); }
+
+/* Качественные голоса в «Озвучивании»: по строке на модель, с галочкой,
+   размером и состоянием. Зелёный — только индикатор «скачана», не оформление. */
+.железо-голоса { margin: 10px 0 4px; padding-top: 8px; border-top: 1px solid var(--линия); }
+.железо-голоса-имя { padding-bottom: 4px; color: var(--текст); font-size: 13px; font-weight: 600; }
+.железо-голоса-строки { display: flex; flex-direction: column; gap: 8px; }
+.железо-голоса-строка { display: flex; align-items: baseline; gap: 9px; cursor: pointer; }
+.железо-голоса-галка { flex: none; margin: 0; }
+.железо-голоса-текст { flex: 1 1 auto; min-width: 0; color: var(--приглушён); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.железо-голоса-текст b { color: var(--текст); font-size: 13px; font-weight: 600; }
+.железо-голоса-состояние { flex: none; font-size: 12px; color: var(--тусклый); white-space: nowrap; }
+.железо-голоса-состояние.есть { color: var(--живой); }
+.железо-голоса-строка:has(.железо-голоса-галка:disabled) { cursor: default; }
+
+/* Полоска скачивания моделей: одна и та же и в «Озвучивании», и под
+   карточкой голоса на Панели. Синяя — зелёный здесь только индикатор. */
+.голоса-полоса-место[hidden] { display: none; }
+.голоса-полоса-место { padding: 4px 0 2px; }
+.голоса-полоса-текст { color: var(--приглушён); font-size: 12px; overflow-wrap: anywhere; }
+.голоса-полоса { height: 8px; margin: 5px 0 7px; border-radius: 4px; background: var(--линия); overflow: hidden; }
+.голоса-полоса > i { display: block; height: 100%; width: 0; background: var(--синий); transition: width .2s linear; }
+.голоса-полоса-низ { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.голоса-очередь { color: var(--тусклый); font-size: 12px; }
+.голоса-ошибка { padding-top: 4px; color: var(--тревога); font-size: 12px; overflow-wrap: anywhere; }
 
 /* Погода в разделе «Телефон»: поле поиска и найденные города. */
 .пог-ввод { flex: 1 1 240px; max-width: 320px; }
@@ -1490,6 +1539,7 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .зам-верх { flex: none; display: flex; flex-direction: column; gap: 6px; }
 .зам-кнопки { display: flex; gap: 8px; }
 .зам-путь { font-size: 11px; color: var(--тусклый); overflow-wrap: anywhere; }
+.зам-переключатель { display: flex; align-items: center; gap: 8px; font-size: 12px; cursor: pointer; }
 
 .зам-поиск {
   flex: none;
@@ -1965,3 +2015,7 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 @media (max-width: 1100px) { .мастер-характеры { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .мастер-предупреждение { margin: 10px 0 0; padding: 9px 12px; font-size: 12px; line-height: 1.45; color: var(--приглушён); background: var(--панель-выше); border: 1px solid var(--линия); border-radius: 10px; }
 
+
+/* В блоке мастера своя черта сверху уже есть — заголовку вторая не нужна
+   (двойная линия над «Перенос настроек», 02.10). */
+.мастер-блок > .перенос-блок > .образец-заголовок:first-child { border-top: none; padding-top: 0; margin-top: 0; }

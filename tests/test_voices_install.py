@@ -76,7 +76,7 @@ class RefuseTests(unittest.TestCase):
         запуск = mock.Mock()
         (self.папка / "coordination").mkdir()
         with _с_железом([КАРТА]), \
-                mock.patch.object(voices_install.subprocess, "run", запуск):
+                mock.patch.object(voices_install.subprocess, "Popen", запуск):
             итог = voices_install.install(self.папка)
         self.assertFalse(итог["ok"])
         self.assertIn("рабочей папке", итог["error"])
@@ -208,30 +208,56 @@ class InstallTests(unittest.TestCase):
         подмена.start()
         self.addCleanup(подмена.stop)
 
+    def _шаг(self, **п):
+        self.шаги.append(п)
+
     def _запуски(self, код=0):
         """Подмена запуска: запоминает команды, ничего не выполняет."""
         виден = []
 
         def запуск(команда, **kwargs):
-            виден.append(команда)
+            виден.append((команда, kwargs))
             self.assertEqual(kwargs.get("creationflags"),
                              voices_install._окно_нет())
-            return mock.Mock(returncode=код)
+            return mock.Mock(returncode=код, poll=mock.Mock(return_value=код))
 
-        return виден, mock.patch.object(voices_install.subprocess, "run", запуск)
+        return виден, mock.patch.object(voices_install.subprocess, "Popen", запуск)
 
-    def test_runs_both_commands_and_asks_for_a_restart(self):
-        # torch уже загружен в процессе пульта: без перезапуска новая сборка
-        # не подхватится, и хозяин решит, что кнопка не сработала.
+    def test_runs_both_commands_and_needs_no_restart(self):
+        # Мы здесь уже в процессе, где torch не загружен: перезапуск не нужен,
+        # голос после установки сам поднимется, когда скачается модель.
         виден, запуск = self._запуски()
         with _с_железом([КАРТА]), запуск:
-            итог = voices_install.install(self.папка,
-                                          on_step=self.шаги.append)
+            итог = voices_install.install(self.папка, on_step=self._шаг)
         self.assertTrue(итог["ok"], итог)
-        self.assertTrue(итог["restart"])
+        self.assertFalse(итог["restart"])
         self.assertEqual(len(виден), 2)
-        self.assertIn("cu130", " ".join(виден[0]))
+        self.assertIn("cu130", " ".join(виден[0][0]))
         self.assertTrue(self.шаги)
+
+    def test_steps_are_told_with_titles_and_numbers(self):
+        # Полосе пульта нужно знать, какой шаг идёт и как он называется.
+        виден, запуск = self._запуски()
+        with _с_железом([КАРТА]), запуск:
+            voices_install.install(self.папка, on_step=self._шаг)
+        начало = [п for п in self.шаги if п.get("step") == 1]
+        self.assertTrue(начало, self.шаги)
+        self.assertEqual(начало[0]["steps"], 2)
+        self.assertEqual(начало[0]["title"], "torch с CUDA")
+        # По одному шагу на команду: их ровно два.
+        self.assertEqual(len([п for п in self.шаги if п.get("step") == 1]), 1)
+        self.assertEqual(len([п for п in self.шаги if п.get("step") == 2]), 2)
+        self.assertEqual(начало[0]["text"], "ставлю torch с CUDA — шаг 1 из 2")
+
+    def test_environments_point_uv_cache_into_the_folder(self):
+        # Кеш uv — в папке Трубы (как у install.ps1), иначе после её удаления
+        # остался бы хвост в профиле пользователя.
+        виден, запуск = self._запуски()
+        with _с_железом([КАРТА]), запуск:
+            voices_install.install(self.папка)
+        for _, kwargs in виден:
+            кеш = kwargs.get("env")["UV_CACHE_DIR"]
+            self.assertEqual(Path(кеш), self.папка.joinpath(".cache", "uv"))
 
     def test_nothing_to_run_means_a_refusal_with_a_reason(self):
         виден, запуск = self._запуски(код=1)
@@ -239,6 +265,8 @@ class InstallTests(unittest.TestCase):
             итог = voices_install.install(self.папка)
         self.assertFalse(итог["ok"])
         self.assertIn("не поставились", итог["error"])
+        # Хозяин пришлёт этот файл — значит, в отказе он назван.
+        self.assertIn("voices_install.log", итог["error"])
         # Первая команда упала — вторую запускать незачем.
         self.assertEqual(len(виден), 1)
 
@@ -248,7 +276,7 @@ class InstallTests(unittest.TestCase):
             voices_install.install(self.папка)
         журнал = self.журнал.read_text(encoding="utf-8")
         self.assertIn("качественные голоса", журнал)
-        self.assertIn("перезапусти пульт", журнал)
+        self.assertIn("поставлены", журнал)
 
     def test_failed_install_is_written_to_the_journal(self):
         _, запуск = self._запуски(код=1)

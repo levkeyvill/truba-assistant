@@ -359,12 +359,6 @@
     border-color: var(--accent);
     animation: flash .6s ease;
   }
-  /* Буква названия — когда логотипа сайта нет. */
-  .app .letter {
-    font-size: calc(var(--tile, 76px) * .44);
-    font-weight: 700; line-height: 1;
-    color: var(--bg);
-  }
 
   /* ---------- Вид сетки программ ----------
      Три вида плитки на выбор хозяина (`phone_icon_style`): обычная,
@@ -415,24 +409,20 @@
     -webkit-user-drag: none; user-select: none; pointer-events: none;
   }
   body.edit .app { touch-action: none; user-select: none; }
-  /* Кнопка «+» в макете пульта: добавить программу прямо с экрана телефона.
-     Плиткой в сетке она быть не может — 28.09 девятая плитка ломала раскладку,
-     — поэтому стоит поверх, в свободном месте у края области программ, и на
-     раскладку `layoutApps` не влияет. На настоящем телефоне её нет. */
-  body.edit #edit-add {
-    display: flex;
-    position: fixed;
-    width: 40px; height: 40px;
-    border: 0; border-radius: 50%;
-    background: var(--accent); color: var(--на-акценте);
-    font: 600 26px/1 "Montserrat", -apple-system, "Segoe UI", Roboto, sans-serif;
+  /* Пустая клетка макета: «+» на месте программы, того же размера (02.10
+     хозяин: «плюсик должен быть как приложение, только которое не стоит, а
+     не сбоку»). Рамка пунктирная и приглушённая — это место, а не значок;
+     при наведении «+» становится янтарным. На настоящем телефоне таких
+     клеток нет: их рисует только `drawApps` в режиме правки. */
+  body.edit #apps .app.пусто {
+    border: 1px dashed var(--line);
+    background: none;
+    color: var(--muted);
+    font: 400 26px/1 "Montserrat", -apple-system, "Segoe UI", Roboto, sans-serif;
     cursor: pointer;
-    align-items: center; justify-content: center;
-    z-index: 12;
-    box-shadow: 0 4px 10px var(--тень);
   }
-  body.edit #edit-add:active { transform: scale(.93); }
-  body.edit #edit-add[hidden] { display: none; }
+  body.edit #apps .app.пусто:hover { color: var(--accent); }
+  body.edit #apps .app.пусто:active { transform: scale(.93); background: none; }
   @keyframes pop {
     from { opacity: 0; transform: scale(.85); }
     to   { opacity: 1; transform: none; }
@@ -682,15 +672,13 @@
     max-width: 32px; max-height: 32px;
     object-fit: contain;
   }
-  /* Буква названия — когда логотипа сайта нет. */
-  #menu .app.card .card-face .letter {
-    font-size: 21px;
-    color: var(--bg);
-  }
   #menu .app.card .card-text {
     min-width: 0; flex: 1;
     text-align: left;
   }
+  /* Ссылка без логотипа — одно название, чуть крупнее и с отступом. */
+  #menu .app.card.без-лого { padding: 0 16px; }
+  #menu .app.card.без-лого .card-name { font-size: 18px; }
   /* Название — до двух строк, лишнее многоточием: на телефоне не пройти. */
   #menu .app.card .card-name {
     font-size: 16px; line-height: 1.15; color: var(--text);
@@ -2693,10 +2681,43 @@ function drawApps(items, layout) {
     }
     appsBox.appendChild(el);
   });
-  /* Плитки «+» в сетке нет: 28 сентября она ломала макет — при восьми
-     программах девятая плитка «+» попадала в счёт, и «авто» давало пять
-     колонок. Кнопка добавления — в пульте под экраном. */
+  /* Пустые клетки с «+» — только в макете пульта: хозяин 02.10 «плюсик должен
+     быть как приложение, только которое не стоит, а не сбоку». Они того же
+     размера, что и программы, и нажатие на любую зовёт пульт добавить
+     программу — та же кнопка «+ Программа», только с экрана. Новая программа
+     встаёт следующей по порядку, а не на место нажатой клетки: пустот между
+     программами не бывает. Программ больше, чем клеток, — тогда клеток нет. */
+  if (EDIT) editНарисоватьПустые(вид);
   layoutApps(items.length, вид);
+}
+
+/* Сколько пустых клеток не хватает до конца сетки `рядов × 4`. */
+function editСколькоПустых(вид) {
+  return Math.max(0, вид.rows * TILE_COLS - appsBox.querySelectorAll('.app[data-app]').length);
+}
+
+/* Дорисовать пустые клетки до конца сетки. На настоящем телефоне их нет
+   вовсе: функцию зовёт только `drawApps` под `if (EDIT)`. */
+function editНарисоватьПустые(вид) {
+  for (let i = 0, сколько = editСколькоПустых(вид); i < сколько; i++) {
+    appsBox.appendChild(editПустаяКлетка());
+  }
+}
+
+/* Одна пустая клетка: «+» по центру, пунктирная рамка. Перетаскиванием и
+   выбором она не участвует — это не программа (см. `editOrder` и
+   `editBindTile`, где ищутся только `.app[data-app]`). */
+function editПустаяКлетка() {
+  const el = document.createElement('div');
+  el.className = 'app пусто';
+  el.textContent = '+';
+  el.title = 'Добавить программу';
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'Добавить программу');
+  el.addEventListener('click', () => {
+    editSay({ type: 'truba-edit-add' });
+  });
+  return el;
 }
 
 function flash(el) {
@@ -2705,16 +2726,16 @@ function flash(el) {
 }
 
 /* ---------- Раскладка значков ----------
-   Колонок всегда четыре, рядов два — как просил хозяин. Размер плитки
-   считаем по всей сетке 4 × 2, даже когда программ три: иначе три
-   плитки растянулись бы на весь экран и макет в пульте врал бы. Рядов,
-   занятых значками, не больше, чем нужно: одна программа в двух рядах —
-   это одна огромная плитка посреди пустоты. Больше, чем влезает в 4 × 2, —
-   колонок больше, и листаем вбок, как раньше: лишние плитки остаются
-   доступны прокруткой, а не пропадают. Портретная раскладка (два столбца
-   по центру) не трогаем. */
+   Колонок всегда четыре, рядов один или два — как просил хозяин (02.10: «сделать
+   2 и 1 ряд приложений»). Размер плитки считаем по всей сетке 4 × рядов, даже
+   когда программ три: иначе три плитки растянулись бы на весь экран и макет в
+   пульте врал бы. Рядов, занятых значками, не больше, чем нужно: одна программа
+   в двух рядах — это одна огромная плитка посреди пустоты. Больше, чем влезает
+   в 4 × рядов, — колонок больше, и листаем вбок, как раньше: лишние плитки
+   остаются доступны прокруткой, а не пропадают. Портретная раскладка (два
+   столбца по центру) не трогаем. */
 const TILE_MIN = 60, TILE_MAX = 92, TILE_GAP = 10, TILE_ROWS = 2;
-const TILE_COLS = 4, TILE_ROWS_MIN = 2, TILE_ROWS_MAX = 2;
+const TILE_COLS = 4, TILE_ROWS_MIN = 1, TILE_ROWS_MAX = 2;
 /* Подпись под значком: 15 px текст, 3 px зазор, округление на всякий
    случай. Столько высоты плитка теряет на каждый ряд. */
 const LABEL_H = 22;
@@ -2722,7 +2743,7 @@ const LABEL_H = 22;
 function layoutApps(count, layout) {
   const вид = gridView(layout);
   lastLayout = вид;
-  if (!count) return;
+  if (!count && !(EDIT && вид.rows)) return;
   /* Вертикальная раскладка остаётся прежней: там два столбца по центру. */
   if (window.innerHeight >= window.innerWidth) {
     appsBox.style.removeProperty('--cols');
@@ -2732,13 +2753,19 @@ function layoutApps(count, layout) {
     return;
   }
 
-  /* Рядов не больше, чем нужно под столько программ: одна программа в
+  /* В макете пульта сетка показана целиком: пустые клетки с «+» тоже клетки,
+     иначе при трёх программах в двух рядах макет показал бы один ряд и «+»
+     было бы некуда ставить. На настоящем телефоне клеток нет — там `count`
+     и есть число программ. */
+  const клеток = EDIT ? Math.max(count, вид.rows * TILE_COLS) : count;
+  if (!клеток) return;
+  /* Рядов не больше, чем нужно под столько клеток: одна программа в
      трёх рядах — это одна огромная плитка посреди пустого экрана. */
-  const рядов = Math.max(1, Math.min(вид.rows, Math.ceil(count / TILE_COLS)));
+  const рядов = Math.max(1, Math.min(вид.rows, Math.ceil(клеток / TILE_COLS)));
   /* В сетку 4 × рядов не влезает — колонок больше, и листаем вбок. Иначе
      лишние программы уехали бы в новый ряд и срезались снизу. */
-  const неВлезает = count > TILE_COLS * вид.rows;
-  const значений = неВлезает ? Math.ceil(count / рядов) : TILE_COLS;
+  const неВлезает = клеток > TILE_COLS * вид.rows;
+  const значений = неВлезает ? Math.ceil(клеток / рядов) : TILE_COLS;
   /* Свободное место между кругом и столбцом режимов — то, куда встаёт
      колонка программ. Считаем от самого `#middle` и его отступов: между
      кругом и колонкой, и между колонкой и режимами, стоит одинаковый
@@ -2787,8 +2814,9 @@ function layoutApps(count, layout) {
 /* Вид сетки. Колонок всегда четыре: хозяин попросил «4 в ширину», а серверное
    `cols` мы больше не читаем вовсе (в живом `settings.json` от старой версии
    осталось «auto», и девятая программа снова раздувала сетку до пяти
-   колонок). Ряды — два: старые «3» (от прежней версии пульта) показываем
-   двумя, лишние плитки никуда не деваются — они уезжают вбок по прокрутке. */
+   колонок). Ряды — один или два: старые «3» (от прежней версии пульта)
+   показываем двумя, лишние плитки никуда не деваются — они уезжают вбок по
+   прокрутке. */
 function gridView(layout) {
   const l = (layout && typeof layout === 'object') ? layout : {};
   const n = parseInt(l.rows, 10);
@@ -2860,23 +2888,6 @@ function markMenuState(appId, on) {
   });
 }
 
-/* Цвет буквы в значке сайта — по домену, а не всегда синий: пятно узнаётся
-   издали, и два сайта рядом не выглядят одинаково. Взяты цвета палитры
-   страницы, зелёного в ней нет. */
-const САЙТ_ЦВЕТА = ['#d98b52', '#6b8afd', '#b8b8e8', '#d9a94a', '#ff3d3d', '#7f8ff4'];
-
-function siteColor(url) {
-  let хост = String(url || '');
-  const рубка = хост.indexOf('://');
-  if (рубка >= 0) хост = хост.slice(рубка + 3);
-  хост = хост.split('/')[0].split('?')[0].toLowerCase();
-  let hash = 0;
-  for (let i = 0; i < хост.length; i++) {
-    hash = ((hash * 31) + хост.charCodeAt(i)) % 1000003;
-  }
-  return САЙТ_ЦВЕТА[hash % САЙТ_ЦВЕТА.length];
-}
-
 /* Закладка или пункт-сайт — карточка в две плитки: значок слева, название
    справа. Квадратной плиткой это читалось плохо (28.09): фавиконка мылилась,
    а названия не было — какая закладка какая, не понять. */
@@ -2887,23 +2898,20 @@ function menuCard(item) {
   el.setAttribute('role', 'button');
   el.setAttribute('aria-label', item.title);
 
-  const face = document.createElement('div');
-  face.className = 'card-face';
+  /* Логотип — только настоящий. Без него раньше была первая буква названия
+     на цвете домена; 02.10 хозяин: «некрасиво… может просто названия оставить
+     без превью лого?» — карточка без логотипа теперь одно название. */
   if (item.image) {
+    const face = document.createElement('div');
+    face.className = 'card-face';
     const img = document.createElement('img');
     img.src = item.image;
     img.alt = '';
     face.appendChild(img);
+    el.appendChild(face);
   } else {
-    /* Логотипа сайта нет — первая буква названия на цвете домена: пятно
-       читается издали, а пустая кнопка не читается вообще. */
-    const буква = document.createElement('span');
-    буква.className = 'letter';
-    буква.style.background = siteColor(item.url);
-    буква.textContent = (item.title || '?').trim().charAt(0).toUpperCase();
-    face.appendChild(буква);
+    el.classList.add('без-лого');
   }
-  el.appendChild(face);
 
   const текст = document.createElement('div');
   текст.className = 'card-text';
@@ -3665,9 +3673,10 @@ function applyTheme(value) {
 function setState(name, detail) {
   edgeState(name);
   let [color, text] = STATES[name] || STATES.off;
-  /* Голос Higgs при первом включении качает модель ~9 ГБ — это минуты.
-     «загружаюсь, подожди…» без конца выглядело зависанием (01.10), поэтому
-     проценты скачивания комп присылает в `text` состояния. */
+  /* Если комп прислал в `text` состояния проценты загрузки — показываем их:
+     «загружаюсь, подожди…» без конца выглядело зависанием (01.10). С 02.10
+     модели голосов качает пульт по выбору хозяина, а не включение голоса,
+     но проценты в `text` по-прежнему понимаем. */
   const доля = name === 'loading' && /(\d+)\s*%/.exec(String(detail || ''));
   if (доля) text = 'качаю голос: ' + доля[1] + ' %';
   core.style.background = color;
@@ -3942,8 +3951,9 @@ function animate() {
      • данных нет ниоткуда, кроме родителя: пульт шлёт `{type: 'truba-edit'}`
        и ждёт ответа `truba-edit-ready`;
      • программа не запускается, а выбирается; порядок меняется
-       перетаскиванием. Плитки «+» в сетке нет: она портила макет, а
-       кнопка добавления есть в пульте под экраном.
+       перетаскиванием. Пустые клетки сетки — это «+» добавления: хозяин 02.10
+        попросил «плюсик как приложение, только которое не стоит», и раньше
+        плавающая кнопка в углу у него исчезала.
    Всё остальное на экране — для вида: круг, режимы, действия и погода
    показаны, но не нажимаются (`pointer-events: none` в стилях). */
 function editSay(data) {
@@ -3975,9 +3985,10 @@ function editBindTile(el, item) {
     editDrag.moved = true;
     /* Плитка под курсором — значит, встаём на её место. Ищем элемент под
        указателем: плитки одного размера, так что «середина экрана» работала
-       бы только при ровном сетчатом шаге. */
+       бы только при ровном сетчатом шаге. Ищем именно программу
+       (`.app[data-app]`): пустая клетка «+» перетаскиванием не участвует. */
     const под = document.elementFromPoint(event.clientX, event.clientY);
-    const over = под && под.closest ? под.closest('.app') : null;
+    const over = под && под.closest ? под.closest('.app[data-app]') : null;
     if (!over || over === el || over.parentElement !== el.parentElement) return;
     const box = over.getBoundingClientRect();
     /* По вертикали решает сетка, а в одну строку (когда листаем вбок) —
@@ -4028,53 +4039,6 @@ function editОбновитьМеню(items) {
   openMenu(такая);
 }
 
-/* Кнопка «+» в макете: добавить программу прямо с экрана телефона. Плиткой в
-   сетке её быть не может (28.09: девятая плитка ломала раскладку), поэтому
-   стоит поверх, у края области программ, и на `layoutApps` не влияет.
-   На настоящем телефоне её нет — создаётся только здесь. */
-const EDIT_ADD_SIZE = 40;
-
-function editСоздатьКнопку() {
-  const кнопка = document.createElement('button');
-  кнопка.type = 'button';
-  кнопка.id = 'edit-add';
-  кнопка.textContent = '+';
-  кнопка.title = 'Добавить программу';
-  кнопка.setAttribute('aria-label', 'Добавить программу');
-  кнопка.addEventListener('click', () => {
-    editSay({ type: 'truba-edit-add' });
-  });
-  document.body.appendChild(кнопка);
-  return кнопка;
-}
-
-/* Где поставить кнопку: сначала правый нижний угол области программ, а если
-   там плитка — левее, до первого свободного места. Считаем по рамкам
-   (`getBoundingClientRect`): при восьми программах сетка заполнена целиком,
-   и «+» в углу накрыла бы значок. */
-function editПоставитьКнопку() {
-  const кнопка = $('edit-add');
-  if (!кнопка) return;
-  const зона = appsBox.getBoundingClientRect();
-  const плитки = Array.from(appsBox.querySelectorAll('.app[data-app]'))
-    .map((el) => el.getBoundingClientRect());
-  const отступ = 6, шаг = EDIT_ADD_SIZE + отступ;
-  const top = зона.bottom - EDIT_ADD_SIZE - отступ;
-  for (let left = зона.right - EDIT_ADD_SIZE - отступ; left >= зона.left; left -= шаг) {
-    const занято = плитки.some((рамка) =>
-      left < рамка.right && left + EDIT_ADD_SIZE > рамка.left
-      && top < рамка.bottom && top + EDIT_ADD_SIZE > рамка.top);
-    if (занято) continue;
-    кнопка.style.left = Math.round(left) + 'px';
-    кнопка.style.top = Math.round(Math.max(top, отступ)) + 'px';
-    кнопка.hidden = false;
-    return;
-  }
-  /* Свободного места в строке не нашлось — прячем, чтобы не накрыть значок.
-     01.10 хозяин: «на 8 программах и не нужен „+“ — логично»: сетка полная. */
-  кнопка.hidden = true;
-}
-
 if (EDIT) {
   /* Макет — значит, подсказки «коснись» и «во весь экран» тут лишние: их
      нажатие в iframe всё равно ничего не делает. Показатели — прочерки,
@@ -4087,7 +4051,6 @@ if (EDIT) {
     $(id).querySelector('.bar i').style.width = '0%';
   }
   batBox.hidden = true;
-  editСоздатьКнопку();
 
   /* Мышь на значке начинает тянуть саму картинку, и жест не доходит до
      плитки. Запрещаем перетаскивание целиком — в макете тянуть нечего,
@@ -4110,7 +4073,6 @@ if (EDIT) {
     editPick(msg.selected);
     editPickAction(msg.action);
     editОбновитьМеню(items);
-    editПоставитьКнопку();
   });
 
   editSay({ type: 'truba-edit-ready' });

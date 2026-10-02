@@ -30,6 +30,19 @@ MIN_CHUNK = 25
 # Сколько раз за ответ модель может сходить в интернет: поиск, чтение
 # страницы, уточняющий поиск. Дальше — отвечает тем, что нашла.
 TOOL_ROUNDS = 3
+# Ответ, упёршийся в потолок токенов, приходит с finish_reason == "length",
+# а недоговорённый хвост фразы уходил в озвучку как есть — и голос замолкал
+# посреди слова (хозяин, 02.10: «когда читает длинный текст, на каком-то
+# моменте замолкает»). Теперь хвост не озвучивается, а уходит обратно в
+# запрос, и модель договаривает фразу сама.
+CONTINUE_ROUNDS = 2
+# Просьба продолжить. Короткая и без инструментов: продолжать тут нечего,
+# а лишние вызовы только истратили бы тот же обрезанный потолок.
+CONTINUE_ASK = ("Ты оборвалась на полуслове. Продолжи ровно с того места, "
+                "без повторов, вступлений и извинений.")
+# Чем кончаем, когда и третьего куска не хватило. Сказать честно лучше,
+# чем замолчать на середине.
+CONTINUE_LAST = "Дальше не влезло — скажи «продолжай», договорю."
 # И сколько секунд на всё это (по умолчанию; хозяин меняет в Настройках —
 # config.WEB_SEARCH_BUDGET): голосом после «секунду, гляну» больше не
 # ждут. Замерено 25 сентября: DeepSeek на вопрос про новости Таркова
@@ -39,6 +52,69 @@ TOOL_BUDGET = 12.0
 # Так начинается разметка вызова инструмента у DeepSeek, когда она
 # прорывается в обычный текст. Вслух это не произносится.
 TOOL_MARKUP = ("<｜", "｜DSML｜", "<|tool", "<tool_call>")
+
+# Размышления прямо в тексте ответа. MiniMax (и часть моделей через
+# OpenRouter и локальные) кладут их не отдельным полем `reasoning_content`, а
+# в сам ответ между этими метками. 02.10 в test11 она прочитала вслух свои
+# английские мысли «<think> The user is asking…».
+OPEN_THINK = "<think>"
+CLOSE_THINK = "</think>"
+_РАЗМЫШЛЕНИЯ = re.compile(r"<think>.*?(?:</think>|$)", re.S)
+
+
+def без_размышлений(текст: str) -> str:
+    """Ответ без `<think>…</think>` — для разовых запросов (память, заметки).
+
+    Незакрытая метка (ответ упёрся в потолок посреди мыслей) режет всё до
+    конца: мысли не ответ, а без закрывающей метки конца у них нет.
+    """
+    return _РАЗМЫШЛЕНИЯ.sub("", str(текст or "")).strip()
+
+
+class _БезРазмышлений:
+    """Вырезает `<think>…</think>` из потока ответа на лету.
+
+    Метка может прийти разорванной между кусками («<thi» + «nk>»), поэтому
+    недоговорённое начало метки ждёт следующего куска, а не уходит в речь.
+    """
+
+    def __init__(self) -> None:
+        self.внутри = False
+        self.хвост = ""
+
+    @staticmethod
+    def _начало_метки(текст: str, метка: str) -> int:
+        """Сколько последних знаков текста — начало метки (ждём продолжения)."""
+        for n in range(min(len(метка) - 1, len(текст)), 0, -1):
+            if текст.endswith(метка[:n]):
+                return n
+        return 0
+
+    def feed(self, кусок: str) -> tuple[str, str]:
+        """Кусок потока → (что можно говорить, что было размышлением)."""
+        текст = self.хвост + кусок
+        self.хвост = ""
+        видно: list[str] = []
+        мысли: list[str] = []
+        while текст:
+            метка = CLOSE_THINK if self.внутри else OPEN_THINK
+            где = текст.find(метка)
+            if где == -1:
+                n = self._начало_метки(текст, метка)
+                if n:
+                    self.хвост = текст[-n:]
+                    текст = текст[:-n]
+                (мысли if self.внутри else видно).append(текст)
+                break
+            (мысли if self.внутри else видно).append(текст[:где])
+            текст = текст[где + len(метка):]
+            self.внутри = not self.внутри
+        return "".join(видно), "".join(мысли)
+
+    def finish(self) -> str:
+        """Конец потока: недоговорённое начало метки вне мыслей — обычный текст."""
+        остаток, self.хвост = self.хвост, ""
+        return "" if self.внутри else остаток
 # Инструмент «закончить разговор» — только для голоса. Прощания бывают
 # любыми: «стоп, ладно, забей, пофиг», «мы же уже поговорили», «ок». Список
 # фраз в voice_loop ловит очевидное мгновенно, а всё остальное понимает
@@ -210,6 +286,18 @@ def completion_limits(provider: str, limit: int, temperature: float | None = Non
         result["temperature"] = temperature
     return result
 
+
+def say_words(said: list[str]) -> list[str]:
+    """Сказанное за круг — только непустые куски, для `assistant` в запросе.
+
+    Продолжение возвращает модели то, что она уже сказала хозяину, плюс
+    недоговорённый хвост. Пустые куски в `_sentences` не попадают, но
+    склейка тут для страховки: пустая строка в `content` у провайдера
+    иногда означает «сообщение без текста» и роняет следующий запрос.
+    """
+    return [word for word in (str(one).strip() for one in said) if word]
+
+
 DAYS = (
     "понедельник", "вторник", "среда", "четверг",
     "пятница", "суббота", "воскресенье",
@@ -252,6 +340,21 @@ def _args_of(call: dict) -> dict:
     except ValueError:
         return {}
     return args if isinstance(args, dict) else {}
+
+
+def _result_of(ответ: str) -> dict:
+    """Ответ инструмента разобранным словарём. Битый — пустой.
+
+    Наружу отдаётся в `last_turn_tools`: голосовой цикл смотрит там `ok`,
+    `path` и `name`, а разбирать JSON второй раз незачем.
+    """
+    import json
+
+    try:
+        data = json.loads(ответ)
+    except (TypeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def _query_of(call: dict) -> str:
@@ -791,6 +894,11 @@ class Brain:
         # Считает только perf_counter, голосовой цикл берёт это для замера
         # ответа в журнал (ui/web_runtime.py::_log_messages).
         self.last_timing: dict = {"rounds": []}
+        # Что модель вызывала в последнем ходу: [{"name", "args", "result"}].
+        # Голосовой цикл читает это, чтобы самому узнать, что ход был разбором
+        # документа или скопированного, и спросить про заметку — без отдельного
+        # инструмента и без решения модели (см. `VoiceLoop._analysis_turn`).
+        self.last_turn_tools: list[dict] = []
 
         self._persona = read_persona(
             self.persona_path or (config.ROOT / "prompts" / "persona.md"))
@@ -1102,6 +1210,12 @@ class Brain:
         # облако на уточнение. Порядок набора не меняется — на нём держится
         # кеш запроса.
         tools.append(hands.CLIP_TOOL)
+        # Запись в буфер обмена — сразу за чтением и тем же набором: «исправь
+        # ошибки в скопированном и положи обратно» — длинная фраза, и уводить
+        # её в облако на уточнение незачем, а без инструмента модель ответит,
+        # что не умеет писать в буфер. Порядок набора не меняется — на нём
+        # держится кеш запроса.
+        tools.append(hands.PUT_TOOL)
         # Питание компьютера — сразу за буфером обмена, тоже всегда и тем же
         # набором: «выключи компьютер» у хозяина случается редко, но случается,
         # а уводить такую фразу в облако на уточнение незачем. Порядок набора
@@ -1257,6 +1371,10 @@ class Brain:
         # попадают одной записью в самом конце ответа (см. `_flush_search`),
         # а не на каждый выход: одна попытка хозяина — одна строка.
         self._search_seen: list[str] = []
+        # Вызовы инструментов этого хода: наружу отдаются в `last_turn_tools`.
+        # Чистится на каждом ответе — старые вызовы путать нельзя, иначе вопрос
+        # про заметку прилетел бы к ходу, где ничего не разбирали.
+        self.last_turn_tools = []
         # Быстрый поиск (29.09, хозяин: «YouTube она открывает сразу, а поиск
         # долго думает»). Раньше первый поход к модели нужен был только
         # затем, чтобы она сформулировала запрос, — а запрос и так известен:
@@ -1461,7 +1579,7 @@ class Brain:
                 raise box["error"]
             if "answer" not in box:
                 raise TimeoutError(f"не ответила за {REWRITE_TIMEOUT:.0f} с")
-            text = (box["answer"].choices[0].message.content or "").strip()
+            text = без_размышлений(box["answer"].choices[0].message.content or "")
             data = json.loads(text[text.find("{"):text.rfind("}") + 1])
             queries = [" ".join(str(q).split()) for q in data.get("queries") or []
                        if isinstance(q, str) and q.strip()][:web.MAX_QUERIES]
@@ -1522,7 +1640,17 @@ class Brain:
             calls: dict[int, dict] = {}
             said: list[str] = []
             reasoning: list[str] = []
-            yield from self._sentences(stream, calls, said, reasoning, usage, mark)
+            state: dict = {}
+            yield from self._sentences(stream, calls, said, reasoning, usage, mark,
+                                       state)
+            # Ответ упёрся в потолок токенов: хвост фразы в озвучку не ушёл
+            # (см. `_sentences`), и без продолжения голос замолчал бы посреди
+            # слова. Продолжаем сами — но только если в круге не было вызовов
+            # инструментов: там модель ещё думает, что собирается делать, и
+            # продолжать нечего.
+            if (state.get("finish") == "length" and not calls
+                    and (said or state.get("tail"))):
+                yield from self._continue(messages, said, state, usage)
             text = " ".join(said).strip()
             if text:
                 spoken = f"{spoken} {text}".strip()
@@ -1661,13 +1789,21 @@ class Brain:
                     # Буфер обмена. При `mode: read` текст уходит в синтез на
                     # компьютере (действие `read_aloud`), и в ответе его уже
                     # нет: наружу уходит только готовая фраза, второй круг ей
-                    # не нужен. При `translate` модель получает сам текст с
-                    # пометкой «это данные» — второй круг обязателен, и он
-                    # уйдёт в облако, поэтому инструмент ещё и в `JUDGED`.
+                    # не нужен. При `translate` и `analyze` модель получает
+                    # сам текст с пометкой «это данные» — второй круг
+                    # обязателен, и он уйдёт в облако, поэтому инструмент ещё
+                    # и в `JUDGED`.
                     results.append(hands.run_clipboard(
                         call["args"], self.on_event,
                         getattr(self, "actions", None) or {},
                     ))
+                elif call["name"] == hands.PUT_NAME:
+                    # Запись в буфер обмена. Текст готовый — его сделала модель
+                    # по просьбе хозяина, а инструмент только кладёт его и
+                    # говорит вслух короткое «Положила в буфер — вставляй.»
+                    # В ответе самого текста нет, и второй круг не нужен.
+                    results.append(hands.run_put_clipboard(
+                        call["args"], self.on_event))
                 elif call["name"] == hands.POWER_NAME:
                     # Питание компьютера. Инструмент только спрашивает вслух
                     # и ставит локальное ожидание (`core/power.ask`): выключает
@@ -1718,6 +1854,14 @@ class Brain:
                     "content": ("снимки ниже" if len(call_shots) > 1 else "снимок ниже")
                     if call_shots else results[-1],
                 })
+                # Что вызывали в этом ходу — наружу, для голосового цикла. Снимки
+                # сюда не кладутся: они большие, а вопрос про заметку их не касается.
+                if not call_shots:
+                    self.last_turn_tools.append({
+                        "name": call["name"],
+                        "args": _args_of(call),
+                        "result": _result_of(results[-1]),
+                    })
                 shots.extend(call_shots)
             for shot in shots:
                 # Сообщение role: tool картинку не несёт, поэтому снимок
@@ -1780,7 +1924,64 @@ class Brain:
             return
         self._add_turn(user_text, spoken, voice, [q for q in queries if q])
 
-    def _open_stream(self, messages: list[dict], tools: list[dict], last: bool):
+    def _continue(
+        self, messages: list[dict], said: list[str], state: dict,
+        usage: dict,
+    ) -> Iterator[str]:
+        """Договаривает ответ, упёршийся в потолок токенов.
+
+        Запрос тот же, только с уже сказанным (вместе с недоговорённым
+        хвостом) и прямой просьбой продолжить — и вовсе без инструментов:
+        продолжать тут нечего, а вызовы только истратили бы тот же
+        обрезанный потолок. Поток режется тем же `_sentences`, буфер
+        которого начинается с хвоста, — фраза договаривается целиком, а не
+        двумя кусками вслух.
+
+        Продолжений не больше `CONTINUE_ROUNDS`: ответ не заливается в
+        четыре запроса, потому что хозяин ждёт голоса. Упёрся и третий кусок
+        — говорим об этом прямо (`CONTINUE_LAST`), а не молчим.
+
+        Всё сказанное (включая хвост) уходит в `said`, поэтому в историю
+        ответ ложится одним сообщением, как и без продолжений.
+        """
+        tail = str(state.get("tail") or "")
+        for шаг in range(1, CONTINUE_ROUNDS + 1):
+            self._tell("continue", {
+                "limit": int(getattr(config, "MAX_TOKENS", 0) or 0),
+                "step": шаг,
+                "of": CONTINUE_ROUNDS,
+            })
+            body = list(messages) + [
+                {"role": "assistant",
+                 "content": " ".join(say_words(said) + [tail]).strip()},
+                {"role": "system", "content": CONTINUE_ASK},
+            ]
+            try:
+                stream, _ = self._open_stream(body, [], last=True, think=False)
+            except Exception:
+                # Облако отказало на продолжении — договаривать нечем.
+                # Сказанное уже у хозяина, молчать тут не на чем.
+                break
+            mark = {"sent": time.perf_counter(), "word": 0.0, "sentence": 0.0}
+            self.last_timing["rounds"].append(mark)
+            next_state: dict = {}
+            # Пробел после хвоста: куски модели приходят без разделителя,
+            # а хвост обрывается прямо на слове — без него слова слипнутся.
+            yield from self._sentences(stream, {}, said, [], usage, mark,
+                                       next_state, f"{tail} " if tail else "")
+            if next_state.get("finish") != "length":
+                # Договорила: хвоста не осталось.
+                return
+            tail = str(next_state.get("tail") or "")
+            if not tail:
+                # Упёрлась в потолок, но ничего не наговорила: продолжать
+                # нечего, а заново спрашивать — уже не продолжение.
+                break
+        said.append(CONTINUE_LAST)
+        yield CONTINUE_LAST
+
+    def _open_stream(self, messages: list[dict], tools: list[dict], last: bool,
+                     think: bool = True):
         """Поток ответа. Возвращает (поток, остались ли инструменты).
 
         Отказы разбираем по лесенке, чтобы интернет не ронял разговор:
@@ -1807,12 +2008,12 @@ class Brain:
             return hedge, tools
 
         try:
-            return self._open_stream_here(messages, tools, last)
+            return self._open_stream_here(messages, tools, last, think)
         except (PermissionDeniedError, APIConnectionError) as exc:
             if not self._fall_back(exc):
                 raise
             self._flatten_tool_rounds(messages)
-            return self._open_stream_here(messages, tools, last)
+            return self._open_stream_here(messages, tools, last, think)
 
     def _hedge(self, messages: list[dict], tools: list[dict], last: bool):
         """Страховка от заминок облака. None — страховки нет.
@@ -1921,7 +2122,8 @@ class Brain:
                 raise
         return client.chat.completions.create(**body)
 
-    def _open_stream_here(self, messages: list[dict], tools: list[dict], last: bool):
+    def _open_stream_here(self, messages: list[dict], tools: list[dict], last: bool,
+                          think: bool = True):
         from openai import BadRequestError
 
         body = {
@@ -1969,6 +2171,12 @@ class Brain:
             # (28.09, 21:25 — ответила болтовнёй, ни разу не поискав).
             if self._wants_tool_choice(messages):
                 body["tool_choice"] = "required"
+        if not think and self.provider == "openai" and "reasoning_effort" not in body:
+            # Продолжение упёршегося ответа (`_continue`) идёт без инструментов,
+            # и размышления по умолчанию включились бы: они съели бы тот же
+            # потолок токенов, и продолжение вышло бы пустым. Не принимает
+            # модель параметр — лесенка ниже его уберёт.
+            body["reasoning_effort"] = "none"
 
         # Попыток на столько отказов, сколько их бывает: stream_options,
         # reasoning_effort, инструменты — плюс последняя, уже чистая.
@@ -2011,7 +2219,8 @@ class Brain:
     @staticmethod
     def _sentences(
         stream, calls: dict, said: list, reasoning: list, usage: dict,
-        mark: dict | None = None,
+        mark: dict | None = None, state: dict | None = None,
+        buffer: str = "",
     ) -> Iterator[str]:
         """Режет поток на предложения; попутно собирает вызовы инструментов.
 
@@ -2025,14 +2234,24 @@ class Brain:
         текста от модели и момент первого готового предложения. Пишем только
         когда словарь дан, иначе лишних вычислений на горячем пути.
 
+        `state` — словарь, куда кладётся `finish_reason` последнего куска:
+        вызывающий по нему узнаёт, чем кончился поток. Если это `"length"`
+        (упёрлись в потолок токенов), недоговорённый хвост в озвучку не идёт
+        и в `said` не попадает — он возвращается в `state["tail"]`, и с него
+        начнётся продолжение. Голос на полуслове замирать не должен.
+
+        `buffer` — с чего начинается склейка: у продолжения это хвост
+        предыдущего куска, иначе фраза договорилась бы вразнобой.
+
         Расход у провайдера на весь круг, а не на кусок, поэтому повторный
         кусок с usage заменяет уже учтённый, а не складывается с ним. Круги
         инструментов при этом суммируются: у каждого своя `committed`.
         """
-        buffer = ""
+        finish = None
         leaked = False
         counted = False
         committed: dict = {}
+        мысли = _БезРазмышлений()
 
         for chunk in stream:
             spent = getattr(chunk, "usage", None)
@@ -2046,7 +2265,13 @@ class Brain:
                     committed[key] = value
             if not chunk.choices:
                 continue
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            reason = getattr(choice, "finish_reason", None)
+            if reason:
+                # Причину берём у последнего куска с ней: у первых она
+                # всегда None, а у провайдеров бывает и в самом начале.
+                finish = reason
+            delta = choice.delta
 
             thought = getattr(delta, "reasoning_content", None)
             if thought:
@@ -2063,6 +2288,13 @@ class Brain:
 
             piece = delta.content
             if not piece or leaked:
+                continue
+            # Размышления в тексте ответа (`<think>…</think>`) — не речь: в
+            # мысли, а не в озвучку.
+            piece, мысль = мысли.feed(piece)
+            if мысль:
+                reasoning.append(мысль)
+            if not piece:
                 continue
             if mark is not None and not mark["word"]:
                 # Первое слово модели: дальше ждать уже нечего.
@@ -2098,7 +2330,18 @@ class Brain:
                     buffer = " ".join(parts)
                     break
 
+        if not leaked:
+            # Недоговорённое «<thi…», которое так и не стало меткой, — текст.
+            buffer += мысли.finish()
         tail = buffer.strip()
+        if state is not None:
+            state["finish"] = finish
+        if tail and finish == "length" and state is not None:
+            # Упёрлись в потолок токенов. Хвост в озвучку не идёт: фраза не
+            # договорена, и синтез на полуслове замирает. Возвращаем его
+            # вызывающему — с него модель продолжит ответ.
+            state["tail"] = tail
+            return
         if tail:
             said.append(tail)
             if mark is not None and not mark["sentence"]:
@@ -2255,7 +2498,7 @@ class Brain:
                 prompt,
                 max_tokens=5, note="проверка", timeout=8.0,
             )
-            text = (answer.choices[0].message.content or "").strip()
+            text = без_размышлений(answer.choices[0].message.content or "")
         except Exception:
             text = ""  # облако молчало или упало — проверки нет
         took = round(time.monotonic() - started, 2)
@@ -2448,7 +2691,7 @@ class Brain:
         self.did_ask = True
         answer = self._ask_plainly(ask, DIGEST_TOKENS, json_mode=True)
         choice = answer.choices[0]
-        text = (choice.message.content or "").strip()
+        text = без_размышлений(choice.message.content or "")
         if not text:
             if choice.finish_reason == "length":
                 raise RuntimeError(

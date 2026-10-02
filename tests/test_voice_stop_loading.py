@@ -1,10 +1,11 @@
-"""«Выключить голос» во время загрузки и скачивание Higgs (01.10).
+"""«Выключить голос» во время загрузки и скачивание моделей голоса.
 
 На чистой установке хозяин выбрал Higgs: включение голоса 15 минут молча
 качало 9 ГБ внутри загрузки, телефон висел на «загружаюсь», а «Выключить
-голос» не делал ничего — загрузка не смотрела, что её отменили. Теперь
-веса качает отдельный процесс (его можно убить), а загрузка проверяет
-отмену между шагами и не говорит «готова», если её выключили.
+голос» не делал ничего — загрузка не смотрела, что её отменили. С тех пор
+загрузка проверяет отмену между шагами, веса качает отдельный процесс (его
+можно убить), и с 02.10 — только пульт и только по выбору хозяина: голос
+больше не качает модель вовсе и вместо этого отказывается словами.
 
 Настоящие модели, сеть и процессы здесь не запускаются — только подмены.
 """
@@ -17,7 +18,7 @@ from pathlib import Path
 from unittest import mock
 
 import config
-from core import app_icons, higgs_voice, voice_loop
+from core import app_icons, voice_loop, voice_models
 from ui.web_runtime import WebRuntime
 
 
@@ -56,37 +57,60 @@ class ОтменаЗагрузкиTests(unittest.TestCase):
         цикл._phone_state.assert_called_with("voiceoff")
         self.assertEqual(цикл.loading_text, "")
 
-    def test_отменённое_скачивание_higgs_останавливает_загрузку(self):
+    def test_нет_модели_голос_не_стартует_и_ничего_не_качает(self):
+        # 02.10: хозяин выбрал Higgs, включил голос — и молча пошли 9,3 ГБ.
+        # Теперь включение голоса в сеть не ходит вовсе: модель качает пульт
+        # по выбору хозяина, а голос только спрашивает, есть ли она.
         цикл = _цикл()
-        with mock.patch.object(higgs_voice, "weights_ready", return_value=False), \
-                mock.patch.object(higgs_voice, "download_weights", return_value=False):
-            with self.assertRaises(voice_loop._Stopped):
-                цикл._fetch_higgs()
+        скачать = mock.Mock(side_effect=AssertionError("голос не качает модель"))
+        with mock.patch.object(config, "TTS_ENGINE", "higgs"), \
+                mock.patch.object(voice_models, "installed", return_value=False), \
+                mock.patch.object(voice_models, "downloading", return_value=None), \
+                mock.patch.object(voice_models, "download", скачать), \
+                mock.patch.object(voice_models, "clear_progress"):
+            with self.assertRaises(RuntimeError) as ошибка:
+                цикл._check_model()
+        скачать.assert_not_called()
+        self.assertIn("не скачана", str(ошибка.exception))
+        self.assertIn("9,3 ГБ", str(ошибка.exception))
+        self.assertIn("Голос", str(ошибка.exception))
 
-    def test_веса_уже_есть_ничего_не_качает(self):
+    def test_модель_есть_голос_идёт_дальше(self):
         цикл = _цикл()
-        качать = mock.Mock()
-        with mock.patch.object(higgs_voice, "weights_ready", return_value=True), \
-                mock.patch.object(higgs_voice, "download_weights", качать):
-            цикл._fetch_higgs()
-        качать.assert_not_called()
+        with mock.patch.object(config, "TTS_ENGINE", "higgs"), \
+                mock.patch.object(voice_models, "installed", return_value=True):
+            цикл._check_model()  # отказа не было
 
-    def test_проценты_видны_а_журнал_не_засоряется(self):
+    def test_silero_о_моделях_ничего_не_знает(self):
+        # Silero лежит в самой установке, лишних проверок ему не надо.
         цикл = _цикл()
+        спрашивали = mock.Mock()
+        with mock.patch.object(config, "TTS_ENGINE", "silero"), \
+                mock.patch.object(voice_models, "installed", спрашивали):
+            цикл._check_model()
+        спрашивали.assert_not_called()
 
-        def качать(стоп, показать):
-            for гб in (0.1, 0.2, 0.3, 4.65, 4.7):
-                показать(int(гб * 1e9))
-            return True
+    def test_идёт_качается_отказ_с_процентом(self):
+        # Тот же отказ, но с «качается, N %»: хозяин не должен гадать, почему
+        # голос не включился, когда пульт прямо сейчас качает эту модель.
+        цикл = _цикл()
+        with mock.patch.object(config, "TTS_ENGINE", "higgs"), \
+                mock.patch.object(voice_models, "installed", return_value=False), \
+                mock.patch.object(voice_models, "downloading", return_value=42):
+            with self.assertRaises(RuntimeError) as ошибка:
+                цикл._check_model()
+        self.assertIn("качается, 42 %", str(ошибка.exception))
 
-        with mock.patch.object(higgs_voice, "weights_ready", return_value=False), \
-                mock.patch.object(higgs_voice, "download_weights", side_effect=качать):
-            цикл._fetch_higgs()
-        тексты = [c.args[1] for c in цикл._emit.call_args_list if c.args[0] == "loading"]
-        # Начало, 1 % и 50 % — в журнал; 2 %, 3 % и второй 50 % — только на экран.
-        self.assertEqual(sum("%" in т for т in тексты), 2, тексты)
-        self.assertTrue(any("50 %" in т for т in тексты), тексты)
-        self.assertTrue(any("из ~9,3 ГБ" in т for т in тексты), тексты)
+    def test_espeech_тоже_не_качается_сам(self):
+        # Отказ тот же: у ESpeech тоже есть модель на 2,7 ГБ, и молча тянуть
+        # её при включении голоса — ровно то, на что хозяин жаловался.
+        цикл = _цикл()
+        with mock.patch.object(config, "TTS_ENGINE", "espeech"), \
+                mock.patch.object(voice_models, "installed", return_value=False), \
+                mock.patch.object(voice_models, "downloading", return_value=None):
+            with self.assertRaises(RuntimeError) as ошибка:
+                цикл._check_model()
+        self.assertIn("2,7 ГБ", str(ошибка.exception))
 
 
 class _Процесс:
@@ -114,21 +138,23 @@ class _Процесс:
         return self.poll()
 
 
-class СкачиваниеHiggsTests(unittest.TestCase):
+class СкачиваниеМоделиTests(unittest.TestCase):
+    """Скачивание отдельным процессом: отмена, прогресс, честный отказ сети."""
+
     def setUp(self):
         папка = tempfile.TemporaryDirectory()
         self.addCleanup(папка.cleanup)
-        подмена = mock.patch.object(config, "DATA_DIR", Path(папка.name))
+        подмена = mock.patch.object(voice_models, "LOG_DIR", Path(папка.name))
         подмена.start()
         self.addCleanup(подмена.stop)
 
-    def test_кнопка_выключения_убивает_процесс(self):
+    def test_кнопка_отмены_убивает_процесс(self):
         процесс = _Процесс()
         стоп = threading.Event()
         стоп.set()
         with mock.patch("subprocess.Popen", return_value=процесс), \
-                mock.patch.object(higgs_voice, "_hub_bytes", return_value=0):
-            итог = higgs_voice.download_weights(стоп, poll=0.01)
+                mock.patch.object(voice_models, "cache_bytes", return_value=0):
+            итог = voice_models.download("higgs", стоп, poll=0.01)
         self.assertFalse(итог)
         self.assertTrue(процесс.убит)
 
@@ -137,8 +163,10 @@ class СкачиваниеHiggsTests(unittest.TestCase):
         прогресс = []
         байты = iter([100, 200, 300, 400, 500, 600])
         with mock.patch("subprocess.Popen", return_value=процесс), \
-                mock.patch.object(higgs_voice, "_hub_bytes", side_effect=lambda: next(байты)):
-            итог = higgs_voice.download_weights(threading.Event(), прогресс.append, poll=0.01)
+                mock.patch.object(voice_models, "cache_bytes",
+                                  side_effect=lambda: next(байты)):
+            итог = voice_models.download("higgs", threading.Event(),
+                                         прогресс.append, poll=0.01)
         self.assertTrue(итог)
         self.assertFalse(процесс.убит)
         self.assertTrue(прогресс)
@@ -148,11 +176,34 @@ class СкачиваниеHiggsTests(unittest.TestCase):
     def test_сбой_сети_честная_ошибка(self):
         процесс = _Процесс(шагов_до_конца=0, код=1)
         with mock.patch("subprocess.Popen", return_value=процесс), \
-                mock.patch.object(higgs_voice, "_hub_bytes", return_value=0):
+                mock.patch.object(voice_models, "cache_bytes", return_value=0):
             with self.assertRaises(RuntimeError) as ошибка:
-                higgs_voice.download_weights(threading.Event(), poll=0.01)
+                voice_models.download("higgs", threading.Event(), poll=0.01)
         self.assertIn("не скачалась", str(ошибка.exception))
         self.assertIn("с того же места", str(ошибка.exception))
+
+    def test_считается_вся_папка_кеша_а_не_только_hub(self):
+        # 02.10: прогресс стоял на «0,0 ГБ» при скачанных 257 МБ — считался
+        # только `hub`, а половина прироста лежит в `xet`.
+        with tempfile.TemporaryDirectory() as папка:
+            корень = Path(папка)
+            (корень / "hub").mkdir()
+            (корень / "xet").mkdir()
+            (корень / "hub" / "blob").write_bytes(b"x" * 100)
+            (корень / "xet" / "chunk").write_bytes(b"y" * 300)
+            with mock.patch.dict("os.environ", {"HF_HOME": папка}):
+                self.assertEqual(voice_models.hf_dir(), Path(папка))
+                self.assertEqual(voice_models.cache_bytes(), 400)
+
+    def test_espeech_качает_два_файла_а_higgs_весь_репозиторий(self):
+        # Списком файлов решает сам загрузчик синтеза: Higgs тянет снимок
+        # целиком, ESpeech — ровно два файла.
+        self.assertIsNone(voice_models.targets("higgs")["files"])
+        self.assertEqual(len(voice_models.targets("espeech")["files"]), 2)
+        self.assertIn("snapshot_download", voice_models._код(
+            voice_models.targets("higgs")))
+        self.assertIn("hf_hub_download", voice_models._код(
+            voice_models.targets("espeech")))
 
 
 class СостояниеГолосаTests(unittest.TestCase):

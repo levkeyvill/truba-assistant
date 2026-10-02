@@ -126,7 +126,11 @@ class Voice:
         self._ref_cache: dict[Path, tuple] = {}
 
     def load(self) -> None:
-        """Грузит модель, вокодер и словарь ударений. Первый раз — качает."""
+        """Грузит модель, вокодер и словарь ударений.
+
+        Файлы берутся только с диска: скачивает их пульт по выбору хозяина
+        (`core/voice_models.py`), а голос не ходит в сеть никогда (02.10).
+        """
         from huggingface_hub import hf_hub_download
         from f5_tts.infer.utils_infer import load_model, load_vocoder
         from f5_tts.model import DiT
@@ -135,10 +139,17 @@ class Voice:
         if self._model is not None:
             return
 
+        from core import voice_models
+
         _patch_torchaudio_load()
 
-        ckpt = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE)
-        vocab = hf_hub_download(repo_id=MODEL_REPO, filename=VOCAB_FILE)
+        try:
+            ckpt = hf_hub_download(repo_id=MODEL_REPO, filename=MODEL_FILE,
+                                   local_files_only=True)
+            vocab = hf_hub_download(repo_id=MODEL_REPO, filename=VOCAB_FILE,
+                                    local_files_only=True)
+        except Exception as exc:
+            raise RuntimeError(voice_models.нужна_скачать("espeech")) from exc
 
         with _quiet():
             self._model = load_model(DiT, MODEL_CFG, ckpt, vocab_file=vocab)

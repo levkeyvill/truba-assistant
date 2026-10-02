@@ -168,17 +168,23 @@ def _pack(weight, device, fp8: bool):
 
 
 def _weights_folder() -> Path:
-    """Папка с весами: сначала с диска, в сеть — только если их ещё нет.
+    """Папка с весами — только с диска.
 
-    Просто snapshot_download каждый раз сверяется с Hugging Face, и когда
-    VPN барахлит, включение голоса висит минутами (25 сентября).
+    Раньше тут был запасной вызов `snapshot_download(REPO)` на случай, если
+    весов нет, и именно он молча тянул 9,3 ГБ при включении голоса (02.10:
+    «почему он качает 9 гигов, когда не было выбора его качать?»). Теперь
+    скачивает пульт и только по выбору хозяина (`core/voice_models.py`); нет
+    модели — голос отказывается словами ещё до сюда
+    (`core/voice_loop.py::_check_model`).
     """
     from huggingface_hub import snapshot_download
 
+    from core import voice_models
+
     try:
         return Path(snapshot_download(REPO, local_files_only=True))
-    except Exception:
-        return Path(snapshot_download(REPO))
+    except Exception as exc:
+        raise RuntimeError(voice_models.нужна_скачать("higgs")) from exc
 
 
 # --- Скачивание весов ------------------------------------------------------
@@ -186,122 +192,14 @@ def _weights_folder() -> Path:
 # 01.10.2026: на чистой установке хозяин выбрал Higgs, и включение голоса
 # 15 минут молча качало 9 ГБ внутри загрузки: телефон висел на «загружаюсь»,
 # а «Выключить голос» ничего не делал — поток нельзя прервать посреди
-# `snapshot_download`. Теперь веса качает отдельный процесс: его можно
-# убить кнопкой, а Hugging Face в следующий раз докачает с того же места.
-
-# Сколько весит модель целиком — только для подписи «X из ~9,3 ГБ».
-DOWNLOAD_BYTES = 9.3e9
-
-
-def weights_ready() -> bool:
-    """Веса уже на диске целиком — сеть не нужна."""
-    from huggingface_hub import snapshot_download
-
-    try:
-        snapshot_download(REPO, local_files_only=True)
-        return True
-    except Exception:
-        return False
-
-
-def _hub_dir() -> Path:
-    """Кеш Hugging Face. С версии 1.x файлы лежат в общей `hub/blobs`, а не в
-    папке модели, поэтому прогресс считаем по всему кешу, а не по ней."""
-    import os
-
-    свой = os.environ.get("HF_HUB_CACHE")
-    if свой:
-        return Path(свой)
-    return Path(os.environ.get("HF_HOME") or (config.MODELS_DIR / "hf")) / "hub"
-
-
-def _hub_bytes() -> int:
-    """Сколько байт сейчас в кеше, включая недокачанные куски."""
-    import os
-
-    всего = 0
-    for корень, _папки, файлы in os.walk(_hub_dir()):
-        for имя in файлы:
-            try:
-                всего += os.stat(os.path.join(корень, имя)).st_size
-            except OSError:
-                pass
-    return всего
-
-
-def _убить_дерево(процесс) -> None:
-    """Погасить процесс скачивания вместе с потомками.
-
-    `python.exe` из `.venv` (uv) — обёртка, настоящий Python у неё дочерний:
-    `kill()` гасил одну обёртку, а скачивание шло дальше (проверено 01.10).
-    """
-    import subprocess
-
-    try:
-        subprocess.run(["taskkill", "/T", "/F", "/PID", str(процесс.pid)],
-                       capture_output=True, timeout=10,
-                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    except Exception:
-        pass
-    try:
-        процесс.kill()
-    except Exception:
-        pass
-    try:
-        процесс.wait(timeout=10)
-    except Exception:
-        pass
-
-
-def download_weights(stop: threading.Event, progress=None, poll: float = 3.0) -> bool:
-    """Скачать веса отдельным процессом. False — остановили кнопкой.
-
-    `progress(скачано_байт)` зовётся раз в `poll` секунд. Вывод процесса — в
-    `data/higgs_download.log`: при сбое там видно, что ответил Hugging Face.
-    """
-    import os
-    import subprocess
-    import sys
-
-    код = ("import config\n"
-           "from huggingface_hub import snapshot_download\n"
-           f"snapshot_download({REPO!r})\n")
-    среда = dict(os.environ)
-    среда["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-    журнал_путь = config.DATA_DIR / "higgs_download.log"
-    журнал_путь.parent.mkdir(parents=True, exist_ok=True)
-    было = _hub_bytes()
-    with журнал_путь.open("w", encoding="utf-8") as журнал:
-        процесс = subprocess.Popen(
-            [sys.executable, "-c", код], cwd=str(config.ROOT), env=среда,
-            stdout=журнал, stderr=subprocess.STDOUT,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        try:
-            while процесс.poll() is None:
-                if stop.wait(poll):
-                    _убить_дерево(процесс)
-                    return False
-                if progress is not None:
-                    try:
-                        progress(max(0, _hub_bytes() - было))
-                    except Exception:
-                        pass
-        except BaseException:
-            if процесс.poll() is None:
-                _убить_дерево(процесс)
-            raise
-    if процесс.returncode != 0:
-        try:
-            хвост = журнал_путь.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            хвост = ""
-        хвост = " ".join(хвост.strip().splitlines()[-2:])[-300:]
-        raise RuntimeError("модель Higgs не скачалась"
-                           + (f": {хвост}" if хвост else "")
-                           + " — проверь интернет и включи голос ещё раз, "
-                             "скачивание продолжится с того же места")
-    return True
-
+# `snapshot_download`.
+#
+# 02.10.2026: хозяин потребовал, чтобы модели качал пульт и только по его
+# выбору, а голос не тянул гиги при включении. Поэтому скачивания здесь
+# больше нет вовсе: оно живёт в `core/voice_models.py` (общий загрузчик на
+# Higgs и ESpeech, отдельный процесс, отмена, прогресс по всей папке
+# кеша), а этот модуль только читает уже скачанное. Нет модели — голос
+# отказывается словами, см. `core/voice_loop.py::_check_model`.
 
 def apply_delay(codes_tn):
     """[T, N] сырые коды → [T + N - 1, N] со сдвигом: книга c опаздывает на c шагов."""
@@ -596,7 +494,7 @@ class HiggsVoice:
     # --- Загрузка ----------------------------------------------------------
 
     def load(self, reference: bool = False) -> None:
-        """Грузит модель и кодек. Первый раз качает 9.3 ГБ.
+        """Грузит модель и кодек. Веса к этому моменту уже на диске.
 
         reference=True — ещё и хребет transformers в bf16, эталон для сверки
         (fast=False). В обычной работе не нужен.

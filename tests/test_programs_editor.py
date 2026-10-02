@@ -189,29 +189,37 @@ class ВидСеткиТесты(unittest.TestCase):
         self.assertNotIn("Колонки", блок)
         self.assertNotIn("'cols'", блок)
 
-    def test_three_rows_are_not_offered_anymore(self):
-        # Рядов осталось два: «3» в пульте предлагать нечего, а старое
-        # значение из живого settings.json пульт показывает и сохраняет как два.
+    def test_one_or_two_rows_are_offered(self):
+        # 02.10 хозяин: «сделать 2 и 1 ряд приложений» — в переключателе «Ряды»
+        # две кнопки. «3» предлагать нечего: трёх рядов на телефоне не помещалось,
+        # и осталось бы только старое значение из живого settings.json.
         блок = _тело(self.js, "прогНарисоватьСетку")
         ряды = [строка for строка in блок.splitlines() if "'Ряды'" in строка]
         self.assertTrue(ряды, "в пульте нет переключателя рядов")
-        self.assertIn("[['2', '2']]", ряды[0])
+        self.assertIn("[['1', '1'], ['2', '2']]", ряды[0])
         self.assertNotIn("'3'", ряды[0])
-        self.assertNotIn("'1'", ряды[0])
-        чтение = _тело(self.js, "прогЗагрузитьСетку")
-        self.assertIn("прогСетка.rows = ПРОГ_РЯДЫ;", чтение)
-        # Макет в пульте тоже всегда два ряда — иначе врал бы телефону.
-        self.assertIn("rows: ПРОГ_РЯДЫ", _тело(self.js, "прогВидСетки"))
+        # Ряды — число: сервер проверяет их как число, а не как слово.
+        self.assertIn("(ключ === 'style')", блок)
+        self.assertIn("Number(значение)", блок)
+        # Переключение сразу перерисовывает макет (черновик, как у значков) —
+        # иначе хозяин увидел бы старый ряд и решил, что кнопка не сработала.
+        self.assertIn("прогОбновитьЭкран(ctx);", блок)
+        self.assertIn("прогПометитьЧерновик(ctx);", блок)
+        # Макет в пульте показывает столько же рядов, сколько телефон нарисует.
+        self.assertIn("rows: прогНормаРядов(с.rows)", _тело(self.js, "прогВидСетки"))
 
     def test_the_three_keys_are_read_from_settings(self):
         блок = _тело(self.js, "прогЗагрузитьСетку")
         self.assertIn("fetch('/api/settings'", блок)
-        for ключ in ("phone_icon_style", "phone_labels"):
+        for ключ in ("phone_rows", "phone_icon_style", "phone_labels"):
             self.assertIn(ключ, блок)
-        # Рядов выбор больше не читаем: в пульте он один, поэтому и значение
-        # из живого settings.json не может в нём что-то изменить.
-        self.assertNotIn("s.phone_rows", блок)
-        self.assertIn("прогСетка.rows = ПРОГ_РЯДЫ;", блок)
+        # Ряды из живого settings.json читаем — выбора «1 или 2» теперь два.
+        # Нормализуем: старое «3» пульт показывает и сохраняет как два, а не
+        # подсовывает телефону сетку, которой в переключателе нет.
+        self.assertIn("прогСетка.rows = прогНормаРядов(s.phone_rows);", блок)
+        self.assertIn("const ПРОГ_РЯДЫ = [1, 2];", self.js)
+        self.assertIn("return ПРОГ_РЯДЫ.includes(n) ? n : ПРОГ_РЯДЫ_УМОЛЧАНИЕ;",
+                      self.js)
         # Старое `phone_cols` в живом settings.json больше не решает ничего.
         self.assertNotIn("s.phone_cols", блок)
 

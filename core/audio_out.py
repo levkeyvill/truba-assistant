@@ -14,6 +14,24 @@ import numpy as np
 import sounddevice as sd
 
 
+def wasapi_extra(device: int | None):
+    """Пересчёт частоты для WASAPI, иначе `None`.
+
+    WASAPI в общем режиме берёт только частоту микшера Windows (обычно
+    48 кГц). Higgs и ESpeech говорят на 24 кГц, запись микрофона бывает на
+    44,1 — без пересчёта Windows отвечает «Invalid sample rate» (02.10, test11:
+    Higgs молчал в колонках, найденных через WASAPI, а Silero на 48 кГц звучал).
+    """
+    try:
+        info = sd.query_devices(device if device is not None else sd.default.device[1])
+        api = sd.query_hostapis(info["hostapi"])["name"]
+        if "wasapi" in api.lower() and hasattr(sd, "WasapiSettings"):
+            return sd.WasapiSettings(auto_convert=True)
+    except Exception:
+        pass
+    return None
+
+
 def play_own(wave, sample_rate: int, device: int | None = None) -> None:
     """Проиграть звук СВОИМ потоком и дождаться конца.
 
@@ -28,16 +46,7 @@ def play_own(wave, sample_rate: int, device: int | None = None) -> None:
     data = np.asarray(wave, dtype=np.float32)
     if data.ndim == 1:
         data = data.reshape(-1, 1)
-    extra = None
-    try:
-        info = sd.query_devices(device if device is not None else sd.default.device[1])
-        api = sd.query_hostapis(info["hostapi"])["name"]
-        # WASAPI в общем режиме берёт только частоту микшера Windows; без
-        # пересчёта запись микрофона на 44,1 кГц в колонки на 48 кГц не пошла бы.
-        if "wasapi" in api.lower() and hasattr(sd, "WasapiSettings"):
-            extra = sd.WasapiSettings(auto_convert=True)
-    except Exception:
-        extra = None
+    extra = wasapi_extra(device)
     with sd.OutputStream(device=device, channels=data.shape[1],
                          samplerate=int(sample_rate), dtype="float32",
                          extra_settings=extra) as stream:
@@ -51,6 +60,11 @@ class Speaker:
 
     def __init__(self, device: int | None = None, gap: float = 0.0):
         self.device = device
+        # Пересчёт частоты для WASAPI — один раз на устройство (см. `wasapi_extra`).
+        self._extra = wasapi_extra(device)
+        # Последняя ошибка проигрывания. Раньше она глоталась молча, и в журнале
+        # стояло «ответил голосом», хотя в колонках было тихо (02.10, test11).
+        self.last_error: str = ""
         # Пауза после каждого предложения. Встык речь звучит тараторящей,
         # и в неё невозможно вклиниться, чтобы перебить.
         self.gap = gap
@@ -113,10 +127,11 @@ class Speaker:
                 if gap and self.gap > 0:
                     silence = np.zeros(int(self.gap * sample_rate), dtype=wave.dtype)
                     wave = np.concatenate([wave, silence])
-                sd.play(wave, sample_rate, device=self.device)
+                sd.play(wave, sample_rate, device=self.device,
+                        extra_settings=self._extra)
                 sd.wait()
-            except Exception:
-                pass
+            except Exception as exc:
+                self.last_error = f"{type(exc).__name__}: {exc}"
             finally:
                 self._queue.task_done()
 

@@ -152,6 +152,10 @@ DEFAULTS = {
     "proactive_look": config.PROACTIVE_LOOK,
     # Папка заметок. Пусто — «Документы\Заметки Трубы» (core/notes.py).
     "notes_dir": config.NOTES_DIR,
+    # Спрашивать ли после разбора, записать его в заметки. По умолчанию да:
+    # вопрос задаёт код (core/voice_loop.py::_ask_analysis_note), модель о
+    # нём не знает, и без настройки она просто забывала бы о разборах.
+    "offer_analysis_note": config.OFFER_ANALYSIS_NOTE,
     # Сетка программ на телефоне. Читает их web/index.html по сообщению
     # `apps`, поэтому телефон ничего не знает и не проверяет сам.
     "phone_cols": config.PHONE_COLS,
@@ -181,7 +185,51 @@ DEFAULTS = {
     # Система»): на телефоне лишних кнопок быть не должно, поэтому страница
     # телефона берёт тему сообщением от сервера и помнит её в localStorage.
     "theme": config.THEME,
+    # Какие модели качественных голосов хозяин выбрал скачать. Список из
+    # `higgs`/`espeech`; пустой — не выбрал ничего, и пульт не качает сам
+    # ничего. Помнит именно выбор: кнопка «Установить качественные голоса»
+    # без установки библиотек докачивает модели сама, а после перезапуска
+    # пульта недокачанное дополняется (02.10 — «если написано установить, то
+    # сразу скачивать то, что выбрал пользователь»).
+    "voices_wanted": [],
 }
+
+# --- Качественные голоса: что хозяин выбрал ----------------------------------
+#
+# Здесь только имена и проверка. Что именно модель весит и как её качать —
+# в `core/voice_models.py`; список имён держим одинаковым с ним (сторожит
+# тест). Проверка мягкая, как у соседних ключей: чужое имя молча исчезает,
+# а не ломает запуск пульта.
+
+VOICES_WANTED_MODELS = ("espeech", "higgs")
+
+
+def validate_voices_wanted(value) -> list:
+    """Список моделей, которые хозяин попросил скачать. Мусор — молча в пустой."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    out = []
+    for имя in value:
+        if not isinstance(имя, str):
+            continue
+        имя = имя.strip()
+        if имя in VOICES_WANTED_MODELS and имя not in out:
+            out.append(имя)
+    return out
+
+
+def voices_wanted() -> list:
+    """Что хозяин выбрал скачать — всегда в одном порядке, не как записал."""
+    выбрано = set(validate_voices_wanted(load_settings().get("voices_wanted")))
+    return [имя for имя in VOICES_WANTED_MODELS if имя in выбрано]
+
+
+def save_voices_wanted(модели) -> list:
+    """Запомнить выбор хозяина и вернуть, что осталось после проверки."""
+    чистое = validate_voices_wanted(модели)
+    save_settings({"voices_wanted": чистое})
+    return чистое
+
 
 # --- Тема оформления -------------------------------------------------------
 #
@@ -203,12 +251,14 @@ def validate_theme(value) -> str:
 # Ключ `phone_cols` в `settings.json` остаётся (старые файлы и
 # `config.PHONE_COLS`), но значение в нём уже ничего не решает.
 PHONE_COLS = 4
-# Рядов теперь ровно два: хозяин попросил оставить два (третий ряд на телефоне
-# не помещался). Старое «3» из живых `settings.json` молча становится двумя —
-# иначе телефон нарисовал бы сетку, которой больше нет, а пульт врал бы.
+# Рядов сетки: один или два. 02.10 хозяин попросил «сделать 2 и 1 ряд
+# приложений» — раньше выбора не было вовсе, третий ряд на телефоне не
+# помещался. Старое «3» из живых `settings.json` и любая опечатка молча
+# становятся двумя рядами: телефон не должен рисовать сетку, которой в
+# пульте не выбрать, а пульт не должен ругаться пустым экраном.
 PHONE_ROWS = 2
-PHONE_ROWS_MIN = PHONE_ROWS
-PHONE_ROWS_MAX = PHONE_ROWS
+PHONE_ROWS_MIN = 1
+PHONE_ROWS_MAX = 2
 PHONE_ICON_STYLES = ("plate", "round", "bare")
 
 
@@ -223,13 +273,30 @@ def validate_phone_cols(value) -> int:
 
 
 def validate_phone_rows(value) -> int:
-    """Рядов сетки: всегда два.
+    """Рядов сетки: один или два.
 
-    Раньше хозяин выбирал «2 или 3», и значение три осталось в живых
-    `settings.json`. Теперь выбора нет, поэтому и тройка, и любая опечатка
-    молча становятся двумя рядами: телефон не должен рисовать сетку, которой
-    в пульте уже не выбрать, а пустым экраном пульт ругаться не должен.
+    Раньше хозяин выбирал «2 или 3», и тройка осталась в живых
+    `settings.json`. Теперь выбора два значения — «1» и «2» (02.10: «сделать
+    2 и 1 ряд приложений»), поэтому и старое «3», и любая опечатка молча
+    становятся двумя рядами: телефон не должен рисовать сетку, которой в
+    пульте не выбрать, а пустым экраном пульт ругаться не должен.
+
+    Рядов у сетки не бывает полтора: `1.5` — это опечатка, а не выбор, и
+    `int()` от неё молча дал бы один ряд. Дробь потому мусор, как и всё
+    остальное; целое `1.0` — обычная запись единицы, её принимаем.
     """
+    if isinstance(value, bool):
+        return PHONE_ROWS
+    if isinstance(value, str):
+        value = value.strip()
+    try:
+        число = int(value)
+    except (TypeError, ValueError):
+        return PHONE_ROWS
+    if isinstance(value, float) and value != число:
+        return PHONE_ROWS
+    if PHONE_ROWS_MIN <= число <= PHONE_ROWS_MAX:
+        return число
     return PHONE_ROWS
 
 
@@ -245,6 +312,18 @@ def validate_phone_labels(value) -> bool:
     if isinstance(value, bool):
         return value
     return bool(config.PHONE_LABELS)
+
+
+def validate_offer_analysis_note(value) -> bool:
+    """Спрашивать ли про разбор в заметки — только настоящий булев ключ.
+
+    Мусор из settings.json (правка руками, значение из будущей версии) — это
+    «спрашивать»: выключить этот вопрос можно и в пульте, а вот молча
+    забывать о разборах хозяин не просил.
+    """
+    if isinstance(value, bool):
+        return value
+    return bool(config.OFFER_ANALYSIS_NOTE)
 
 
 def default_phone_action(slot: int) -> dict:
@@ -521,6 +600,10 @@ def apply_to_config() -> dict:
     # Папка заметок. Читается на каждый вызов из config, поэтому сменяется
     # сразу после сохранения, без перезапуска голоса.
     config.NOTES_DIR = str(values["notes_dir"] or "").strip()
+    # Вопрос про разбор в заметки. Читается на каждый разбор, поэтому смена
+    # видна сразу, без перезапуска голоса.
+    config.OFFER_ANALYSIS_NOTE = validate_offer_analysis_note(
+        values.get("offer_analysis_note"))
     # Город для погоды. Пока он не выбран, `core/weather.py` молчит и в сеть
     # не ходит — иначе Труба спрашивала бы погоду в чужом городе.
     config.WEATHER_CITY = validate_weather_city(values.get("weather_city"))
@@ -573,6 +656,13 @@ def load_settings() -> dict:
     # Шаг мастера нормализуем при чтении: правка руками не должна открывать
     # пульт с несуществующего шага.
     data["wizard_step"] = validate_wizard_step(data.get("wizard_step"))
+    # Выбранные модели качественных голосов — так же: правка руками не должна
+    # заставить пульт качать то, чего нет.
+    data["voices_wanted"] = validate_voices_wanted(data.get("voices_wanted"))
+    # Тот же ключ — вопрос про разбор в заметки: мусор руками не должен ни
+    # сломать запуск пульта, ни молча выключить вопрос.
+    data["offer_analysis_note"] = validate_offer_analysis_note(
+        data.get("offer_analysis_note"))
 
     saved_models = data.get("models")
     data["models"] = {

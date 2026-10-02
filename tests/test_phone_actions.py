@@ -504,13 +504,15 @@ class СтраницаТелефона(unittest.TestCase):
         self.assertIn("max-width: 32px", правило)
         self.assertIn("object-fit: contain", правило)
 
-    def test_a_site_without_a_picture_gets_a_letter_coloured_by_its_domain(self):
-        self.assertIn("function siteColor(url)", self.js)
-        # Шесть цветов палитры страницы, зелёного среди них нет.
-        палитра = self.js.split("const САЙТ_ЦВЕТА = ")[1].split("];")[0]
-        self.assertEqual(len(палитра.split("#")) - 1, 6)
-        self.assertNotIn("5fbf7a", палитра)
-        self.assertIn("siteColor(item.url)", self._функция("menuCard"))
+    def test_a_site_without_a_picture_is_just_its_name(self):
+        # 02.10 хозяин о букве на цвете домена: «некрасиво… может просто
+        # названия оставить без превью лого?» — карточка без логотипа теперь
+        # одно название, буквенного значка больше нет вовсе.
+        карточка = self._функция("menuCard")
+        self.assertIn("el.classList.add('без-лого')", карточка)
+        self.assertNotIn("letter", карточка)
+        self.assertNotIn("siteColor", self.js)
+        self.assertIn("#menu .app.card.без-лого", self.html)
 
     def test_hotkey_items_stay_square_tiles(self):
         блок = self._функция("menuItem")

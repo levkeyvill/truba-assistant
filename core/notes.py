@@ -472,6 +472,55 @@ def ensure_root() -> Path:
     return here
 
 
+# Раздел для разборов, которые сама Труба предложила записать после того, как
+# прочитала документ или скопированный текст. В `DEFAULT_SECTIONS` его нет:
+# папка появляется при первой же записи — иначе пустой раздел болтался бы в
+# папке заметок годами.
+ANALYSES_SECTION = "Разборы"
+# Тема для разбора скопированного текста: документа нет, и назвать его нечем.
+CLIP_TOPIC = "Скопированное"
+
+
+def file_link(path: str) -> str:
+    """Ссылка на файл для заметки: `имя.pdf` и адрес в угловых скобках.
+
+    Markdown требует их для пути с пробелами, а слэши прямые — так адрес
+    открывается и в Obsidian, и в любом просмотрщике. Имя берём из пути, а не
+    отдельно: путь — это и есть файл, и подменять его нечем.
+    """
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    адрес = "file:///" + text.replace("\\", "/").lstrip("/")
+    return f"[{Path(text).name}](<{адрес}>)"
+
+
+def add_analysis(source: dict, text: str, when: datetime | None = None) -> Path:
+    """Записать разбор: документ — со ссылкой, скопированное — со словами.
+
+    `source` — то, что голосовой цикл запомнил при вопросе: `kind`
+    (`document` или `clipboard`), путь и имя файла либо первые слова текста.
+    Разбор кладётся целиком — ровно то, что она сказала вслух: хозяин
+    спрашивал «сделай анализ», и в заметке должен лежать тот самый анализ.
+    """
+    разбор = str(text or "").strip()
+    if not разбор:
+        raise ValueError("разбор пустой — писать нечего")
+    if source.get("kind") == "document":
+        имя = str(source.get("name") or Path(str(source.get("path") or "")).name)
+        путь = str(source.get("path") or "")
+        тема = Path(имя).stem or "Документ"
+        заголовок = f"Разбор: {имя}"
+        ссылка = file_link(путь)
+        тело = f"Документ: {ссылка}\n\n{разбор}" if ссылка else разбор
+    else:
+        начало = str(source.get("head") or "") or разбор[:60]
+        тема = CLIP_TOPIC
+        заголовок = f"Разбор скопированного: «{начало}»"
+        тело = разбор
+    return add(ANALYSES_SECTION, тема, заголовок, тело, when=when)
+
+
 def add(section: str, topic: str, title: str, text: str,
         raw: str = "", when: datetime | None = None) -> Path:
     """Дописывает запись в конец темы. Возвращает путь к файлу.
@@ -813,9 +862,13 @@ text — сама заметка абзацами. Голосовые коман
 
 def _ask(brain, prompt: str) -> str:
     """Один разовый вопрос облаку. Пустая строка — не ответило."""
+    from core.brain import без_размышлений
+
     answer = brain._ask_plainly(prompt, POLISH_TOKENS, json_mode=True)
     choice = answer.choices[0]
-    return (choice.message.content or "").strip()
+    # MiniMax кладёт размышления в сам ответ (`<think>…</think>`), и JSON
+    # заметки с ними не разобрался бы.
+    return без_размышлений(choice.message.content or "")
 
 
 def _parsed(text: str) -> dict:

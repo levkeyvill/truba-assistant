@@ -216,8 +216,13 @@ class SearchHum:
             if stop.is_set() and end <= 0.0:
                 state["quiet"] = True
 
-        stream = sd.OutputStream(samplerate=rate, channels=1,
-                                 device=getattr(speaker, "device", None), callback=step)
+        from core.audio_out import wasapi_extra
+
+        устройство = getattr(speaker, "device", None)
+        # WASAPI без пересчёта не берёт частоту не микшера — фон молчал бы.
+        stream = sd.OutputStream(samplerate=rate, channels=1, device=устройство,
+                                 callback=step,
+                                 extra_settings=wasapi_extra(устройство))
         stream.start()
         try:
             stop.wait()

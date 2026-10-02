@@ -11,8 +11,10 @@ PhoneSpeaker повторяет интерфейс колонок из audio_out
 import asyncio
 import hmac
 import io
+import ipaddress
 import json
 import os
+import re
 import secrets
 import socket
 import threading
@@ -73,7 +75,58 @@ def local_addresses() -> list[str]:
         pass
 
     usable = [a for a in found if not a.startswith("127.")]
+    # Туннели VPN и выключенные карты телефону не годятся: 02.10 хозяин выбрал
+    # адрес туннеля VPN-клиента, и страница не открылась. Остаются
+    # только адреса поднятых сетевых карт; не вышло разобрать — как раньше.
+    отсев = _адреса_для_телефона()
+    if отсев is not None:
+        годные = [a for a in usable if a in отсев]
+        if годные:
+            usable = годные
     return sorted(usable, key=lambda a: (_rank(a), a)) or ["127.0.0.1"]
+
+
+# Имена сетевых интерфейсов, через которые телефон в домашнем Wi-Fi компьютер
+# не достанет: туннели VPN и виртуальные сети машин.
+_ТУННЕЛИ = re.compile(
+    r"tun|tap|vpn|wireguard|\bwg\d|happ|zerotier|tailscale|hamachi|radmin|"
+    r"openvpn|nord|proton|virtualbox|vmware|vethernet|hyper-v|loopback|npcap",
+    re.IGNORECASE)
+
+
+def _адреса_для_телефона() -> set[str] | None:
+    """Адреса поднятых настоящих сетевых карт. None — разобрать не вышло.
+
+    Отсекаем: выключенные карты, «адрес не выдан» (169.254), туннели по имени
+    и сети на два-четыре адреса (маска /30 и уже — так устроены туннели).
+    """
+    try:
+        import psutil
+
+        адреса, состояния = psutil.net_if_addrs(), psutil.net_if_stats()
+    except Exception:
+        return None
+    годные = set()
+    for имя, список in адреса.items():
+        состояние = состояния.get(имя)
+        if состояние is not None and not состояние.isup:
+            continue
+        if _ТУННЕЛИ.search(имя):
+            continue
+        for адрес in список:
+            if адрес.family != socket.AF_INET:
+                continue
+            ip = str(адрес.address)
+            if ip.startswith(("127.", "169.254.")):
+                continue
+            try:
+                префикс = ipaddress.IPv4Network(f"0.0.0.0/{адрес.netmask}").prefixlen
+            except Exception:
+                префикс = 24
+            if префикс >= 30:
+                continue
+            годные.add(ip)
+    return годные
 
 
 def local_ip() -> str:
@@ -225,6 +278,22 @@ def _write_viewport(width: int, height: int) -> None:
         )
     except OSError:
         pass
+
+
+def _цикл_сервера():
+    """Каким циклом asyncio крутить сервер пульта.
+
+    На Windows по умолчанию цикл Proactor, а он при любом сбое приёма
+    подключения (клиент оборвал связь в момент приёма — телефон ушёл из
+    Wi-Fi, ярлык не дождался ответа) закрывает слушающий порт насовсем:
+    процесс жив, окно пульта видит «отказано в подключении». Замер 02.10:
+    Proactor закрывал порт на первой сотне оборванных подключений, Selector
+    выдержал 4000. Подпроцессов внутри цикла сервера у нас нет — Selector
+    этим ничего не теряет.
+    """
+    if os.name == "nt":
+        return asyncio.SelectorEventLoop
+    return asyncio.new_event_loop
 
 
 def _viewport_pair(width, height) -> dict | None:
@@ -743,6 +812,19 @@ class PhoneServer:
                 msg = msg[:300] + "…"
             detail = f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
             return JSONResponse({"ok": False, "error": detail}, status_code=code)
+
+        def _модели_известны(models) -> bool:
+            """Только `higgs` и `espeech`. Прочее — 400, а не тихий отказ.
+
+            Имена сверяются с `voice_models.MODELS`, а не со списком в коде
+            пульта: иначе добавление модели разъехалось бы с маршрутом.
+            """
+            from core import voice_models
+
+            if not isinstance(models, list) or not models:
+                return False
+            return all(isinstance(имя, str) and voice_models.known(имя)
+                       for имя in models)
 
         # Журнал событий — это дословно расслышанные фразы: только отсюда.
         @app.get("/api/runtime")
@@ -1433,12 +1515,81 @@ class PhoneServer:
             if rt is None:
                 return _no_runtime()
             try:
-                result = await asyncio.to_thread(rt.voices_install)
+                body = await request.json()
+            except Exception:
+                body = {}
+            # Старый пульт зовёт без тела — тогда берётся сохранённый выбор.
+            models = body.get("models") if isinstance(body, dict) else None
+            if models is not None and not _модели_известны(models):
+                return JSONResponse(
+                    {"ok": False, "error": "названы не те модели: Higgs или ESpeech"},
+                    status_code=400)
+            try:
+                result = await asyncio.to_thread(rt.voices_install, models)
             except Exception as exc:
                 return _fail(exc)
             if not result.get("ok"):
                 return JSONResponse(result, status_code=409)
             return JSONResponse(result)
+
+        @app.post("/api/voices/download")
+        async def api_voices_download(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+            except Exception:
+                return JSONResponse(
+                    {"ok": False, "error": "нужен JSON с полем models"},
+                    status_code=400)
+            models = body.get("models") if isinstance(body, dict) else None
+            if not isinstance(models, list) or not models:
+                return JSONResponse(
+                    {"ok": False, "error": "нужен список моделей: Higgs или ESpeech"},
+                    status_code=400)
+            if not _модели_известны(models):
+                return JSONResponse(
+                    {"ok": False, "error": "названы не те модели: Higgs или ESpeech"},
+                    status_code=400)
+            try:
+                res = await asyncio.to_thread(rt.voices_download, models)
+            except Exception as exc:
+                return _fail(exc)
+            if not res.get("ok"):
+                return JSONResponse(res, status_code=409)
+            return JSONResponse(res)
+
+        @app.post("/api/voices/download/cancel")
+        async def api_voices_download_cancel(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                res = await asyncio.to_thread(rt.voices_download_cancel)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
+        @app.post("/api/voices/libs/cancel")
+        async def api_voices_libs_cancel(request: Request):
+            # Отмена установки библиотек: гасим uv вместе с потомками
+            # (`core/voices_install.install` → `voice_models.kill_tree`), иначе
+            # он продолжил бы качать 4 ГБ уже никому не нужные.
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                res = await asyncio.to_thread(rt.voices_libs_cancel)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
 
         @app.get("/api/voices/status")
         async def api_voices_status(request: Request):
@@ -1689,6 +1840,120 @@ class PhoneServer:
             except Exception as exc:
                 return _fail(exc)
             return JSONResponse(result)
+
+        # --- Перенос настроек: файл экспорта и импорт -----------------------
+        # В файле переноса ключи от облака, память и история разговора, поэтому
+        # всё — только с этого компьютера (`_local_secret`), как установка
+        # качественных голосов: телефон хозяина лежит в сети и знает адрес.
+        #
+        # `/inspect` принимает сам ZIP телом запроса (не JSON: файл большой и
+        # бинарный) и держит его в памяти пульта до `/apply`.
+
+        @app.get("/api/transfer/parts")
+        async def api_transfer_parts(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                res = await asyncio.to_thread(rt.transfer_parts)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res, headers=NO_CACHE)
+
+        @app.post("/api/transfer/export")
+        async def api_transfer_export(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    body = {}
+                parts = body.get("parts")
+            except Exception:
+                return JSONResponse(
+                    {"ok": False, "error": "нужен JSON со списком частей"},
+                    status_code=400)
+            if not isinstance(parts, list) or not parts:
+                return JSONResponse(
+                    {"ok": False, "error": "отметь, что переносить"},
+                    status_code=400)
+            try:
+                res = await asyncio.to_thread(rt.transfer_export, parts)
+            except ValueError as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
+        @app.post("/api/transfer/reveal")
+        async def api_transfer_reveal(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("нужен JSON с путём к файлу")
+                res = await asyncio.to_thread(rt.transfer_reveal,
+                                             str(body.get("path", "")))
+            except (ValueError, FileNotFoundError) as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
+        @app.post("/api/transfer/inspect")
+        async def api_transfer_inspect(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                blob = await request.body()
+            except Exception:
+                return JSONResponse(
+                    {"ok": False, "error": "файл не дочитан"}, status_code=400)
+            try:
+                res = await asyncio.to_thread(rt.transfer_inspect, blob)
+            except ValueError as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(res)
+
+        @app.post("/api/transfer/apply")
+        async def api_transfer_apply(request: Request):
+            if not _local_secret(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    body = {}
+                parts = body.get("parts")
+                if not isinstance(parts, list) or not parts:
+                    raise ValueError("отметь, что переносить")
+                res = await asyncio.to_thread(rt.transfer_apply,
+                                             body.get("token"), parts)
+            except ValueError as exc:
+                return _fail(exc, 400)
+            except Exception as exc:
+                return _fail(exc)
+            # Настройки и голос на диске — пульт должен их перечитать, поэтому
+            # перезапуск идёт тем же путём, что после обновления. Ответ уходит
+            # раньше закрытия окна (внутри `update_restart` — таймер).
+            перезапуск = await asyncio.to_thread(rt.update_restart)
+            return JSONResponse({**res, "restart": bool(перезапуск.get("ok"))})
 
         # --- Команды: инструкция, что сказать и что будет ---------------
         # Страница «Команды» в пульте. Данные собирает `commands_guide`
@@ -1953,7 +2218,8 @@ class PhoneServer:
             await server.serve()
 
         try:
-            asyncio.run(run())
+            with asyncio.Runner(loop_factory=_цикл_сервера()) as runner:
+                runner.run(run())
         except Exception as exc:
             # Поток умирает молча, а окно продолжает ждать телефон — сообщаем.
             self._ready.set()

@@ -76,7 +76,8 @@ def main() -> int:
         "current": {"mic_name": "", "mic_channel": 0, "speaker_name": "",
                     "output": "speakers"}}
     runtime.audio_level = lambda: {"ok": False, "error": "голос выключен"}
-    runtime.voices_install = lambda: {"ok": False, "error": "в проверке не ставим"}
+    runtime.voices_install = lambda models=None: {
+        "ok": False, "error": "в проверке не ставим"}
     runtime.update_state = lambda: {"last": None, "running": False, "steps": [],
                                     "result": None}
     runtime.update_check = lambda: {"ok": False, "error": "в проверке не ходим в сеть"}
