@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Труба — пульт</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/pult/pult.css">
+</head>
+<body>
+
+<nav id="меню">
+  <div class="шапка">
+    <div class="значок"></div>
+    <div>
+      <b>Труба</b>
+      <span id="подзаголовок">пульт</span>
+    </div>
+  </div>
+
+  <!-- Пункты меню листаются, когда окно низкое: раскрытые «Настройки» или
+       «Голос» иначе выталкивали нижние пункты за край, и о них можно было
+       не узнать (хозяин 28.09). Кнопки ▲/▼ видны, только когда есть куда. -->
+  <button type="button" class="меню-листать вверх" id="меню-вверх" hidden title="Показать пункты выше" aria-label="Показать пункты выше">
+    <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
+  </button>
+  <div class="меню-список" id="меню-список">
+  <a class="пункт активный" data-раздел="панель">
+    <svg viewBox="0 0 24 24"><path d="M4 4h7v9H4zm9 0h7v5h-7zM4 15h7v5H4zm9-7h7v12h-7z"/></svg>
+    <span>Панель</span>
+  </a>
+  <a class="пункт" data-раздел="чат">
+    <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>
+    <span>Чат</span>
+  </a>
+  <a class="пункт" data-раздел="заметки">
+    <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
+    <span>Заметки</span>
+  </a>
+  <a class="пункт" data-раздел="голос">
+    <svg viewBox="0 0 24 24"><path d="M12 3v10m0 0a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3zm-7-1a7 7 0 0 0 14 0M12 17v4"/></svg>
+    <span>Голос</span>
+  </a>
+  <div class="подменю-настроек" id="подменю-голоса" aria-label="Разделы голоса">
+    <button type="button" data-голос="голос">Озвучивание</button>
+    <button type="button" data-голос="слух">Слух</button>
+    <button type="button" data-голос="распознавание">Распознавание</button>
+    <button type="button" data-голос="звук">Звук</button>
+  </div>
+  <a class="пункт" data-раздел="логи">
+    <svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>
+    <span>Логи</span>
+  </a>
+  <a class="пункт" data-раздел="настройки">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10l2 2M19 5l-2 2M7 17l-2 2"/></svg>
+    <span>Настройки</span>
+  </a>
+  <div class="подменю-настроек" id="подменю-настроек" aria-label="Разделы настроек">
+    <button type="button" data-настройка="ответы">Ответы и подключение</button>
+    <button type="button" data-настройка="поиск">Поиск</button>
+    <button type="button" data-настройка="первой">Сама заговаривает</button>
+    <button type="button" data-настройка="характер">Характер</button>
+    <button type="button" data-настройка="память">Память</button>
+    <button type="button" data-настройка="телефон">Телефон</button>
+    <button type="button" data-настройка="система">Система</button>
+  </div>
+  <a class="пункт" data-раздел="проверка">
+    <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-5"/><circle cx="12" cy="12" r="9"/></svg>
+    <span>Проверка</span>
+  </a>
+  <a class="пункт" data-раздел="программы">
+    <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg>
+    <span>Программы</span>
+  </a>
+  <a class="пункт" data-раздел="команды">
+    <svg viewBox="0 0 24 24"><path d="M8.5 9a3.5 3.5 0 1 1 4.9 3.2c-.8.4-1.4 1.1-1.4 2v.3"/><path d="M12 17.8h.01"/><circle cx="12" cy="12" r="9"/></svg>
+    <span>Команды</span>
+  </a>
+  <a class="пункт" data-раздел="программа">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><path d="M12 7.5h.01"/></svg>
+    <span>О программе</span>
+  </a>
+
+  </div>
+  <button type="button" class="меню-листать вниз" id="меню-вниз" hidden title="Показать пункты ниже" aria-label="Показать пункты ниже">
+    <svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+  </button>
+
+  <div class="низ">
+    <a class="поддержать" id="поддержать" title="Об авторе и как поддержать">
+      <svg viewBox="0 0 24 24"><path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/></svg>
+      <span>Поддержать</span>
+    </a>
+  </div>
+</nav>
+
+<main>
+  <header>
+    <div>
+      <h1 id="заголовок">Панель</h1>
+      <p id="описание">Обзорный экран: всё важное одним взглядом</p>
+    </div>
+    <!-- Справа в шапке одна строка: сначала огонёк связи, потом часы. -->
+    <div class="шапка-справа">
+      <!-- Значок темы: солнце в тёмной теме («жми — станет светло»), луна в
+           светлой. Красит пульт сразу и уходит на сервер сам, без «Сохранить». -->
+      <span class="тема-подпись" id="тема-подпись" aria-live="polite"></span>
+      <button type="button" class="тема-значок" id="тема-значок" title="Светлая тема" aria-label="Светлая тема">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d=""/></svg>
+      </button>
+      <div class="огонёк" id="связь"><i></i><span>нет связи с сервером</span></div>
+      <div class="часы" id="часы"></div>
+    </div>
+  </header>
+
+  <section class="карточки" id="карточки"></section>
+
+  <section class="лист" id="лист"></section>
+</main>
+
+<!-- Мастер первого запуска: слой поверх всего окна. Наполняет pult.js,
+     здесь только рамка: «Шаг N из 6», полоска, место под шаг и кнопки. -->
+<div id="мастер" class="мастер" hidden>
+  <div class="мастер-карточка" role="dialog" aria-modal="true" aria-label="Первая настройка">
+    <div class="мастер-шапка">
+      <span class="мастер-шаг" id="мастер-шаг">Шаг 1 из 6</span>
+      <div class="мастер-полоса"><i id="мастер-полоса"></i></div>
+      <button type="button" class="мастер-пропустить" id="мастер-пропустить">Пропустить настройку</button>
+    </div>
+    <div class="мастер-тело" id="мастер-тело"></div>
+    <div class="мастер-низ">
+      <button type="button" class="голос-кнопка" id="мастер-назад">Назад</button>
+      <button type="button" class="голос-кнопка главная" id="мастер-дальше">Дальше</button>
+    </div>
+  </div>
+</div>
+
+<script src="/pult/notes_markdown.js"></script>
+<script src="/pult/pult.js"></script>
+</body>
+</html>

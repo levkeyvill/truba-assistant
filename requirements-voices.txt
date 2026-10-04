@@ -1,0 +1,19 @@
+# Труба — качественные голоса: Higgs TTS 3 и ESpeech (F5).
+#
+# Нужна видеокарта NVIDIA (Higgs в FP8 — около 4 ГБ видеопамяти, модель на
+# диске ~9 ГБ) и torch с CUDA. Ставится поверх базовой установки:
+#   pip install torch==2.10.0 torchaudio==2.10.0 --index-url https://download.pytorch.org/whl/cu130
+#   pip install -r requirements-voices.txt
+# Без этого набора Труба говорит голосом Silero — он в базовой установке.
+#
+# Версии — по рабочей установке автора (27.09.2026).
+
+torchaudio==2.10.0
+transformers==5.17.0
+tokenizers==0.23.2
+accelerate==1.15.0
+safetensors==0.8.0
+vocos==0.1.0
+librosa==0.11.0
+f5-tts==1.1.22
+ruaccent==1.5.8.3

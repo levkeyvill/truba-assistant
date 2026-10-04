@@ -1,0 +1,4066 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" id="цвет-панели" content="#15151a">
+<meta name="mobile-web-app-capable" content="yes">
+<!-- iOS: тот же смысл, что и метатег выше. Safari читает его при «На экран
+     „Домой“», но полный экран даёт только с галочкой «Открывать как
+     веб-приложение» — про это написано в настройках телефона и в README. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<title>Труба</title>
+<style>
+    /* Шрифт отдаём сами: в браузере телефона системного Montserrat нет, и без
+     раздачи страница молча падала бы на системный Roboto. Начертания лежат
+     в проекте и раздаются сервером — телефон показывает именно то, что
+     написано. */
+  @font-face {
+    font-family: "Montserrat";
+    src: url("/fonts/montserrat-400.ttf") format("truetype");
+    font-weight: 400;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Montserrat";
+    src: url("/fonts/montserrat-600.ttf") format("truetype");
+    font-weight: 600;
+    font-display: swap;
+  }
+  @font-face {
+    font-family: "Montserrat";
+    src: url("/fonts/montserrat-700.ttf") format("truetype");
+    font-weight: 700;
+    font-display: swap;
+  }
+
+  :root {
+    --bg: #15151a;
+    --panel: #1e1e25;
+    --line: #2c2c36;
+    --text: #e8e8ec;
+    --muted: #8b8b97;
+    --dim: #5a5a66;
+    --accent: #d98b52;
+    --info: #6b8afd;
+    --bot: #b8b8e8;
+    --warn: #d9a94a;
+    /* Состояние «получилось». В оформлении зелёного нет, но подтверждение
+       им показывать — общепринятый язык. */
+    --good: #5fbf7a;
+
+    /* Оттенки, у которых в тёмной теме и в светлой разные значения: подложки
+       во весь экран, тень круга, «выключено» у переключателя, тревожная
+       надпись. */
+    --подсказка-фон: rgba(30, 30, 37, .92);
+    --заслон: rgba(8, 8, 11, .95);
+    --тень: rgba(0, 0, 0, .4);
+    --выключено: #ff5c5c;
+    --тревога: #e0605f;
+    --акцент-подложка: rgba(217, 139, 82, .16);
+    --акцент-вспышка: rgba(217, 139, 82, .5);
+    --вспышка-конец: rgba(217, 139, 82, 0);
+    --на-акценте: #17140f;
+    /* Облако в сцене погоды: на белой карточке тёмное выглядело бы
+       кляксой. Солнце, лучи, капли, снежинки и молния — без изменений. */
+    --облако: #2f2f3a;
+    --облако-обводка: #9a9aaa;
+  }
+
+  /* ---------- Светлая тема ----------
+     Те же токены, другие значения. Контраст обычного текста к фону не ниже
+     4.5:1 (посчитан): на панели #ffffff — текст 16.9, приглушённый 6.6,
+     тусклый 5.3, янтарь 5.3, синий 5.1, «говорит» 6.4, зелёный 4.6. */
+  :root[data-theme="light"] {
+    --bg: #f2f2f5;
+    --panel: #ffffff;
+    --line: #d8d8e0;
+    --text: #1c1c22;
+    --muted: #5c5c68;
+    --dim: #6b6b76;
+    /* Янтарь на белом даёт 3.5:1, а им подписаны цифра громкости и
+       выбранная тема заметок. Тёмнее — иначе не прочитать. */
+    --accent: #a05a22;
+    --info: #4466d8;
+    --bot: #5656a8;
+    --warn: #b07f16;
+    --good: #268546;
+
+    --подсказка-фон: rgba(255, 255, 255, .94);
+    --заслон: rgba(242, 242, 245, .96);
+    /* Тень на светлом мягче: чёрная на белом смотрится грязью. */
+    --тень: rgba(30, 35, 45, .22);
+    /* Красный переключателя «уже выключено» на белом бледнеет — темнее. */
+    --выключено: #cc3333;
+    --тревога: #c0392b;
+    --акцент-подложка: rgba(160, 90, 34, .16);
+    --акцент-вспышка: rgba(160, 90, 34, .5);
+    --вспышка-конец: rgba(160, 90, 34, 0);
+    --на-акценте: #ffffff;
+    --облако: #d9dbe3;
+    --облако-обводка: #7d7d8c;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.35 "Montserrat", -apple-system, "Segoe UI", Roboto, sans-serif;
+    height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  svg { display: block; }
+
+  /* ---------- Плашка «включи звук» ----------
+     Касание нужно браузеру только для звука: без жеста AudioContext не
+     запускается. Раньше из-за этого стояла заслонка на весь экран, и до
+     касания не работало вообще ничего — ни кнопки, ни режимы, ни погода.
+     Теперь связь поднимается сразу, а плашка просто висит внизу поверх
+     экрана: `pointer-events: none`, так что она ничего не перехватывает. */
+  /* Левый нижний угол, под кругом: по центру внизу — кнопки действий и
+     «во весь экран», плашка наезжала на их подписи. */
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    transform-origin: left center;
+    z-index: 20; pointer-events: none;
+    padding: 8px 18px;
+    border: 1px solid var(--accent); border-radius: 20px;
+    background: var(--подсказка-фон);
+    color: var(--accent); font-size: 13px; white-space: nowrap;
+    animation: pulse 2.2s ease-in-out infinite;
+  }
+  #hint.off { display: none; }
+  @keyframes pulse {
+    0%, 100% { transform: scale(1);    opacity: .8; }
+    50%      { transform: scale(1.04); opacity: 1; }
+  }
+
+  /* ---------- Каркас ---------- */
+  #app {
+    height: 100%;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    gap: 8px;
+    padding: 10px 12px 12px;
+  }
+
+  /* ---------- Нагрузка ---------- */
+  #stats {
+    display: flex; gap: 8px;
+    animation: slide-down .5s ease both;
+  }
+  @keyframes slide-down {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: none; }
+  }
+
+  .stat {
+    flex: 1;
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 7px 10px 8px;
+    min-width: 0;
+  }
+  .stat .top {
+    display: flex; align-items: baseline; gap: 5px;
+    margin-bottom: 5px;
+  }
+  .stat .name { color: var(--dim); font-size: 10px; letter-spacing: .6px; }
+  .stat .value { margin-left: auto; font-size: 14px; font-weight: 600; }
+  .stat .sub { color: var(--dim); font-size: 10px; }
+
+  .bar {
+    height: 3px; border-radius: 2px;
+    background: var(--line); overflow: hidden;
+  }
+  .bar i {
+    display: block; height: 100%; width: 0;
+    border-radius: 2px;
+    background: var(--info);
+    transition: width .6s cubic-bezier(.4, 0, .2, 1), background .4s;
+  }
+
+  /* ---------- Часы и погода ----------
+     Живут справа в том же ряду, что показатели нагрузки: отдельной строки
+     сверху не появляется, а телефон смотрят издали — часы там первое, что
+     замечают. Погода рядом с ними и с зарядом, одной группой, потому что
+     отдельно плавающий значок °C читается как мусор. */
+  #s-now {
+    flex: none;
+    display: flex; align-items: center; gap: 10px;
+    background: var(--panel);
+    border-radius: 10px;
+    padding: 7px 10px 8px;
+  }
+  /* Часы крупнее прочего в группе: их ищут в первую очередь, а разряд между
+     ними не сбивает глаз. tabular-nums, иначе цифры «прыгают» каждую
+     минуту и строка кажется живой сама по себе. */
+  #s-now .clock {
+    font-size: 22px; font-weight: 700; line-height: 1.1;
+    letter-spacing: .5px;
+    font-variant-numeric: tabular-nums;
+  }
+  #s-now .div {
+    width: 1px; height: 18px;
+    background: var(--line);
+  }
+  #s-now .wx { display: flex; align-items: center; gap: 5px; color: var(--muted); }
+  /* Без данных погоды не показываем ничего: пустой значок °C — это мусор,
+     а не «сейчас не знаю». */
+  #s-now .wx[hidden] { display: none; }
+  #s-now .wx svg { width: 20px; height: 20px; }
+  #s-now .wx .t { font-size: 15px; font-weight: 600; color: var(--text); }
+  #s-now .wx:active { opacity: .6; }
+
+  /* ---------- Заряд телефона ----------
+     Живёт у строки нагрузки, справа от последней плитки: там пусто, и до
+     круга с программами он не залезает. Отдельной плиткой не мешает
+     показателям, а на телефоне виден боковым зрением. */
+  #s-bat { flex: none; display: flex; align-items: center; }
+  #s-bat[hidden] { display: none; }
+  .bat { display: flex; align-items: center; gap: 7px; color: var(--muted); }
+  .bat .pct { font-size: 14px; font-weight: 600; color: currentColor; }
+  .bat .shell {
+    position: relative;
+    width: 30px; height: 15px;
+    border: 1.5px solid currentColor; border-radius: 4px;
+  }
+  .bat .shell::after {
+    content: ""; position: absolute; right: -4px; top: 4px;
+    width: 2.5px; height: 5px; border-radius: 0 2px 2px 0;
+    background: currentColor;
+  }
+  .bat .shell i {
+    position: absolute; left: 1.5px; top: 1.5px; bottom: 1.5px;
+    width: 0; border-radius: 2px; background: currentColor;
+    transition: width .6s cubic-bezier(.4, 0, .2, 1);
+  }
+  .bat .shell svg {
+    position: absolute; left: 50%; top: 50%;
+    width: 13px; height: 13px; display: none;
+    transform: translate(-50%, -50%);
+  }
+  /* Цвет по уровню — как у любого телефона: от половины и
+     выше зелёный, от 20 до 49 жёлтый, ниже 20 красный. Зарядка — молния
+     поверх, цвет остаётся по уровню. Это индикатор состояния: зелёный тут
+     положен. */
+  #s-bat.full .bat { color: var(--good); }
+  #s-bat.mid .bat  { color: #ffd24a; }
+  #s-bat.low .bat  { color: #ff5c5c; }
+  #s-bat.charging .bat .shell i { opacity: .45; }
+  #s-bat.charging .bat .shell svg { display: block; }
+
+  /* ---------- Середина ---------- */
+  #middle {
+    display: flex; align-items: center; justify-content: center;
+    gap: 5vw; min-height: 0;
+  }
+
+  #orb {
+    position: relative; flex: none;
+    width: 150px; height: 150px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #ring, #glow, #core {
+    position: absolute; border-radius: 50%;
+    transition: background .4s, box-shadow .4s, border-color .4s;
+  }
+  #glow {
+    width: 100%; height: 100%;
+    background: var(--dim); opacity: .1;
+  }
+  #ring {
+    width: 84%; height: 84%;
+    border: 2px solid var(--line);
+  }
+  #core {
+    width: 58%; height: 58%;
+    background: var(--dim);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 6px 24px var(--тень);
+  }
+  #core svg { width: 42%; height: 42%; opacity: .92; }
+  #orb.pressed #core { transform: scale(.94); }
+  #orb.pressed #glow { opacity: .3; }
+  /* Слух выключен кругом: перечёркнутый микрофон — видно боковым зрением. */
+  #orb.muted #core { background: var(--panel) !important; }
+  #orb.muted #core::after {
+    content: ''; position: absolute; width: 62%; height: 3px;
+    border-radius: 2px; background: var(--warn);
+    transform: rotate(-45deg);
+  }
+  #orb.muted #glow { opacity: 0 !important; }
+
+  /* Бегущий ободок, пока она думает */
+  #spinner {
+    position: absolute; width: 92%; height: 92%;
+    border-radius: 50%;
+    border: 2px solid transparent;
+    border-top-color: var(--accent);
+    opacity: 0;
+    transition: opacity .3s;
+  }
+  #spinner.on { opacity: 1; animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  #label {
+    position: absolute; bottom: -26px; left: 50%;
+    transform: translateX(-50%);
+    color: var(--muted); font-size: 12px; white-space: nowrap;
+    transition: color .3s;
+  }
+
+  /* ---------- Запуск программ ----------
+     Без подписей: экран маленький, и текст под иконкой съедает место,
+     из-за которого сама иконка становится нечитаемой. */
+  #right {
+    display: flex; flex-direction: column;
+    gap: 8px; min-height: 0;
+  }
+  #apps {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  /* Значок задаёт страница: --tile ставится по числу программ и свободному
+     месту (см. `layoutApps`). Без него остаётся нынешний размер. */
+  .app {
+    width: var(--tile, 76px); height: var(--tile, 76px);
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 18px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted);
+    transition: transform .15s, background .2s, border-color .2s;
+    animation: pop .35s ease both;
+  }
+  .app svg { width: 54%; height: 54%; }
+  .app img { width: 58%; height: 58%; object-fit: contain; }
+  /* Подпись плитки — только у закладок с одинаковым логотипом (две
+     mobalytics): иначе их не различить. Логотип чуть выше, подпись внизу. */
+  .app.captioned { position: relative; }
+  .app.captioned img { transform: translateY(-7px); }
+  .app .cap-tag {
+    position: absolute; left: 5px; right: 5px; bottom: 6px;
+    font-size: 10px; line-height: 1.2; text-align: center;
+    color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none;
+  }
+  .app:active { transform: scale(.9); background: var(--line); }
+  .app.done {
+    border-color: var(--accent);
+    animation: flash .6s ease;
+  }
+
+  /* ---------- Вид сетки программ ----------
+     Три вида плитки на выбор хозяина (`phone_icon_style`): обычная,
+     круглая (значок обрезан кругом, всё выглядит одинаково) и вовсе без
+     плитки, значок крупнее. Задаёт сервер: у `#apps` появляется класс
+     `round` или `bare`. */
+  /* Значки одного размера: шире рисунка картинка не растягивается, иначе
+     ряд выглядел бы неровным. */
+  .app svg, .app img { width: 58%; height: 58%; object-fit: contain; }
+  #apps.round .app { border-radius: 50%; }
+  #apps.round .app svg { width: 46%; height: 46%; }
+  /* Картинка значка — кругом и того же размера, что рисованные: во весь
+     круг она выглядит крупнее соседей, и сетка кажется неровной. */
+  #apps.round .app img { width: 64%; height: 64%; border-radius: 50%; object-fit: cover; }
+  #apps.bare .app { background: none; }
+  #apps.bare .app:active { background: none; }
+  #apps.bare .app svg, #apps.bare .app img { width: 80%; height: 80%; }
+  /* Подпись названия — по настройке `phone_labels`. Одна строка с
+     многоточием, иначе длинное название съест половину плитки. */
+  #apps.labels .app { flex-direction: column; }
+  .app .app-name {
+    margin-top: 3px; padding: 0 4px;
+    font-size: 15px; line-height: 1.1;
+    color: var(--muted);
+    max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    pointer-events: none;
+  }
+  #apps.labels .app svg, #apps.labels .app img { height: 46%; }
+
+  /* Выбранная программа в режиме правки — янтарная обводка. */
+  /* Обводка внутрь: снаружи её срезал край сетки (`overflow: hidden`). */
+  .app.picked { border-color: var(--accent); box-shadow: inset 0 0 0 3px var(--accent); }
+  /* Тащимся плитке под курсором чуть больше, иначе её не видно, что её
+     взяли. */
+  .app.dragging { opacity: .75; transform: scale(1.06); }
+  body.edit #apps .app { animation: none; }
+  /* `#actions` из этого списка убран намеренно: в режиме правки нижние
+     кнопки нажимаются — ими выбирают, что кнопка делает. */
+  body.edit #orb, body.edit #режимы,
+  body.edit #s-wx, body.edit #expand, body.edit #hint { pointer-events: none; }
+  /* Значок программы — картинка, и браузер на нажатии мышью начинает своё
+     перетаскивание картинки: под курсором появляется «призрак», а
+     pointer-события обрываются (`pointercancel`), и плитка не тащится живьём.
+     Поэтому в режиме правки картинка не тянется и вообще не берёт указатель,
+     а жест целиком достаётся плитке. */
+  body.edit .app img {
+    -webkit-user-drag: none; user-select: none; pointer-events: none;
+  }
+  body.edit .app { touch-action: none; user-select: none; }
+  /* Пустая клетка макета: «+» на месте программы, того же размера: «плюсик
+     должен быть как приложение, только которое не стоит, а не сбоку».
+     Рамка пунктирная и приглушённая — это место, а не значок;
+     при наведении «+» становится янтарным. На настоящем телефоне таких
+     клеток нет: их рисует только `drawApps` в режиме правки. */
+  body.edit #apps .app.пусто {
+    border: 1px dashed var(--line);
+    background: none;
+    color: var(--muted);
+    font: 400 26px/1 "Montserrat", -apple-system, "Segoe UI", Roboto, sans-serif;
+    cursor: pointer;
+  }
+  body.edit #apps .app.пусто:hover { color: var(--accent); }
+  body.edit #apps .app.пусто:active { transform: scale(.93); background: none; }
+  @keyframes pop {
+    from { opacity: 0; transform: scale(.85); }
+    to   { opacity: 1; transform: none; }
+  }
+  @keyframes flash {
+    0%   { box-shadow: 0 0 0 0 var(--акцент-вспышка); }
+    100% { box-shadow: 0 0 0 16px var(--вспышка-конец); }
+  }
+
+  /* ---------- Действия ----------
+     Здесь подписи нужны, в отличие от программ: логотип Firefox узнаётся
+     сам, а «снять экран» от «сохранить момент» рисунком не отличить. */
+  #actions { display: flex; gap: 10px; }
+  .act {
+    flex: 1;
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 14px;
+    padding: 8px 6px 7px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 3px;
+    color: var(--muted);
+    transition: transform .15s, background .2s, border-color .2s;
+  }
+  .act svg { width: 26px; height: 26px; }
+  /* Значок программы или пункта приходит картинкой: она мелкая (16–32 px),
+     поэтому в кнопку входит целиком, а не растягивается на неё. */
+  .act img { width: 26px; height: 26px; object-fit: contain; }
+  .act span {
+    font-size: 11px; letter-spacing: .3px;
+    max-width: 100%; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .act:active { transform: scale(.93); background: var(--line); }
+  .act.done { border-color: var(--accent); color: var(--accent); }
+  /* Выбранная нижняя кнопка в режиме правки — как выбранный значок. */
+  .act.picked { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+  /* Кнопка с пунктом-переключателем: «уже выключено» — красная рамка и
+     перечёркнутый значок, ровно как у плитки подменю. */
+  .act.flip { position: relative; }
+  .act.flip.on { border-color: var(--выключено); color: var(--выключено); }
+  .act.flip.on::after {
+    content: ''; position: absolute;
+    width: 58%; height: 3px; border-radius: 2px;
+    background: var(--выключено);
+    left: 50%; top: 42%;
+    margin: -1.5px 0 0 -29%;
+    transform: rotate(-45deg);
+  }
+  .act.flip.on.done { border-color: var(--выключено); }
+
+  /* ---------- Две широкие карточки под нижними кнопками ----------
+     Постоянные: их нельзя ни настроить, ни убрать, и в режиме правки они
+     просто есть. Левая — янтарная «Напоминания», правая — синяя «История
+     поиска»: цвет здесь различает их боковым зрением, подписи мелкие.
+
+     В портрете (по умолчанию) они столбиком — в одну строку подписи
+     «История поиска» не помещались и обрезались многоточием. В альбомной
+     ориентации рядом: там ширины хватает, и это вид телефона. */
+  #cards { display: flex; flex-direction: column; gap: 8px; }
+  #cards .card {
+    flex: 1 1 0; min-width: 0;
+    display: flex; align-items: center; gap: 10px;
+    min-height: 56px;
+    padding: 8px 12px;
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 16px;
+    font-size: 15px; font-weight: 600;
+    transition: transform .15s, background .2s, border-color .2s;
+  }
+  #cards .card svg { flex: none; width: 26px; height: 26px; }
+  #cards .card span {
+    min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  #cards .card:active { transform: scale(.97); background: var(--line); }
+  /* Цвет карточки — тот же, что у значка погоды и подсветки голоса, чтобы
+     телефон не выглядел пёстрым: янтарь и синий в оформлении уже есть. */
+  #cards .card { color: var(--text); }
+  #cards .card.rem .ico { color: var(--warn); }
+  #cards .card.hist .ico { color: var(--info); }
+  /* В макете пульта (`?edit=1`) карточки только для вида: данных с сервера
+     там нет, и нажатие ничего не спросит. */
+  body.edit #cards { pointer-events: none; }
+
+  /* ---------- Списки напоминаний и истории поиска ----------
+     Один оверлей на оба: шапка, крупный список, подпись снизу. Читают
+     издали, поэтому текст строки — 20 px, а время и подпись мельче. */
+  #remcard, #histcard {
+    display: none;
+    position: fixed; inset: 0; z-index: 28;
+    background: var(--bg);
+    flex-direction: column;
+    padding: 12px max(24px, env(safe-area-inset-right)) 10px
+             max(24px, env(safe-area-inset-left));
+  }
+  #remcard.on, #histcard.on { display: flex; }
+  #remcard .head, #histcard .head {
+    flex: none;
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--line);
+  }
+  #remcard .ttl, #histcard .ttl {
+    flex: 1; min-width: 0;
+    font-size: 24px; font-weight: 700;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #remcard.rem .ttl { color: var(--warn); }
+  #histcard.hist .ttl { color: var(--info); }
+  #remcard .x, #histcard .x {
+    flex: none;
+    width: 48px; height: 48px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  /* Список листается вниз; строки уходящие за край гаснут, а не срезаются. */
+  #remcard .list, #histcard .list {
+    flex: 1; min-height: 0;
+    overflow-y: auto; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px 0 14px;
+  }
+  #remcard .row {
+    display: flex; flex-direction: column; gap: 3px;
+    padding: 12px 2px;
+    border-bottom: 1px solid var(--line);
+  }
+  #remcard .row:last-child { border-bottom: none; }
+  #remcard .row .t {
+    font-size: 20px; line-height: 1.25;
+    color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #remcard .row .w { font-size: 15px; color: var(--warn); }
+  /* Строка истории — кнопка: по ней открывается этот запрос в браузере на
+     компьютере, поэтому подложка и подпись про «на компе» обязательны. */
+  #histcard .row {
+    display: flex; flex-direction: row; align-items: center; gap: 10px;
+    padding: 12px 10px; margin: 0 0 6px;
+    background: rgba(255, 255, 255, .05);
+    border-radius: 12px;
+  }
+  #histcard .row:active { background: var(--line); }
+  #histcard .row .txt {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  #histcard .row .t {
+    font-size: 20px; line-height: 1.25; color: var(--text);
+    display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2; overflow: hidden;
+  }
+  #histcard .row .w { font-size: 14px; color: var(--info); }
+  #remcard .note, #histcard .note {
+    color: var(--muted); font-size: 18px; padding: 14px 2px;
+  }
+  #remcard .foot, #histcard .foot {
+    flex: none; text-align: center;
+    color: var(--dim); font-size: 12px;
+  }
+  /* Строки обоих списков: текст слева, маленькая кнопка справа. Текст ужимается
+     (`min-width: 0`), а кнопка — нет, иначе на 851×393 и в повороте подпись
+     «Удалить» не поместилась бы. */
+  #remcard .row { flex-direction: row; align-items: center; gap: 10px; }
+  #remcard .row .txt {
+    flex: 1; min-width: 0;
+    display: flex; flex-direction: column; gap: 3px;
+  }
+  /* Кнопка действия внутри строки. Отдельная от строки намеренно: нажатие на
+     «Удалить» не должно открывать запрос в браузере, поэтому она гасит
+     событие сама (см. `кнопкаСтроки`). */
+  #remcard .rbtn, #histcard .rbtn, #histcard .hbtn {
+    flex: none; padding: 11px 14px; border-radius: 12px;
+    font-size: 16px; line-height: 1;
+    color: var(--muted); background: var(--panel);
+    border: 1px solid var(--line);
+  }
+  #remcard .rbtn:active, #histcard .rbtn:active, #histcard .hbtn:active {
+    background: var(--line);
+  }
+  #histcard .hbtn { font-size: 15px; padding: 10px 12px; }
+
+  /* ---------- Подменю программы ----------
+     Поверх всего экрана: программа с меню открывает его вместо запуска, и
+     подписи под плитками всё так же нет — как у значков. Закрывается
+     касанием пустого места и само через 12 секунд. */
+  #menu {
+    display: none;
+    position: fixed; inset: 0; z-index: 26;
+    background: var(--заслон);
+    align-items: center; justify-content: center;
+    padding: 10px;
+  }
+  #menu.on { display: flex; }
+  #menu .tiles {
+    display: grid;
+    grid-template-columns: repeat(var(--cols, 2), var(--tile, 76px));
+    gap: 10px;
+    max-width: 100%; max-height: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+    /* Плотная укладка: карточка занимает две колонки, и если в ряду осталась
+       одна свободная, на её место встаёт следующая одноколоночная плитка —
+       иначе справа от большой плитки программы зияла бы дыра. */
+    grid-auto-flow: row dense;
+  }
+  /* Не влезло — прижимаем влево, иначе под центрированием левый край
+     уехал бы за невидимое и до него нельзя было бы дотянуться. */
+  #menu .tiles.narrow { justify-content: start; }
+  #menu .tiles::-webkit-scrollbar { display: none; }
+  /* Открыть программу — первая плитка крупнее остальных: это главное
+     действие, а пункты меню — переходы. */
+  #menu .app.main {
+    grid-column: span 2;
+    /* И два ряда: иначе плитка программы наезжала бы на карточку под собой. */
+    grid-row: span 2;
+    width: calc(var(--tile, 76px) * 2 + 10px);
+    height: calc(var(--tile, 76px) * 2 + 10px);
+    border-radius: 26px;
+  }
+  /* Закладка и пункт-сайт — карточка в две плитки: слева значок сайта,
+     справа название. Плиткой это читалось плохо: фавиконка 16–32 px
+     растягивалась на неё — мыло. */
+  #menu .app.card {
+    grid-column: span 2;
+    width: calc(var(--tile, 76px) * 2 + 10px);
+    height: var(--tile, 76px);
+    border-radius: 18px;
+    display: flex; flex-direction: row;
+    align-items: center; justify-content: flex-start;
+    gap: 9px; padding: 0 10px;
+    overflow: hidden;
+  }
+  /* Значок сайта в скруглённом квадрате. Сама картинка не больше 32 px:
+     растянутая мелкая фавиконка выглядит хуже, чем маленькая, но честная. */
+  #menu .app.card .card-face {
+    width: 44px; height: 44px; flex: 0 0 44px;
+    border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--line);
+    overflow: hidden;
+  }
+  #menu .app.card .card-face img {
+    width: auto; height: auto;
+    max-width: 32px; max-height: 32px;
+    object-fit: contain;
+  }
+  #menu .app.card .card-text {
+    min-width: 0; flex: 1;
+    text-align: left;
+  }
+  /* Ссылка без логотипа — одно название, чуть крупнее и с отступом. */
+  #menu .app.card.без-лого { padding: 0 16px; }
+  #menu .app.card.без-лого .card-name { font-size: 18px; }
+  /* Название — до двух строк, лишнее многоточием: на телефоне не пройти. */
+  #menu .app.card .card-name {
+    font-size: 16px; line-height: 1.15; color: var(--text);
+    display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden;
+    word-break: break-word;
+  }
+  /* Подпись у одинаковых сайтов (две mobalytics) — второй строкой. */
+  #menu .app.card .card-cap {
+    font-size: 12px; line-height: 1.2; color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Переключатель во «выключенном» состоянии: рамка и значок красные, а сам
+     значок перечёркнут чертой — так же, как перечёркнутый микрофон у круга
+     (#orb.muted). Видно боковым зрением, не читая подписей. */
+  #menu .app.flip { position: relative; }
+  #menu .app.flip.on {
+    border-color: var(--выключено);
+    color: var(--выключено);
+  }
+  #menu .app.flip.on::after {
+    content: ''; position: absolute;
+    width: 62%; height: 3px; border-radius: 2px;
+    background: var(--выключено);
+    left: 50%; top: 50%;
+    margin: -1.5px 0 0 -31%;
+    transform: rotate(-45deg);
+  }
+  /* Подсветку не сбивает отклик на нажатие: `.done` живёт 0.9 с, а `on`
+     держится, пока переключатель выключен. */
+  #menu .app.flip.on.done { border-color: var(--выключено); }
+  #menu .hint {
+    position: absolute; left: 50%; bottom: 6px;
+    transform: translateX(-50%);
+    color: var(--dim); font-size: 10px;
+  }
+
+  /* ---------- Ответ поиска ----------
+     Читают с расстояния, поэтому ответ крупный, а источники — мелкой
+     строкой под ним. Больше четырёх строк всё равно не прочитать. */
+  #find {
+    display: none;
+    position: fixed; inset: 0; z-index: 27;
+    background: var(--заслон);
+    align-items: center; justify-content: center;
+    padding: 12px 16px;
+  }
+  #find.on { display: flex; }
+  #find .card {
+    width: 100%; max-width: 620px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #find .q { color: var(--dim); font-size: 12px; }
+  /* Строка запроса и источники — кнопки: по ним открывается поиск на компе.
+     Подпись «↗» говорит, что это не чтение, а переход туда. */
+  #find .qrow { display: flex; flex-direction: column; gap: 2px; }
+  #find .qhint { color: var(--muted); font-size: 12px; }
+  /* Строки, которые нажимаются, — с подложкой: без неё они выглядят
+     подписью, а не кнопкой. */
+  #find .qrow, #find .src .srow {
+    background: rgba(255, 255, 255, 0.05); border-radius: 10px;
+    padding: 6px 10px; margin-left: -10px; margin-right: -10px;
+  }
+  #find .src .srow {
+    display: flex; flex-direction: column; gap: 1px; margin-top: 4px;
+  }
+  #find .src .st { color: var(--text); }
+  #find .src .sh { color: var(--muted); font-size: 12px; }
+  /* Крестик в углу карточки — как у остальных оверлеев телефона. */
+  #find .x {
+    position: absolute; top: 6px; right: 10px;
+    color: var(--muted); font-size: 18px; padding: 2px 8px;
+  }
+  #find .card { position: relative; }
+  #find .a {
+    color: var(--text); font-size: 26px; font-weight: 600; line-height: 1.25;
+    /* Четыре строки, дальше многоточие: длинный ответ на этом экране
+       всё равно не прочитать целиком. */
+    display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4; overflow: hidden;
+  }
+  #find .src {
+    color: var(--muted); font-size: 12px; line-height: 1.35;
+  }
+  #find .src div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #find .cap { color: var(--dim); font-size: 10px; margin-top: 2px; }
+
+  /* ---------- Карточка погоды ----------
+     Поверх экрана, как ответ поиска: в самой полосе места для подробностей
+     нет, а телефон берут в руки именно когда хотят узнать погоду. */
+  #wxcard {
+    display: none;
+    position: fixed; inset: 0; z-index: 27;
+    background: var(--заслон);
+    align-items: center; justify-content: center;
+    padding: 12px 16px;
+  }
+  #wxcard.on { display: flex; flex-direction: column; gap: 10px; }
+  /* Слева «сейчас» с живой сценой, справа два дня отдельными плитками:
+     строками дни сливаются в одну полосу. */
+  #wxcard .card {
+    width: 100%; max-width: 780px;
+    display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px;
+    align-items: stretch;
+  }
+  #wxcard .now {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--panel); border-radius: 18px;
+    padding: 14px 18px 14px 10px;
+    overflow: hidden;
+  }
+  #wxcard .about { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  #wxcard .city { color: var(--dim); font-size: 12px; letter-spacing: .6px; }
+  #wxcard .big {
+    font-size: 54px; font-weight: 700; line-height: 1;
+    font-variant-numeric: tabular-nums;
+  }
+  #wxcard .word { font-size: 18px; font-weight: 600; }
+  #wxcard .feels { color: var(--muted); font-size: 12px; line-height: 1.4; white-space: pre-line; }
+  #wxcard .days { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  #wxcard .day {
+    background: var(--panel); border-radius: 18px;
+    padding: 12px 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    text-align: center;
+  }
+  #wxcard .day .name { color: var(--dim); font-size: 11px; letter-spacing: .8px; text-transform: uppercase; }
+  #wxcard .day svg { width: 34px; height: 34px; color: var(--muted); }
+  #wxcard .day .temps { display: flex; align-items: baseline; gap: 6px; font-variant-numeric: tabular-nums; }
+  #wxcard .day .hi { font-size: 24px; font-weight: 700; }
+  #wxcard .day .lo { font-size: 15px; font-weight: 600; color: var(--muted); }
+  #wxcard .day .word { font-size: 13px; font-weight: 500; color: var(--muted); }
+  #wxcard .day .rain { display: flex; align-items: center; gap: 3px; color: var(--info); font-size: 12px; }
+  #wxcard .day .rain svg { width: 12px; height: 12px; color: var(--info); }
+  #wxcard .day .rain.dry { color: var(--dim); }
+  #wxcard .day .rain.dry svg { color: var(--dim); }
+  #wxcard .foot { display: flex; gap: 14px; color: var(--dim); font-size: 10px; }
+
+  /* ---------- Живая погода в карточке ----------
+     Только transform и opacity: старый телефон тянет их видеокартой.
+     Анимация идёт, лишь пока карточка открыта (иначе display: none). */
+  #wxcard .scene {
+    position: relative; flex: none;
+    width: 128px; height: 128px;
+  }
+  .scene > * { position: absolute; }
+  .scene .sun {
+    left: 34px; top: 30px; width: 60px; height: 60px; border-radius: 50%;
+    background: radial-gradient(circle, #f3c86a 0 42%, rgba(243,200,106,.35) 43%, rgba(243,200,106,0) 70%);
+    animation: wx-glow 3.2s ease-in-out infinite;
+  }
+  .scene .rays {
+    left: 14px; top: 10px; width: 100px; height: 100px; color: #f3c86a;
+    animation: wx-spin 24s linear infinite;
+  }
+  .scene .rays svg { width: 100%; height: 100%; }
+  .scene.part .sun { left: 16px; top: 14px; width: 50px; height: 50px; }
+  .scene.part .rays { left: 0; top: -2px; width: 82px; height: 82px; }
+  /* Значок облака в рамке 24×24 занимает середину, поэтому рамка крупнее
+     самого облака: 100 px рамки — около 75 px облака. */
+  .scene .cloud { width: 100px; height: 100px; color: var(--облако-обводка); }
+  .scene .cloud svg { width: 100%; height: 100%; }
+  .scene .cloud svg path { fill: var(--облако); stroke: var(--облако-обводка); stroke-width: 1.4; }
+  .scene .cloud.c1 { left: 18px; top: 14px; animation: wx-drift 7s ease-in-out infinite; }
+  .scene .cloud.c2 { left: 40px; top: -6px; width: 76px; height: 76px; opacity: .5;
+                     animation: wx-drift 9s ease-in-out infinite reverse; }
+  .scene.part .cloud.c1 { left: 30px; top: 30px; }
+  .scene .drop {
+    top: 84px; width: 2px; height: 12px; border-radius: 1px;
+    background: var(--info); opacity: 0;
+    animation: wx-fall 1s linear infinite;
+  }
+  .scene .flake {
+    top: 84px; width: 6px; height: 6px; border-radius: 50%;
+    background: #dfe3ee; opacity: 0;
+    animation: wx-snow 3.2s linear infinite;
+  }
+  .scene .bolt {
+    left: 56px; top: 78px; width: 22px; height: 36px; color: #f3c86a; opacity: 0;
+    animation: wx-flash 4.5s linear infinite;
+  }
+  .scene .bolt svg { width: 100%; height: 100%; }
+  .scene .band {
+    left: 10px; width: 108px; height: 5px; border-radius: 3px;
+    background: #6d6d7a; opacity: .5;
+    animation: wx-band 6s ease-in-out infinite;
+  }
+  @keyframes wx-spin  { to { transform: rotate(360deg); } }
+  @keyframes wx-glow  { 50% { transform: scale(1.08); } }
+  @keyframes wx-drift { 50% { transform: translateX(10px); } }
+  @keyframes wx-fall  {
+    0%   { transform: translateY(0);    opacity: 0; }
+    15%  { opacity: .9; }
+    100% { transform: translateY(34px); opacity: 0; }
+  }
+  @keyframes wx-snow  {
+    0%   { transform: translate(0, 0);     opacity: 0; }
+    15%  { opacity: .95; }
+    50%  { transform: translate(5px, 18px); }
+    100% { transform: translate(-3px, 38px); opacity: 0; }
+  }
+  @keyframes wx-flash {
+    0%, 70%, 78%, 100% { opacity: 0; }
+    72%, 76% { opacity: 1; }
+    74% { opacity: .3; }
+  }
+  @keyframes wx-band  { 50% { transform: translateX(12px); opacity: .25; } }
+  @media (prefers-reduced-motion: reduce) {
+    .scene * { animation: none !important; opacity: .8; }
+  }
+
+  /* ---------- Снимок поверх всего ---------- */
+  #shot {
+    display: none;
+    position: fixed; inset: 0; z-index: 25;
+    background: var(--заслон);
+    align-items: center; justify-content: center;
+    flex-direction: column; gap: 8px;
+    padding: 10px;
+  }
+  #shot.on { display: flex; }
+  #shot img {
+    max-width: 100%; max-height: calc(100% - 26px);
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    object-fit: contain;
+  }
+  #shot .cap { color: var(--dim); font-size: 11px; }
+
+  /* НАЧАЛО ОВЕРЛЕЯ ЗАМЕТОК */
+  /* ---------- Заметки на телефоне ----------
+     Читают издали: телефон лежит сбоку, мелкий текст не читается вовсе.
+     Поэтому в оверлее нет ничего меньше 16 px, текст записи — 22 px, а темы
+     и заголовки — 20 и 26. Темы лежат полосой сверху и листаются влево-вправо,
+     текст выбранной — под полосой во всю ширину экрана. Ниже рамки #edge
+     (z-index 30): микрофон может тлеть и пока хозяин читает.
+     Поля щедрые (28 px по бокам): у экрана скруглённые углы и вырез камеры,
+     прижатый к краю текст читается неудобно. */
+  #notes {
+    position: fixed; inset: 0; z-index: 29;
+    background: var(--bg);
+    font-size: 18px;
+    display: flex; flex-direction: column;
+    padding: 14px max(28px, env(safe-area-inset-right)) 0
+             max(28px, env(safe-area-inset-left));
+    gap: 0;
+    /* Появление — только прозрачность: телефон не перерисовывает экран. */
+    opacity: 0; visibility: hidden; pointer-events: none;
+    transition: opacity .2s ease;
+  }
+  #notes.on { opacity: 1; visibility: visible; pointer-events: auto; }
+  /* Шапка одной строкой: полоса тем, «✎ Записать» и «✕». Кнопки не уезжают
+     вместе с полосой — темы живут во `flex: 1` и прокручиваются внутри себя.
+     Снизу тонкая линия: шапка отделена от текста, текст не липнет к темам. */
+  #notes .nhead {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 12px; border-bottom: 1px solid var(--line);
+  }
+  /* Полоса тем: только влево-вправо, вертикально она не листается. */
+  #notes .nlist {
+    flex: 1; min-width: 0; height: 56px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 2px;
+    scroll-padding-inline: 12px;
+    overflow-x: auto; overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    /* Полосу прокрутки прячем: палец её не таскает, а место она ест. */
+    scrollbar-width: none;
+    /* Край у кнопок гаснет, а не режется: видно, что темы тянутся дальше. */
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+  }
+  #notes .nlist::-webkit-scrollbar { display: none; }
+  #notes .nrec {
+    flex: 0 0 auto;
+    display: flex; align-items: center; height: 48px;
+    font-size: 20px; font-weight: 600;
+    padding: 0 22px; border-radius: 24px;
+    background: var(--accent); color: var(--на-акценте);
+  }
+  #notes .nclose {
+    flex: 0 0 auto;
+    width: 48px; height: 48px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 20px; color: var(--muted);
+    background: var(--panel); border: 1px solid var(--line);
+  }
+  /* Текст — на всю ширину под шапкой, листается вниз. Сверху воздух от
+     линии шапки, снизу запас, чтобы последняя строка не прилипала к краю. */
+  #notes .nread {
+    flex: 1; min-width: 0; padding: 18px 6px 40px;
+    overflow-y: auto; overscroll-behavior: contain;
+    -webkit-overflow-scrolling: touch;
+    /* Строки, уходящие под шапку, гаснут, а не режутся линией. В начале
+       текста не мешает: верхние 18 px — пустое поле. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+  }
+  #notes .nsec { color: var(--muted); font-size: 16px; margin: 0 0 4px; }
+  /* Тема-таблетка в полосе: одна строка, не сжимается, длинное имя —
+     многоточием, чтобы полоса осталась прокручиваемой, а не ломаной. */
+  #notes .ntopic {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 10px;
+    height: 48px; padding: 0 20px; border-radius: 24px;
+    background: var(--panel); border: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  /* Выбранная — янтарная обводка и текст: видно боковым зрением. Заливкой
+     нельзя — рядом залитая «✎ Записать», и они сливались в одно пятно. */
+  #notes .ntopic.on { border: 2px solid var(--accent); padding: 0 19px; }
+  #notes .ntopic.on .nm, #notes .ntopic.on .ct { color: var(--accent); }
+  #notes .ntopic.on .nm { font-weight: 600; }
+  #notes .ntopic .nm {
+    font-size: 20px; max-width: 280px;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  #notes .ntopic .ct { font-size: 16px; color: var(--muted); }
+  #notes .nread-head { font-size: 26px; font-weight: 700; line-height: 1.25; margin-bottom: 18px; }
+  #notes .nentry { padding: 0 0 20px; margin-bottom: 20px; border-bottom: 1px solid var(--line); }
+  #notes .nentry:last-child { border-bottom: none; margin-bottom: 0; }
+  #notes .nwhen { font-size: 16px; color: var(--muted); margin-bottom: 4px; }
+  #notes .nentry-head { font-size: 23px; font-weight: 600; line-height: 1.3; margin-bottom: 8px; }
+  #notes .ntext { font-size: 22px; line-height: 1.55; }
+  #notes .ntext p { margin-bottom: 12px; }
+  #notes .ntext p:last-child, #notes .ntext ul:last-child { margin-bottom: 0; }
+  #notes .ntext h4 { font-size: 22px; font-weight: 600; margin: 16px 0 6px; }
+  #notes .ntext ul { margin: 0 0 12px; padding-left: 28px; list-style: disc; }
+  #notes .ntext li { margin-bottom: 4px; }
+  #notes .nempty { color: var(--muted); font-size: 18px; padding: 8px 0; }
+  /* КОНЕЦ ОВЕРЛЕЯ ЗАМЕТОК */
+
+  /* ---------- Короткая надпись ---------- */
+  #toast {
+    display: none;
+    position: fixed; left: 50%; top: 12px;
+    transform: translateX(-50%);
+    padding: 8px 18px; border-radius: 20px;
+    background: var(--panel); border: 1px solid var(--line);
+    font-size: 13px; z-index: 28;
+  }
+  #toast.on { display: block; animation: fade-in .2s ease; }
+  #toast.ok { color: var(--good); border-color: var(--good); }
+  #toast.bad { color: var(--тревога); border-color: var(--тревога); }
+  @keyframes fade-in { from { opacity: 0; transform: translate(-50%, -6px); } }
+
+  /* ---------- Режимы ---------- */
+  /* Обёртка `#режимы` держит столбец режимов и регулятор громкости: они
+     занимают одно и то же место, поэтому ширина и высота не меняются. */
+  #режимы { position: relative; display: flex; gap: 6px; }
+  /* `flex: 1` обязателен и в портрете: обёртка — flex-строка, и без него
+     плитки режимов сжались бы до размера иконки. */
+  #modes { flex: 1; display: flex; gap: 10px; }
+  .mode {
+    flex: 1;
+    height: 76px;
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 18px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted);
+    transition: background .2s, color .2s, border-color .2s, transform .15s;
+  }
+  .mode svg { width: 36px; height: 36px; }
+  .mode:active { transform: scale(.94); }
+  .mode.active {
+    background: var(--акцент-подложка);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+
+  /* ---------- Регулятор громкости ----------
+     Касание язычка слева превращает столбец режимов в регулятор: сверху
+     «+», посередине крупно уровень и шкала из десяти делений, снизу «−».
+     Второе касание язычка возвращает режимы, и сам он возвращается через
+     8 секунд: режим «тихо» должен быть под рукой. */
+  #язычок {
+    flex: none;
+    width: 30px;               /* полоса узкая, но в палец попадает — от 28 */
+    min-height: 76px;
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--dim);
+    transition: background .2s, color .2s, border-color .2s, transform .15s;
+  }
+  #язычок svg { width: 18px; height: 18px; }
+  #язычок:active { transform: scale(.94); background: var(--line); }
+  #язычок.on { color: var(--accent); border-color: var(--accent); }
+
+  #громкость {
+    flex: 1;
+    display: none;
+    flex-direction: column; gap: 8px;
+    min-width: 0;
+  }
+  #режимы.показана #громкость { display: flex; }
+  #режимы.показана #modes { display: none; }
+  .гром-шаг {
+    flex: none;
+    height: 44px;
+    background: var(--panel);
+    border: 1px solid transparent;
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px; line-height: 1; font-weight: 300;
+    color: var(--muted);
+    transition: background .2s, color .2s, transform .15s;
+  }
+  .гром-шаг:active { transform: scale(.94); background: var(--line); color: var(--accent); }
+  .гром-середина {
+    flex: 1;
+    /* В портрете высота обёртки считается по содержимому, и `flex: 1` с
+       нулевой базой схлопнул бы середину в узкую полоску. */
+    min-height: 72px;
+    background: var(--panel);
+    border-radius: 14px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px;
+  }
+  /* Уровень крупный: телефон смотрят сбоку, боковым зрением. */
+  .гром-цифра {
+    font-size: 30px; font-weight: 700; line-height: 1;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  /* Шкала из десяти делений: видно, сколько ещё можно убавить. */
+  .гром-шкала { display: flex; gap: 2px; }
+  .гром-шкала i { width: 3px; height: 12px; border-radius: 2px; background: var(--line); }
+  .гром-шкала i.on { background: var(--accent); }
+
+  /* ---------- Служебное ---------- */
+  #offline {
+    display: none;
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 7px; text-align: center;
+    background: var(--panel); color: var(--muted); font-size: 12px;
+    z-index: 15;
+  }
+  /* Тот же элемент, но крупно: телефон открыт с ярлыка, а комп его не знает.
+     Узкой полосой внизу (12 px) хозяин это не прочитал — в журнале десятки
+     строк «телефон без ключа не пустила», а на экране пустая Труба. Крупное
+     сообщение занимает почти весь экран (телефон стоит горизонтально),
+     читается с расстояния и прямо говорит, что делать. */
+  #offline.крупно {
+    top: 0; bottom: 0;
+    display: none;
+    align-items: center; justify-content: center;
+    min-height: 390px;
+    padding: 28px; text-align: left;
+    background: var(--bg); color: var(--text);
+    font-size: 19px; line-height: 1.5;
+    z-index: 17;
+  }
+  /* Показом занимается `сообщениеНаЭкране`: она ставит и класс, и `display`,
+     поэтому правила показа здесь нет — только сам вид крупного сообщения. */
+  #expand {
+    display: none;
+    position: fixed; left: 50%; bottom: 8px;
+    transform: translateX(-50%);
+    padding: 7px 16px;
+    border: 1px solid var(--line); border-radius: 18px;
+    background: var(--panel); color: var(--muted); font-size: 11px;
+    z-index: 16;
+  }
+  /* На iPhone полного экрана нет, а кнопка «во весь экран» молча ничего не
+     делала. Плашка-вопрос честнее мёртвой кнопки: она такая же маленькая и
+     снизу, но говорит, где искать настоящий полный экран. */
+  #expand.подсказка {
+    color: var(--accent); border-color: var(--акцент-подложка);
+    background: var(--акцент-подложка); font-size: 13px;
+    padding: 9px 18px;
+  }
+  /* Карточка-подсказка по нажатию: длинный текст не влезет в плашку. */
+  #подсказка-экрана {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 28px;
+    background: var(--заслон);
+    z-index: 40;
+  }
+  #подсказка-экрана .птекст {
+    position: relative;
+    max-width: 520px;
+    padding: 28px 56px 28px 28px;
+    border: 1px solid var(--line); border-radius: 20px;
+    background: var(--panel); color: var(--text);
+    font-size: 19px; line-height: 1.5;
+  }
+  #подсказка-экрана .пзакрыть {
+    position: absolute; top: 8px; right: 10px;
+    width: 40px; height: 40px;
+    border: none; border-radius: 50%;
+    background: none; color: var(--muted);
+    font-size: 20px; line-height: 1;
+  }
+
+  /* ---------- Свечение по краям экрана ----------
+     Ответ на вопрос «непонятно, дошла ли до неё речь». Рамка идёт
+     за её состоянием, а не угадывает голос на лету:
+       .open  — окно разговора открыто: говори без имени (холодная, тихо дышит);
+       .think — фраза дошла, она думает (тёплая, дышит чаще);
+       .talk  — она говорит (светлая, почти белая);
+       .dict  — идёт диктовка заметки (янтарь).
+     Движение — только прозрачность (`opacity`): её телефон двигает без
+     перерисовки. Перелива по кругу нет: перерисовка градиента на весь
+     экран на каждом кадре телефону тяжела. Зелёного в оформлении нет. */
+  @keyframes edge-open  { from { opacity: .35; } to { opacity: .7; } }
+  @keyframes edge-think { from { opacity: .7; }  to { opacity: 1; } }
+  @keyframes edge-dict  { from { opacity: .5; }  to { opacity: .9; } }
+  @keyframes edge-talk  { from { opacity: .45; } to { opacity: .85; } }
+
+  #edge {
+    --e1: #6b8afd; --e2: #9b7bff; --e3: #7b8ffb; --e4: #b79bff;
+    position: fixed; inset: 0;
+    /* Поверх подменю, погоды и снимка экрана, но касания пропускает насквозь. */
+    z-index: 30; pointer-events: none;
+    opacity: 0;
+    transition: opacity .3s ease;
+  }
+  /* Градиент неподвижный: краски по диагонали, поэтому каждый край свой. */
+  #edge::before, #edge::after {
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(120deg, var(--e1), var(--e2) 35%, var(--e3) 65%, var(--e4));
+  }
+  /* Тонкая яркая линия у самого края (маска вырезает середину). */
+  #edge::before {
+    border: 3px solid transparent;
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+            mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+            mask-composite: exclude;
+  }
+  /* Мягкое сияние внутрь, гаснет плавно — без размытия. */
+  #edge::after {
+    --soft: 32px;
+    --fade: #000 0, rgba(0,0,0,.45) calc(var(--soft) * .35),
+            rgba(0,0,0,.12) calc(var(--soft) * .7), transparent var(--soft),
+            transparent calc(100% - var(--soft)),
+            rgba(0,0,0,.12) calc(100% - var(--soft) * .7),
+            rgba(0,0,0,.45) calc(100% - var(--soft) * .35), #000 100%;
+    -webkit-mask: linear-gradient(to right, var(--fade)), linear-gradient(to bottom, var(--fade));
+            mask: linear-gradient(to right, var(--fade)), linear-gradient(to bottom, var(--fade));
+    -webkit-mask-composite: source-over;
+            mask-composite: add;
+    opacity: .8;
+  }
+  #edge.open  { animation: edge-open 2.6s ease-in-out infinite alternate; }
+  #edge.think {
+    --e1: #d98b52; --e2: #ff7aa8; --e3: #ffc46b; --e4: #ff9ec4;
+    animation: edge-think 1.2s ease-in-out infinite alternate;
+  }
+  #edge.talk {
+    --e1: #ffffff; --e2: #dfe6ff; --e3: #f4ecff; --e4: #e8f0ff;
+    animation: edge-talk 1.6s ease-in-out infinite alternate;
+  }
+  /* Светлая тема: «почти белый» на белом экране не видно совсем, поэтому
+     рамка «она говорит» получает холодный стальной оттенок, а линия у
+     самого края становится на пиксель плотнее. Остальные состояния
+     (синий, янтарный, розовый) на светлом читаются и как были. */
+  :root[data-theme="light"] #edge::before { border-width: 4px; }
+  :root[data-theme="light"] #edge.talk {
+    --e1: #5b6b85; --e2: #93a6c0; --e3: #70819b; --e4: #adbdd2;
+  }
+  #edge.dict {
+    --e1: #d98b52; --e2: #e0a06a; --e3: #c98046; --e4: #ffb98a;
+    animation: edge-dict 2s ease-in-out infinite alternate;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #edge.open { animation: none; opacity: .55; }
+    #edge.think { animation: none; opacity: .9; }
+    #edge.dict { animation: none; opacity: .75; }
+    #edge.talk { animation: none; opacity: .7; }
+  }
+
+  /* ---------- Горизонтально ---------- */
+  @media (orientation: landscape) {
+    #app {
+      grid-template-rows: auto 1fr;
+      grid-template-columns: 1fr auto;
+      grid-template-areas: "stats stats" "middle modes";
+      gap: 10px;
+    }
+    #stats { grid-area: stats; }
+    #middle { grid-area: middle; }
+    /* Столбец режимов и регулятор громкости делят одно место: в одно время
+       виден только один из них, поэтому ширина и высота у них одинаковые. */
+    #режимы {
+      grid-area: modes;
+      flex-direction: row;
+      width: 128px;
+      justify-content: center;
+    }
+    #modes {
+      flex: 1;
+      flex-direction: column;
+      justify-content: center;
+    }
+    #orb { width: 26vh; height: 26vh; }
+    /* Правый столбец: сверху программы, снизу действия. Действия прибиты
+       к низу и никуда не уезжают — их ищут не глядя, во время игры. */
+    #right {
+      container-type: inline-size;
+      /* Ширину ставит страница: колонка занимает ровно столько свободного
+         места между кругом и столбцом режимов, сколько нужно значкам, и
+         ни пикселем больше — иначе разъезжается весь круг. */
+      flex: none;
+      width: var(--right, 260px);
+      max-height: 100%;
+    }
+    /* Колонки и размер значка ставит страница: их считают от свободного
+       места между кругом и столбцом режимов, а не задают на глаз. Рядов
+       не больше двух, иначе значки уезжают вниз отдельной строкой. */
+    #apps {
+      grid-template-columns: repeat(var(--cols, 3), var(--tile, 76px));
+      justify-content: center;
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      align-content: center;
+      scrollbar-width: none;
+    }
+    /* Не влезло даже по 60 — листаем вбок, и плитки идут от левого края:
+       центрировать их нельзя, иначе левый край уезжает за невидимое. */
+    #apps.narrow { justify-content: start; }
+    #apps::-webkit-scrollbar { display: none; }
+    /* Две карточки в один ряд — вид телефона.
+       Ширина колонки `#right` считается по сетке значков, а карточки её
+       повторяют: на макете в пульте так и должно выглядеть. */
+    #cards { flex-direction: row; gap: 10px; }
+    #cards .card { min-height: 52px; padding: 6px 10px; font-size: 15px; }
+    #cards .card svg { width: 24px; height: 24px; }
+  }
+
+  /* Если программ три ряда или включены подписи, центральная колонка
+     сужается. В карточках остаются полные названия, вторая строка у истории
+     допустима; обрезанные «Напоми...» и «История...» не объясняют кнопку. */
+  @media (orientation: landscape) {
+    @container (max-width: 350px) {
+      #cards .card { gap: 5px; padding: 6px; font-size: 11px; line-height: 1.1; }
+      #cards .card svg { width: 20px; height: 20px; }
+      #cards .card span { white-space: normal; overflow: visible; text-overflow: clip; }
+    }
+  }
+
+  @media (orientation: portrait) {
+    #middle { gap: 10px; min-width: 0; }
+    #orb { width: min(28vw, 150px); height: min(28vw, 150px); }
+    #right { flex: 1; min-width: 0; }
+  }
+
+  @media (orientation: landscape) and (max-height: 400px) {
+    .stat { padding: 5px 8px 6px; }
+    #actions .act { padding: 6px 6px 5px; }
+    #actions .act svg { width: 22px; height: 22px; }
+    /* Наш экран — 390 точек высотой, и правило выше как раз про него. Часы
+       уменьшаем чуть-чуть: с ними рядом погода и заряд, а плитка нагрузки
+       от них выше не становится. */
+    #s-now { padding: 5px 8px 6px; }
+    #s-now .clock { font-size: 20px; }
+    #s-now .div { height: 16px; }
+  }
+</style>
+</head>
+<body>
+
+
+<div id="app">
+  <div id="stats">
+    <div class="stat" id="s-cpu">
+      <div class="top"><span class="name">ЦП</span><span class="value">—</span></div>
+      <div class="bar"><i></i></div>
+    </div>
+    <div class="stat" id="s-ram">
+      <div class="top"><span class="name">ПАМЯТЬ</span><span class="value">—</span></div>
+      <div class="bar"><i></i></div>
+    </div>
+    <div class="stat" id="s-gpu">
+      <div class="top"><span class="name">ВИДЕО</span><span class="value">—</span></div>
+      <div class="bar"><i></i></div>
+    </div>
+    <div class="stat" id="s-now">
+      <span class="clock" id="s-clock">--:--</span>
+      <span class="div"></span>
+      <span class="wx" id="s-wx" hidden>
+        <span class="ico"></span><span class="t">—</span>
+      </span>
+    </div>
+    <div class="stat" id="s-bat" hidden>
+      <div class="bat">
+        <span class="pct">—</span>
+        <span class="shell"><i></i><svg viewBox="0 0 24 24" fill="currentColor"><path d="M13.5 2L4 13.5h6L9.5 22 20 10.5h-6.5z"/></svg></span>
+      </div>
+    </div>
+  </div>
+
+  <div id="middle">
+    <div id="orb">
+      <div id="glow"></div>
+      <div id="ring"></div>
+      <div id="spinner"></div>
+      <div id="core"></div>
+      <div id="label">нажми и говори</div>
+    </div>
+    <div id="right">
+      <div id="apps"></div>
+      <div id="actions"></div>
+      <!-- Две постоянные карточки под нижними кнопками. Не настраиваются:
+           в отличие от `#actions` их нельзя ни переставить, ни убрать, и в
+           макете пульта они на месте — ровно как на телефоне. -->
+      <div id="cards">
+        <div class="card rem" id="card-rem" role="button" aria-label="Напоминания">
+          <span class="ico"></span><span>Напоминания</span>
+        </div>
+        <div class="card hist" id="card-hist" role="button" aria-label="История поиска">
+          <span class="ico"></span><span>История поиска</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="режимы">
+    <div id="язычок" title="Громкость голоса"></div>
+    <div id="modes"></div>
+    <div id="громкость">
+      <div class="гром-шаг" id="гром-вверх" title="Громче">+</div>
+      <div class="гром-середина">
+        <div class="гром-цифра" id="гром-цифра">10</div>
+        <div class="гром-шкала" id="гром-шкала"></div>
+      </div>
+      <div class="гром-шаг" id="гром-вниз" title="Тише">−</div>
+    </div>
+  </div>
+</div>
+
+<div id="expand">во весь экран</div>
+<div id="hint">коснись, чтобы включить звук</div>
+<div id="offline">нет связи с компом, переподключаюсь...</div>
+<div id="toast"></div>
+<div id="menu">
+  <div class="tiles"></div>
+  <div class="hint">коснись пустого места, чтобы закрыть</div>
+</div>
+<div id="find">
+  <div class="card">
+    <div class="x">✕</div>
+    <div class="qrow">
+      <div class="q"></div>
+      <div class="qhint">открыть поиск на компе ↗</div>
+    </div>
+    <div class="a"></div>
+    <div class="src"></div>
+    <div class="cap">коснись ✕ или пустого места, чтобы убрать</div>
+  </div>
+</div>
+<div id="wxcard">
+  <div class="card">
+    <div class="now">
+      <div class="scene"></div>
+      <div class="about">
+        <div class="city"></div>
+        <div class="big">—</div>
+        <div class="word">—</div>
+        <div class="feels"></div>
+      </div>
+    </div>
+    <div class="days"></div>
+  </div>
+  <div class="foot"><span class="age"></span><span class="cap">коснись, чтобы убрать</span></div>
+</div>
+<div id="shot"><img alt=""><div class="cap">коснись, чтобы убрать</div></div>
+
+<!-- Напоминания: что стоит. У каждой строки «Отменить» — снять можно и
+     голосом, и в пульте, и с телефона. Данные приходят по тому же
+     авторизованному WebSocket, что и всё остальное для телефона. -->
+<div id="remcard" class="rem">
+  <div class="head">
+    <div class="ttl">Напоминания</div>
+    <div class="x" role="button" aria-label="Закрыть">✕</div>
+  </div>
+  <div class="list"></div>
+  <div class="foot">«Отменить» сразу снимает одно. коснись ✕, чтобы закрыть</div>
+</div>
+
+<!-- История поиска: что она на самом деле искала. Строка — кнопка: по ней тот
+     же запрос открывается в браузере на компьютере. У строки своя «Удалить»,
+     в шапке — «Очистить»; обе срабатывают с одного касания. -->
+<div id="histcard" class="hist">
+  <div class="head">
+    <div class="ttl">История поиска</div>
+    <div class="hbtn" id="hist-clear" role="button" aria-label="Очистить историю поиска">Очистить</div>
+    <div class="x" role="button" aria-label="Закрыть">✕</div>
+  </div>
+  <div class="list"></div>
+  <div class="foot">коснись запроса — откроется на компе. «Удалить» и «Очистить» — сразу</div>
+</div>
+
+<!-- Заметки: во весь экран, но под рамкой #edge. Темы — полосой сверху,
+     листается влево-вправо; под ней текст выбранной темы во всю ширину.
+     Кнопка «✎ Записать» — это повторное нажатие кнопки «заметка»: первое
+     открывает оверлей, второе уже диктует. -->
+<div id="notes">
+  <div class="nhead">
+    <div class="nlist" id="notes-list"></div>
+    <div class="nrec" id="notes-record">✎ Записать</div>
+    <div class="nclose" id="notes-close">✕</div>
+  </div>
+  <div class="nread" id="notes-read"></div>
+</div>
+
+<!-- Свечение по краям: слышно, что микрофон работает. Поверх всего, но
+     касания пропускает насквозь (`pointer-events: none`). -->
+<div id="edge"></div>
+
+<script>
+const PAGE_VERSION = '__VERSION__';
+/* Тема. Основной источник — `data-theme`, вписанный сервером прямо в `<html>`
+   (core/phone.py): он приезжает с самой страницей, и первая отрисовка уже
+   нужного цвета. Здесь мы подстраховываемся тем, что телефон помнит с прошлого
+   раза: если страницу отдали из кеша или сервер не смог прочитать настройки,
+   экран останется в том, в каком его оставили. Всё в try — хранилище может
+   быть запрещено, и это не повод ничем не красить телефон. */
+try {
+  const помнили = localStorage.getItem('тема');
+  if (помнили === 'light' || помнили === 'dark') {
+    document.documentElement.dataset.theme = помнили;
+    if (помнили === 'light') {
+      const панель = document.getElementById('цвет-панели');
+      if (панель) панель.setAttribute('content', '#f2f2f5');
+    }
+  }
+} catch (e) { /* не страшно */ }
+/* Режим правки: пульт открывает эту страницу в `<iframe src="/?edit=1">`
+   как живой макет, на котором хозяин правит программы руками. Соединения с
+   сервером в нём быть не должно — иначе комп посчитает, что телефон на
+   связи, и заговорит в макет. Вся логика — в блоке «Режим правки» внизу. */
+const EDIT = new URLSearchParams(location.search).get('edit') === '1';
+
+/* ---------- Иконки ---------- */
+const ICONS = {
+  mic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></svg>',
+  ear: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 8.5a6 6 0 1 1 12 0c0 3-2 4-3 5.5s-1 3.5-3 3.5a2.5 2.5 0 0 1-2.5-2.5"/><path d="M9.5 9a2.5 2.5 0 1 1 5 0"/></svg>',
+  name: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 0 1-2 2H8l-5 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/></svg>',
+  mute: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 8.5a6 6 0 0 1 9.5-4.9"/><path d="M6 12c0 3 2 4 3 5.5s1 3.5 3 3.5"/><path d="M3 3l18 18"/></svg>',
+  sound: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>',
+  browser: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 3 2.5 15 0 18M12 3c-2.5 3-2.5 15 0 18"/></svg>',
+  chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5A8 8 0 1 1 21 12z"/></svg>',
+  code: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l-6-6 6-6M15 6l6 6-6 6"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="4"/><path d="M10 9.5l5 2.5-5 2.5z" fill="currentColor"/></svg>',
+  app: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="2"/><rect x="14" y="3" width="7" height="7" rx="2"/><rect x="3" y="14" width="7" height="7" rx="2"/><rect x="14" y="14" width="7" height="7" rx="2"/></svg>',
+  discord: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.3 5.3A16 16 0 0 0 15.4 4l-.2.4a12 12 0 0 1 3.4 1.7 11 11 0 0 0-9.3 0 12 12 0 0 1 3.4-1.7L12.6 4a16 16 0 0 0-3.9 1.3C6.2 9 5.5 12.6 5.8 16.2a16 16 0 0 0 4.9 2.5l1-1.6a10 10 0 0 1-1.6-.8l.4-.3a11 11 0 0 0 9 0l.4.3a10 10 0 0 1-1.6.8l1 1.6a16 16 0 0 0 4.9-2.5c.4-4.2-.6-7.8-2.9-10.9zM9.7 14.2c-1 0-1.7-.9-1.7-1.9s.8-1.9 1.7-1.9 1.8.9 1.7 1.9c0 1-.8 1.9-1.7 1.9zm6.6 0c-1 0-1.7-.9-1.7-1.9s.8-1.9 1.7-1.9 1.8.9 1.7 1.9c0 1-.7 1.9-1.7 1.9z"/></svg>',
+  camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M3 8a2 2 0 0 1 2-2h2l1.4-2h7.2L17 6h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="12.5" r="3.5"/></svg>',
+  replay: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 2.6-6.4"/><path d="M3 4v5h5"/><path d="M10.5 9.5l5 2.5-5 2.5z" fill="currentColor"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/></svg>',
+  note: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>',
+  /* Две постоянные карточки под нижними кнопками: колокольчик у напоминаний
+     и часы с лупой у истории поиска — как на согласованном макете. */
+  bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6z"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg>',
+  /* Часы с лупой в одной картинке: слева циферблат, справа увеличительное
+     стекло на «истории». Круг у лупы — ручка. */
+  searchtime: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4.5a7.5 7.5 0 1 0 4.9 13.2"/><path d="M9.5 8.5V12l2.5 1.5"/><path d="M14.5 13.5l5 5"/><circle cx="18.2" cy="14.2" r="2.3"/></svg>',
+  /* Значки погоды. Сервер шлёт имя — те же слова, что в таблице WMO
+     (core/weather.py), здесь только рисунок. Линейные, как все остальные. */
+  sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.2M12 19.8V22M2 12h2.2M19.8 12H22M4.9 4.9l1.6 1.6M17.5 17.5l1.6 1.6M19.1 4.9l-1.6 1.6M6.5 17.5l-1.6 1.6"/></svg>',
+  'sun-cloud': '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 4.5v-2M3.2 7.8l-1.4-1.4M11.8 7.8l1.4-1.4"/><circle cx="7.5" cy="7.5" r="2.6"/><path d="M17.5 20H7a3.8 3.8 0 0 1-.5-7.6 5.2 5.2 0 0 1 10 1.2A3.4 3.4 0 0 1 17.5 20z"/></svg>',
+  cloud: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 19H7a4 4 0 0 1-.5-8 5.5 5.5 0 0 1 10.6 1.3A3.6 3.6 0 0 1 17.5 19z"/></svg>',
+  fog: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 13H7a4 4 0 0 1-.5-8 5.5 5.5 0 0 1 10.6 1.3A3.6 3.6 0 0 1 17.5 13z"/><path d="M4 17h16M7 20.5h10"/></svg>',
+  rain: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 15H7a4 4 0 0 1-.5-8 5.5 5.5 0 0 1 10.6 1.3A3.6 3.6 0 0 1 17.5 15z"/><path d="M8 18l-1 3M13 18l-1 3M18 18l-1 3"/></svg>',
+  snow: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 15H7a4 4 0 0 1-.5-8 5.5 5.5 0 0 1 10.6 1.3A3.6 3.6 0 0 1 17.5 15z"/><path d="M8 19v3M6.5 19.8l3 1.4M9.5 19.8l-3 1.4M16 19v3M14.5 19.8l3 1.4M17.5 19.8l-3 1.4"/></svg>',
+  storm: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.5 14H7a4 4 0 0 1-.5-8 5.5 5.5 0 0 1 10.6 1.3A3.6 3.6 0 0 1 17.5 14z"/><path d="M13 17l-3 4h4l-2 3"/></svg>',
+  /* Значки для пунктов подменю. Сервер шлёт имя значка, а набор здесь наш
+     общий для всех программ, поэтому лишних имён в нём быть не должно:
+     неизвестное имя молча рисуется общим `hotkey`. */
+  keyboard: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M6 13.5h.01M9.5 13.5h.01M13 13.5h.01M16.5 13.5h.01M8 16.5h8"/></svg>',
+  link: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.1 0l3-3a5 5 0 0 0-7.1-7.1l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.1 0l-3 3A5 5 0 0 0 11 21.1l1.7-1.7"/></svg>',
+  headphones: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15v-3a8 8 0 0 1 16 0v3"/><path d="M4 14h2.5A1.5 1.5 0 0 1 8 15.5v3A1.5 1.5 0 0 1 6.5 20h-1A1.5 1.5 0 0 1 4 18.5z"/><path d="M20 14h-2.5A1.5 1.5 0 0 0 16 15.5v3a1.5 1.5 0 0 0 1.5 1.5h1a1.5 1.5 0 0 0 1.5-1.5z"/></svg>',
+  /* Общий значок сочетания клавиш: сервер ставит его любому пункту без
+     своего значка, а своих имён у него не выдумать. */
+  hotkey: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="20" height="8" rx="2"/><path d="M6 9V6.5A1.5 1.5 0 0 1 7.5 5h9A1.5 1.5 0 0 1 18 6.5V9"/><path d="M7 13h10"/></svg>',
+};
+
+/* Пункты подменю, у которых сервер не прислал значок, берут этот — по
+   разумному имени из его набора. */
+const MENU_FALLBACK = { hotkey: 'hotkey', site: 'link', bookmark: 'link' };
+
+/* Кнопки действий над компом. Не программы: у них нет своего окна,
+   они просто просят комп что-то сделать.
+   Этот список — запасной: рисуется, пока сервер не прислал свои кнопки
+   (старый сервер или макет в пульте). Кнопки нужны свои — «сцена в OBS»,
+   «заглушить себя в Discord», поэтому как только приходит
+   сообщение `actions`, рисуем оно — вместе с `slot` для нажатия. */
+const ACTIONS = [
+  { slot: 0, kind: 'builtin', id: 'screenshot', icon: 'camera', title: 'экран' },
+  { slot: 1, kind: 'builtin', id: 'moment',     icon: 'replay', title: 'момент' },
+  { slot: 2, kind: 'builtin', id: 'search',     icon: 'search', title: 'найти' },
+  /* Диктовка заметки — то же, что «запиши заметку» голосом. */
+  { slot: 3, kind: 'builtin', id: 'note_start', icon: 'note',   title: 'заметка' },
+];
+
+const MODES = [
+  { id: 'always', icon: 'ear',  title: 'всё' },
+  { id: 'name',   icon: 'name', title: 'по имени' },
+  { id: 'off',    icon: 'mute', title: 'тихо' },
+];
+
+const STATES = {
+  off:       ['var(--dim)',    'жду'],
+  /* Разговор закрылся: она на связи, но теперь нужно имя. Кружок в этот момент
+     продолжает говорить «слушаю» — и человек не понимает,
+     почему его фразы уходят в пустоту. */
+  asleep:    ['var(--dim)',    'жду имени'],
+  /* «Непонятно, когда она работает»: при подключении
+     кружок не должен говорить «слушаю», если голос выключен или грузится. */
+  loading:   ['var(--accent)', 'загружаюсь, подожди…'],
+  voiceoff:  ['var(--dim)',    'голос выключен в пульте'],
+  deaf:      ['var(--dim)',    'не слушаю'],
+  listening: ['var(--info)',   'слушаю'],
+  thinking:  ['var(--accent)', 'думаю'],
+  speaking:  ['var(--bot)',    'говорю'],
+};
+
+const $ = (id) => document.getElementById(id);
+const hint = $('hint'), orb = $('orb'), core = $('core'), glow = $('glow');
+const ring = $('ring'), spinner = $('spinner'), label = $('label');
+const offline = $('offline'), expand = $('expand'), appsBox = $('apps');
+const modesBox = $('modes'), actionsBox = $('actions');
+/* Две постоянные карточки под нижними кнопками. Их высота входит в расчёт
+   сетки программ (`layoutApps`), поэтому блок берём здесь, рядом с остальными. */
+const cardsBox = $('cards');
+const shotBox = $('shot'), shotImg = shotBox.querySelector('img'), toastBox = $('toast');
+const menuBox = $('menu'), menuTiles = menuBox.querySelector('.tiles');
+const findBox = $('find');
+const batBox = $('s-bat');
+const clockBox = $('s-clock'), wxBox = $('s-wx');
+const wxCard = $('wxcard');
+const edgeBox = $('edge');
+/* Последняя погода от сервера. Нужна для карточки: её открывают касанием, а
+   по `age_min` страница сама скажет, если данные залежались. */
+let lastWeather = null;
+/* Последний вид сетки от сервера: пересчёт на поворот телефона идёт по нему. */
+let lastLayout = null;
+
+core.innerHTML = ICONS.mic;
+
+/* Часы идут сразу, а не после касания заставки: время на телефоне нужно
+   и до того, как страница проснулась, а тиканье раз в 10 секунд телефон
+   почти не тратит. */
+tickClock();
+setInterval(tickClock, 10000);
+
+let audioCtx = null, analyser = null, socket = null;
+/* Звук на телефоне включён — то есть палец уже коснулся экрана. Всё остальное
+   (кнопки, режимы, погода, заряд) работает и без него. */
+let started = false;
+/* Звук идёт кусками, и куски ставятся встык по часам AudioContext, а не
+   «доиграл — запустил следующий»: так между ними не остаётся щелей, и
+   предложение можно присылать частями, пока оно ещё синтезируется. */
+let playAt = 0, stopEpoch = 0, decoding = Promise.resolve();
+const live = new Set();
+
+/* ---------- Режимы ---------- */
+MODES.forEach((mode) => {
+  const el = document.createElement('div');
+  el.className = 'mode';
+  el.dataset.mode = mode.id;
+  el.title = mode.title;
+  el.innerHTML = ICONS[mode.icon];
+  el.addEventListener('click', () => {
+    send({ type: 'mode', value: mode.id });
+    markMode(mode.id);
+  });
+  modesBox.appendChild(el);
+});
+
+/* Текущий режим слуха и последний «включённый» — к нему круг вернёт слух. */
+let currentMode = null;
+let lastOnMode = 'name';
+
+function markMode(mode) {
+  currentMode = mode;
+  if (mode && mode !== 'off') lastOnMode = mode;
+  modesBox.querySelectorAll('.mode').forEach((el) => {
+    el.classList.toggle('active', el.dataset.mode === mode);
+  });
+  orb.classList.toggle('muted', mode === 'off');
+  edgeApply();
+}
+
+/* ---------- Громкость голоса ----------
+   Язычок слева от столбца режимов превращает его в регулятор: «+» и «−»
+   шлют шаг на комп, а цифра и шкала приходят ответом — источник правды
+   один, иначе телефон рисовал бы своё. Сам возвращается к режимам через
+   ВОЗВРАТ секунд: режим «тихо» должен остаться под рукой. */
+const ВОЗВРАТ = 8000;
+const уровеньBox = $('режимы'), язычок = $('язычок');
+const шкала = $('гром-шкала');
+язычок.innerHTML = ICONS.sound;
+for (let i = 0; i < 10; i++) шкала.appendChild(document.createElement('i'));
+
+let volumeTimer = null;
+
+function markVolume(value) {
+  const n = Math.max(1, Math.min(10, Math.round(Number(value) || 10)));
+  $('гром-цифра').textContent = String(n);
+  шкала.querySelectorAll('i').forEach((el, i) => el.classList.toggle('on', i < n));
+}
+
+function показатьГромкость(показать) {
+  уровеньBox.classList.toggle('показана', показать);
+  язычок.classList.toggle('on', показать);
+  clearTimeout(volumeTimer);
+  // Назад к режимам — само и достаточно быстро: телефон лежит сбоку.
+  if (показать) volumeTimer = setTimeout(() => показатьГромкость(false), ВОЗВРАТ);
+}
+
+function шагГромкости(шаг) {
+  send({ type: 'volume', step: шаг });
+  // Пока ответ не пришёл, отодвигаем возврат: жмут подряд — не мешаем.
+  clearTimeout(volumeTimer);
+  volumeTimer = setTimeout(() => показатьГромкость(false), ВОЗВРАТ);
+}
+
+язычок.addEventListener('click', () => показатьГромкость(!уровеньBox.classList.contains('показана')));
+$('гром-вверх').addEventListener('click', () => шагГромкости(1));
+$('гром-вниз').addEventListener('click', () => шагГромкости(-1));
+
+/* ---------- Действия над компом ---------- */
+/* Кнопки внизу присылает сервер (сообщение `actions`), и телефон знает у них
+   только номер места. Что кнопка делает — решает комп, поэтому телефон шлёт
+   `{type: 'action', slot}` и ничего больше: ни клавиш, ни имён программ с
+   телефона уйти не может.
+   Встроенные кнопки ведут себя ровно как раньше: телефон сам зовёт нужный
+   запрос, потому что оверлей заметок и «слушаю» живут здесь. */
+let actionItems = null;   /* что прислал сервер; null — рисуем запасные */
+/* Какая нижняя кнопка выбрана в режиме правки. Объявлено здесь, а не в блоке
+   правки: `drawActions` вызывается раньше, и обращение к переменной из
+   строки ниже было бы обращением к ещё не объявленной (ошибка страницы). */
+let editActionSlot = null;
+
+/* Рисует нижние кнопки. `items` — список с сервера, без него берём ACTIONS. */
+function drawActions(items) {
+  actionItems = (Array.isArray(items) && items.length) ? items : null;
+  const список = actionItems || ACTIONS;
+  actionsBox.innerHTML = '';
+  список.forEach((action) => {
+    if (!action || action.kind === 'none') return;
+    const slot = Number.isFinite(Number(action.slot)) ? Number(action.slot) : список.indexOf(action);
+    const el = document.createElement('div');
+    el.className = 'act';
+    el.dataset.slot = String(slot);
+    el.title = action.title || '';
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', action.title || '');
+    /* Значок программы или пункта приходит картинкой (`image`), значок
+       сочетания — именем из набора (`icon`). */
+    if (action.image) {
+      el.innerHTML = '<img src="' + action.image + '" alt="">';
+    } else {
+      el.innerHTML = ICONS[action.icon] || ICONS.app;
+    }
+    const подпись = document.createElement('span');
+    подпись.textContent = action.title || '';
+    el.appendChild(подпись);
+    /* Пункт-переключатель (Discord «Микрофон»): подсветка и удержание — как у
+       плитки подменю, тот же счёт нажатий на сервере. */
+    if (action.toggle) {
+      el.classList.add('flip');
+      el.dataset.key = action.id || '';
+      el.dataset.app = action.app || '';
+      if (action.on) el.classList.add('on');
+      let удержали = false;
+      let таймер = null;
+      let сброс = null;
+      el.addEventListener('pointerdown', () => {
+        удержали = false;
+        clearTimeout(таймер);
+        clearTimeout(сброс);
+        таймер = setTimeout(() => {
+          удержали = true;
+          send({ type: 'menu_flip', app: el.dataset.app, item: el.dataset.key });
+          showToast('подсветка поправлена', true);
+          clearTimeout(сброс);
+          сброс = setTimeout(() => { удержали = false; }, 800);
+        }, HOLD_MS);
+      });
+      const стоп = () => { clearTimeout(таймер); };
+      el.addEventListener('pointerup', стоп);
+      el.addEventListener('pointercancel', стоп);
+      el.addEventListener('click', () => {
+        if (удержали) { удержали = false; return; }
+        /* В режиме правки кнопка не выполняется, а выбирается. */
+        if (EDIT) { editSay({ type: 'truba-edit-action', slot: slot }); return; }
+        send({ type: 'action', slot: slot });
+        flash(el);
+      });
+      actionsBox.appendChild(el);
+      return;
+    }
+    el.addEventListener('click', () => {
+      if (EDIT) { editSay({ type: 'truba-edit-action', slot: slot }); return; }
+      /* «Заметка» — особая кнопка: первое касание открывает заметки, чтобы
+         почитать их с телефона, а уже «✎ Записать» в оверлее начинает
+         диктовку. Остальные встроенные шлют своё. */
+      if (action.kind === 'builtin' && action.id === 'note_start') {
+        openNotes(); flash(el); return;
+      }
+      if (action.kind === 'builtin') send({ type: action.id });
+      else send({ type: 'action', slot: slot });
+      el.classList.add('done');
+      setTimeout(() => el.classList.remove('done'), 800);
+      /* «Найти» — это тот же жест, что и круг в центре: сказать, чего
+         ищем, голосом. Круг сразу показывает, что слушает. */
+      if (action.kind === 'builtin' && action.id === 'search') listenNow('скажи, что найти');
+    });
+    actionsBox.appendChild(el);
+  });
+  if (EDIT) editPickAction(editActionSlot);
+}
+
+/* Подсветка выбранной нижней кнопки в режиме правки — как у выбранного
+   значка программы (янтарная обводка). */
+function editPickAction(slot) {
+  /* null и «нет выбора» — одно и то же: пустой слот не равен ни одной кнопке
+     (`String(null)` не совпадёт ни с одним номером). */
+  editActionSlot = (slot === null || slot === undefined || slot === '') ? null : Number(slot);
+  actionsBox.querySelectorAll('.act[data-slot]').forEach((el) => {
+    el.classList.toggle('picked', String(el.dataset.slot) === String(editActionSlot));
+  });
+}
+
+drawActions(null);
+
+/* ---------- Снимок экрана компа ---------- */
+/* Снимок уходит сам через `hide` секунд: сам он не скрывается, пока не
+   коснёшься. Касание — по-прежнему убирает сразу. */
+let shotTimer = null;
+function hideShot() {
+  shotBox.classList.remove('on');
+  /* Картинку отпускаем: кадр Full HD висит в памяти телефона, а их
+     за вечер может накопиться много. */
+  shotImg.src = '';
+}
+function showShot(image, caption, hide) {
+  /* Снимок закрывает экран целиком: подменю под ним не нужно. */
+  closeMenu();
+  shotImg.src = image;
+  shotBox.querySelector('.cap').textContent = caption + ' — коснись, чтобы убрать';
+  shotBox.classList.add('on');
+  clearTimeout(shotTimer);
+  /* Секунды шлёт сервер. Нет их или мусор — 15: снимок по просьбе лежит
+     столько, сколько даёт hands.SHOT_HIDE. */
+  const seconds = Number(hide);
+  shotTimer = setTimeout(hideShot,
+    Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 15000);
+}
+
+shotBox.addEventListener('click', () => {
+  clearTimeout(shotTimer);
+  hideShot();
+});
+
+/* ---------- Короткие надписи ---------- */
+let toastTimer = null;
+function showToast(text, ok) {
+  toastBox.textContent = text;
+  toastBox.className = 'on ' + (ok ? 'ok' : 'bad');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { toastBox.className = ''; }, 2200);
+}
+
+/* ---------- Заряд ----------
+   Браузер отдаёт заряд только в защищённом контексте (хозяин включил флаг
+   Chrome). Нет такого — не показываем ничего и не ругаемся: телефон просто
+   не знает свой заряд, и это не поломка. */
+async function watchBattery() {
+  if (!navigator.getBattery) return;
+  let battery;
+  try { battery = await navigator.getBattery(); } catch (e) { return; }
+
+  const report = () => {
+    const level = Math.round((battery.level || 0) * 100);
+    const charging = !!battery.charging;
+    batBox.hidden = false;
+    batBox.classList.toggle('charging', charging);
+    /* Цвет по уровню: зелёный от 50, жёлтый от 20, ниже — красный. */
+    batBox.classList.toggle('full', level >= 50);
+    batBox.classList.toggle('mid', level >= 20 && level < 50);
+    batBox.classList.toggle('low', level < 20);
+    batBox.querySelector('.pct').textContent = level + '%';
+    const fill = batBox.querySelector('.shell i');
+    /* Пятая часть зарезервирована под «пробка»: на 100% заливка до края
+       сбегает на скругление. */
+    fill.style.width = Math.min(100, level) + '%';
+    send({ type: 'battery', level, charging });
+  };
+
+  battery.addEventListener('levelchange', report);
+  battery.addEventListener('chargingchange', report);
+  report();
+  /* Раз в минуту — на случай, если события не пришли (бывает, когда
+     телефон спит), а пульт показывает «телефон на связи». */
+  setInterval(report, 60000);
+}
+
+/* ---------- Часы ----------
+   По часам самого телефона: раз в 10 секунд. Чаще не нужно — минута всё
+   равно меняется раз в 60 секунд, а телефон на батарее. Раз в секунду
+   часы обновляли бы только впустую. */
+function tickClock() {
+  const сейчас = new Date();
+  const pad = (n) => (n < 10 ? '0' : '') + n;
+  clockBox.textContent = pad(сейчас.getHours()) + ':' + pad(сейчас.getMinutes());
+}
+
+/* ---------- Погода ----------
+   В полосе сверху показываем только значок и температуру: это то, что видно
+   боковым зрением издали. Остальное — в карточке по касанию. */
+function degree(value) {
+  const t = Math.round(Number(value));
+  if (!Number.isFinite(t)) return '—';
+  return (t > 0 ? '+' : '') + t + '°';
+}
+
+function drawWeather(msg) {
+  const now = msg && msg.now;
+  if (!now || now.temp === undefined || now.temp === null) {
+    /* Данных нет — не показываем ничего: пустой значок рядом с зарядом
+       читается как поломка. Сюда же попадает `off` — сервер так говорит,
+       что город сняли и погоды больше не будет. */
+    wxBox.hidden = true;
+    lastWeather = null;
+    return;
+  }
+  lastWeather = msg;
+  wxBox.hidden = false;
+  wxBox.querySelector('.ico').innerHTML = ICONS[now.icon] || ICONS.cloud;
+  wxBox.querySelector('.t').textContent = degree(now.temp);
+  wxBox.setAttribute('aria-label',
+      (msg.city || '') + ' ' + degree(now.temp) + ', ' + (now.text || ''));
+  if (!wxBox.dataset.read) {
+    wxBox.dataset.read = '1';
+    wxBox.setAttribute('role', 'button');
+  }
+}
+
+/* Карточка: город, что сейчас, сегодня и завтра. Закрывается касанием и
+   сама через 15 секунд — как подменю программы. */
+let wxTimer = null;
+
+function showWeather() {
+  const data = lastWeather;
+  if (!data) return;
+  const card = wxCard.querySelector('.card');
+  const now = data.now || {};
+
+  card.querySelector('.city').textContent = data.city || '';
+  buildScene(card.querySelector('.scene'), now.icon);
+  card.querySelector('.big').textContent = degree(now.temp);
+  card.querySelector('.word').textContent = now.text || '';
+
+  const чувств = [];
+  if (now.feels !== undefined && now.feels !== null) {
+    чувств.push('ощущается как ' + degree(now.feels));
+  }
+  if (now.wind) чувств.push('ветер ' + now.wind + ' м/с');
+  /* Строками, а не через точку: в одну строку «м/с» переносилось. */
+  card.querySelector('.feels').textContent = чувств.join('\n');
+
+  const дни = card.querySelector('.days');
+  дни.innerHTML = '';
+  (Array.isArray(data.days) ? data.days : []).slice(0, 2).forEach((day, index) => {
+    const tile = document.createElement('div');
+    tile.className = 'day';
+    /* Подпись дня — по порядку, а не по дате: телефон свой часовой пояс
+       знает, а дату из сети сравнивать с местной нечем. */
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = index === 0 ? 'сегодня' : 'завтра';
+    /* Текст и значок ставим текстом и разметкой ICONS — из сети приходят
+       только слова и имена значков, чужой разметки здесь быть не может. */
+    const ico = document.createElement('div');
+    ico.innerHTML = ICONS[day.icon] || ICONS.cloud;
+    const temps = document.createElement('div');
+    temps.className = 'temps';
+    const hi = document.createElement('span');
+    hi.className = 'hi';
+    hi.textContent = degree(day.max);
+    const lo = document.createElement('span');
+    lo.className = 'lo';
+    lo.textContent = degree(day.min);
+    temps.append(hi, lo);
+    const word = document.createElement('div');
+    word.className = 'word';
+    word.textContent = day.text || '';
+    tile.append(name, ico, temps, word);
+    if (day.rain !== undefined && day.rain !== null) {
+      const rain = document.createElement('div');
+      rain.className = 'rain' + (day.rain < 20 ? ' dry' : '');
+      rain.innerHTML = WX_DROP;
+      rain.append(document.createTextNode(day.rain + '%'));
+      tile.appendChild(rain);
+    }
+    дни.appendChild(tile);
+  });
+
+  /* Возраст данных — только когда он уже заметен. Каждую минуту писать
+     «обновлено 0 мин назад» незачем, а «данные за вчера» — надо. */
+  const часов = Math.floor((data.age_min || 0) / 60);
+  wxCard.querySelector('.age').textContent = часов >= 2
+      ? 'обновлено ' + часов + ' ' + часовWord(часов) + ' назад'
+      : '';
+
+  wxCard.classList.add('on');
+  clearTimeout(wxTimer);
+  wxTimer = setTimeout(closeWeather, 15000);
+}
+
+/* Живая сцена под погоду «сейчас»: солнце с лучами, облака, капли, снег,
+   молния, туман. Собирается при каждом открытии карточки. */
+const WX_DROP = '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3c3.5 4.6 6 8 6 11a6 6 0 0 1-12 0c0-3 2.5-6.4 6-11z"/></svg>';
+const WX_RAYS = '<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="4" stroke-linecap="round">'
+  + [0, 45, 90, 135, 180, 225, 270, 315].map((a) =>
+      '<line x1="50" y1="6" x2="50" y2="16" transform="rotate(' + a + ' 50 50)"/>').join('')
+  + '</svg>';
+const WX_BOLT = '<svg viewBox="0 0 22 36" fill="currentColor"><path d="M13 0L2 20h7l-3 16L20 13h-8z"/></svg>';
+
+function buildScene(scene, icon) {
+  scene.innerHTML = '';
+  scene.className = 'scene';
+  const add = (cls, html, style) => {
+    const el = document.createElement('div');
+    el.className = cls;
+    if (html) el.innerHTML = html;
+    if (style) Object.assign(el.style, style);
+    scene.appendChild(el);
+    return el;
+  };
+  const sun = () => { add('rays', WX_RAYS); add('sun'); };
+  const clouds = (two) => {
+    if (two) add('cloud c2', ICONS.cloud);
+    add('cloud c1', ICONS.cloud);
+  };
+  /* Капли и снежинки — с разным сдвигом по времени, чтобы падали вразнобой. */
+  const falling = (cls, count, period) => {
+    for (let i = 0; i < count; i++) {
+      add(cls, '', {
+        left: (30 + i * (68 / count)) + 'px',
+        animationDelay: (-(i * 0.37) % period).toFixed(2) + 's',
+      });
+    }
+  };
+  switch (icon) {
+    case 'sun': sun(); break;
+    case 'sun-cloud': scene.classList.add('part'); sun(); clouds(false); break;
+    case 'rain': clouds(true); falling('drop', 7, 1); break;
+    case 'snow': clouds(true); falling('flake', 6, 3.2); break;
+    case 'storm': clouds(true); falling('drop', 6, 1); add('bolt', WX_BOLT); break;
+    case 'fog':
+      clouds(false);
+      [92, 104, 116].forEach((top, i) =>
+        add('band', '', { top: top + 'px', animationDelay: -(i * 1.7) + 's' }));
+      break;
+    default: clouds(true);
+  }
+}
+
+function часовWord(n) {
+  const tail100 = n % 100, tail10 = n % 10;
+  if (tail100 >= 11 && tail100 <= 14) return 'часов';
+  if (tail10 === 1) return 'час';
+  if (tail10 >= 2 && tail10 <= 4) return 'часа';
+  return 'часов';
+}
+
+function closeWeather() {
+  clearTimeout(wxTimer);
+  wxTimer = null;
+  wxCard.classList.remove('on');
+}
+
+wxBox.addEventListener('click', showWeather);
+wxCard.addEventListener('click', closeWeather);
+
+/* ---------- Поиск ----------
+   Карточка приходит после любого поиска: и после кнопки «Найти», и после
+   того, как она сходила в интернет сама (после любого поиска, с касанием).
+   Строки в ней не текст для чтения, а кнопки: по запросу и по
+   источнику открывается браузер на компьютере — телефон знает только номер
+   источника, адрес берёт сервер. */
+let findTimer = null;
+/* Запрос, по которому открывать: тот, что реально ушёл в поисковик
+   (`query`), а если его нет — слова хозяина (`asked`). */
+let findQuery = '';
+/* Карточка живёт несколько секунд: успел прочитать, тыкнул источник — своё
+   дело сделала. Ссылки никуда не делись — вся история поиска лежит в
+   отдельной карточке и открывает любой запрос на компьютере. */
+const FIND_HIDE_MS = 7000;
+
+function closeFind() {
+  clearTimeout(findTimer);
+  findTimer = null;
+  findBox.classList.remove('on');
+}
+
+/* Касание строки карточку не закрывает, а продлевает: хозяин читает
+   источники и тыкает, времени нужно чуть больше, чем на чтение ответа. */
+function armFind() {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(closeFind, FIND_HIDE_MS);
+}
+
+function showSearch(msg) {
+  const card = findBox.querySelector('.card');
+  findQuery = String(msg.query || msg.asked || '').slice(0, 200);
+  card.querySelector('.q').textContent = findQuery.slice(0, 120);
+  card.querySelector('.a').textContent = String(msg.answer || '').slice(0, 600);
+  const sources = card.querySelector('.src');
+  sources.innerHTML = '';
+  (Array.isArray(msg.sources) ? msg.sources : []).slice(0, 3).forEach((source, номер) => {
+    const row = document.createElement('div');
+    row.className = 'srow';
+    /* Текст ставим текстом, а не разметкой: заголовки из интернета
+       приходят чужими и не должны уметь ничего разметить. */
+    const title = document.createElement('div');
+    title.className = 'st';
+    title.textContent = String(source.title || source.host || '').slice(0, 160);
+    const host = document.createElement('div');
+    host.className = 'sh';
+    host.textContent = String(source.host || '');
+    row.appendChild(title);
+    row.appendChild(host);
+    row.addEventListener('click', (event) => {
+      event.stopPropagation();
+      /* Только номер: телефон не присылает адрес и не может заставить
+         комп открыть произвольную ссылку. */
+      send({ type: 'open_source', index: номер });
+      armFind();
+    });
+    sources.appendChild(row);
+  });
+  findBox.classList.add('on');
+  armFind();
+}
+
+findBox.querySelector('.qrow').addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (!findQuery) return;
+  send({ type: 'open_search', query: findQuery });
+  armFind();
+});
+
+findBox.querySelector('.x').addEventListener('click', (event) => {
+  event.stopPropagation();
+  closeFind();
+});
+
+/* Закрывает только пустое место вокруг карточки: касание самой карточки —
+   это касание строки, и оно должно открывать, а не убирать её. */
+findBox.addEventListener('click', (event) => {
+  if (event.target.closest('.card')) return;
+  closeFind();
+});
+
+/* ---------- Напоминания и история поиска ----------
+   Две постоянные карточки под нижними кнопками: что стоит и что она искала
+   в интернете. Обе только читают: отмены с телефона нет, а тап по строке
+   истории открывает тот же запрос в браузере на компьютере (тот же
+   `open_search`, что у карточки поиска — адрес собирает сервер).
+
+   Данные идут по тому же авторизованному WebSocket, что и всё остальное для
+   телефона: локальный `GET /api/reminders` с телефона недоступен, и снимать
+   это ограничение нельзя. В макете пульта (`?edit=1`) связи нет вовсе —
+   карточки там только для вида, и нажатие ничего не спрашивает. */
+const remBox = $('remcard'), remList = remBox.querySelector('.list');
+const histBox = $('histcard'), histList = histBox.querySelector('.list');
+
+/* Открытый список: пока ответ не пришёл, в нём написано «Открываю…», иначе
+   телефон мигнул бы пустым экраном, и это читалось бы как «ничего нет». */
+let listBox = null;
+
+/* Открыть карточку и попросить её список. `запрос` — что именно просим
+   (`reminders_list`, `search_history_list`). Переспроса здесь нет: это
+   только чтение, а кнопки действий работают с одного касания (см. `команда`). */
+function openList(box, list, запрос) {
+  closeMenu();
+  if (listBox && listBox !== box) listBox.classList.remove('on');
+  listBox = box;
+  box.classList.add('on');
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    /* Нет связи — говорим сразу, а не «Открываю…»: ждать ответа, которого не
+       будет, хозяин не станет. */
+    показатьОжидание(list, 'нет связи с компом');
+    return;
+  }
+  /* Список чистим и показываем ожидание, даже если он уже был открыт: хозяин
+     мог смотреть другой, а старые данные с новым ожиданием — враньё. */
+  показатьОжидание(list, 'Открываю…', 'не получила ответа — попробуй ещё раз');
+  send({ type: запрос });
+}
+
+/* Пока комп не ответил, в списке стоит одна строка-ожидание. Если ответа нет
+   и через `WAIT_MS`, а `тихо` сказано, строка меняется на честную: иначе
+   «Открываю…» висело бы вечно, и хозяин думал бы, что телефон завис. */
+const WAIT_MS = 8000;
+let waitTimer = null;
+
+function показатьОжидание(list, текст, тихо) {
+  clearTimeout(waitTimer);
+  list.textContent = '';
+  const надпись = cardNote(текст);
+  list.appendChild(надпись);
+  if (!тихо || тихо === текст) return;
+  waitTimer = setTimeout(() => {
+    /* Ответ пришёл и перерисовал список — надпись уже не наша, трогать нечего. */
+    if (надпись.parentNode !== list) return;
+    надпись.textContent = тихо;
+  }, WAIT_MS);
+}
+
+function closeList(box) {
+  box.classList.remove('on');
+  if (listBox === box) listBox = null;
+}
+
+function cardNote(text) {
+  const el = document.createElement('div');
+  el.className = 'note';
+  /* Текстом: сюда попадает и ошибка с компьютера, а чужой текст разметкой
+     быть не должен. */
+  el.textContent = text;
+  return el;
+}
+
+/* Команда с телефона: требует живую связь (в макете `?edit=1` её нет вовсе) и
+   показывает ожидание. Дальше список перерисует ответ компьютера — вместе с
+   ошибкой, если что-то пошло не так. Одно касание — одно действие: хозяин
+   просил убрать переспрос («нажал — и сделано»), а `confirm` на телефоне
+   выглядит как чужое окно. */
+function команда(list, что) {
+  if (EDIT) return;
+  if (!socket || socket.readyState !== WebSocket.OPEN) {
+    показатьОжидание(list, 'нет связи с компом');
+    return;
+  }
+  показатьОжидание(list, 'Делаю…', 'не получила ответа — попробуй ещё раз');
+  send(что);
+}
+
+function openReminders() {
+  if (EDIT) return;
+  openList(remBox, remList, 'reminders_list');
+}
+
+function openHistory() {
+  if (EDIT) return;
+  openList(histBox, histList, 'search_history_list');
+}
+
+/* Значки карточек — из общего словаря, как у программ и нижних кнопок. */
+$('card-rem').querySelector('.ico').innerHTML = ICONS.bell;
+$('card-hist').querySelector('.ico').innerHTML = ICONS.searchtime;
+
+$('card-rem').addEventListener('click', openReminders);
+$('card-hist').addEventListener('click', openHistory);
+remBox.querySelector('.x').addEventListener('click', (event) => {
+  event.stopPropagation();
+  closeList(remBox);
+});
+histBox.querySelector('.x').addEventListener('click', (event) => {
+  event.stopPropagation();
+  closeList(histBox);
+});
+$('hist-clear').addEventListener('click', (event) => {
+  event.stopPropagation();
+  /* Одно касание — и вся история поиска убрана. Список перерисует ответ
+     компьютера, а если связь пропала, на месте кнопки будет «нет связи». */
+  команда(histList, { type: 'search_history_clear' });
+});
+
+/* Время строкой: «сегодня 17:00», «завтра 9:30», а на дату — «30.09 17:00».
+   Разбирает сам телефон (браузер понимает ISO с поясом), и слова «сегодня» и
+   «завтра» — его же часы: у него пояс свой. */
+function whenText(value) {
+  const момент = new Date(String(value || ''));
+  if (!value || isNaN(момент.getTime())) return '';
+  const часы = String(момент.getHours()).padStart(2, '0')
+    + ':' + String(момент.getMinutes()).padStart(2, '0');
+  const сегодня = new Date();
+  const завтра = new Date(сегодня.getTime() + 86400000);
+  if (момент.toDateString() === сегодня.toDateString()) return 'сегодня ' + часы;
+  if (момент.toDateString() === завтра.toDateString()) return 'завтра ' + часы;
+  return String(момент.getDate()).padStart(2, '0') + '.'
+    + String(момент.getMonth() + 1).padStart(2, '0') + ' ' + часы;
+}
+
+/* Сколько осталось: у таймера это главное. Считаем по часам телефона — пояс у
+   будильника и у телефона может разойтись, и честнее считать там, где
+   смотрят. */
+function leftText(item) {
+  const момент = new Date(String(item.due || ''));
+  if (!item.due || isNaN(момент.getTime())) return '';
+  const минут = Math.round((момент.getTime() - Date.now()) / 60000);
+  if (минут <= 0) return 'пора';
+  if (минут < 60) return 'через ' + минут + ' мин';
+  const часов = Math.floor(минут / 60);
+  if (часов < 24) return 'через ' + часов + ' ' + часовWord(часов);
+  return whenText(item.due);
+}
+
+function drawReminders(msg) {
+  if (!remBox.classList.contains('on')) return;
+  clearTimeout(waitTimer);
+  const items = Array.isArray(msg.items) ? msg.items : [];
+  remList.textContent = '';
+  /* Ошибку показываем и списком не молчим: после неудачной отмены хозяин
+     должен увидеть, что осталось стоять, а не пустую карточку. */
+  if (msg.error) remList.appendChild(cardNote('не получила: ' + String(msg.error)));
+  if (!items.length) {
+    if (!msg.error) {
+      remList.appendChild(cardNote('Пока пусто. Скажи «напомни…» — поставлю.'));
+    }
+    return;
+  }
+  items.forEach((item) => {
+    const one = item || {};
+    const row = document.createElement('div');
+    row.className = 'row';
+    const txt = document.createElement('div');
+    txt.className = 'txt';
+    /* Текст напоминания — слова хозяина: текстом, а не разметкой. */
+    const t = document.createElement('div');
+    t.className = 't';
+    t.textContent = String(one.text || '').slice(0, 200)
+      || (one.kind === 'timer' ? 'таймер' : 'напоминание');
+    const w = document.createElement('div');
+    w.className = 'w';
+    /* Вид записи — словами: телефон не знает, что значит `timer`. */
+    w.textContent = (one.kind === 'timer' ? 'таймер · ' : '') + leftText(one);
+    txt.append(t, w);
+    row.appendChild(txt);
+    const id = String(one.id || '').slice(0, 64);
+    if (id) row.appendChild(кнопкаСтроки('Отменить', () => {
+      /* Снять одно: `id` телефон знает с списка, а «всё» с телефона нельзя.
+         Одно касание — и напоминания нет, без переспроса. */
+      команда(remList, { type: 'reminders_cancel', id: id });
+    }));
+    remList.appendChild(row);
+  });
+}
+
+/* Маленькая кнопка действия в строке списка. Событие гасит сама: строка
+   истории — кнопка «открыть поиск», и нажатие «Удалить» не должно ещё и
+   открывать браузер на компьютере. Действие выполняется сразу: переспроса
+   нет. */
+function кнопкаСтроки(подпись, действие) {
+  const b = document.createElement('div');
+  b.className = 'rbtn';
+  b.setAttribute('role', 'button');
+  b.textContent = подпись;
+  b.addEventListener('click', (event) => {
+    event.stopPropagation();
+    действие();
+  });
+  return b;
+}
+
+function drawHistory(msg) {
+  if (!histBox.classList.contains('on')) return;
+  clearTimeout(waitTimer);
+  const items = Array.isArray(msg.items) ? msg.items : [];
+  histList.textContent = '';
+  if (msg.error) histList.appendChild(cardNote('не получила: ' + String(msg.error)));
+  const пусто = cardNote('Пока пусто: в интернете ещё не искала.');
+  if (!items.length) {
+    if (!msg.error) histList.appendChild(пусто);
+    return;
+  }
+  items.forEach((item) => {
+    const one = item || {};
+    const запрос = String(one.query || '').slice(0, 200);
+    if (!запрос) return;
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.setAttribute('role', 'button');
+    const txt = document.createElement('div');
+    txt.className = 'txt';
+    /* Запрос текстом: это слова хозяина, разметки тут быть не может. */
+    const t = document.createElement('div');
+    t.className = 't';
+    t.textContent = запрос;
+    const w = document.createElement('div');
+    w.className = 'w';
+    w.textContent = whenText(one.at);
+    txt.append(t, w);
+    row.appendChild(txt);
+    /* Убирается строго по `id`: тот же вопрос может лежать здесь дважды, и
+       снести надо ту, которую ткнули. */
+    const id = String(one.id || '').slice(0, 64);
+    if (id) {
+      /* Одно касание — и записи нет. Событие кнопка гасит сама, поэтому
+         браузер на компьютере из-за удаления не откроется. */
+      row.appendChild(кнопкаСтроки('Удалить', () => {
+        команда(histList, { type: 'search_history_delete', id: id });
+      }));
+    }
+    row.addEventListener('click', (event) => {
+      event.stopPropagation();
+      /* Только сам запрос: адрес собирает сервер (`_open_search`), телефон не
+         присылает ничего, кроме текста. В историю это повторно не пишется —
+         туда кладутся только настоящие поиски (core/search_history.py). */
+      send({ type: 'open_search', query: запрос });
+      closeList(histBox);
+    });
+    histList.appendChild(row);
+  });
+  /* Мусор в ответе (строки без запроса) — тогда список пуст, и сказать об
+     этом надо словами, а не оставить белый экран. */
+  if (!histList.childElementCount) histList.appendChild(пусто);
+}
+
+/* ---------- Заметки ----------
+   Кнопка «заметка» открывает этот оверлей, а «✎ Записать» в его шапке — то
+   же, что она делала раньше: начинает диктовку. Смысл в том, чтобы хозяин мог
+   почитать и пролистать заметки с телефона, не уходя к компьютеру. */
+const notesBox = $('notes');
+const notesList = $('notes-list');
+const notesRead = $('notes-read');
+const notesRecord = $('notes-record');
+const notesClose = $('notes-close');
+
+/* Какая тема сейчас выбрана. Ответ с компьютера приходит отдельно от запроса,
+   и пока хозяин листает, успевает прийти не та тема: сверяемся с этим полем,
+   а чужой ответ молча выкидываем. */
+let notePicked = null;
+
+function openNotes() {
+  closeMenu();
+  notePicked = null;
+  notesList.textContent = '';
+  notesRead.textContent = '';
+  notesRead.appendChild(noteNote('Открываю…'));
+  notesBox.classList.add('on');
+  send({ type: 'notes_list' });
+}
+
+/* Само не закрывается: ни по снимку экрана, ни когда она заговорила.
+   Хозяин читает — пусть читает; закрыть он может «✕» или записью. */
+function closeNotes() {
+  notesBox.classList.remove('on');
+}
+
+/* Одна строка-подсказка вместо содержимого. */
+function noteNote(text) {
+  const el = document.createElement('div');
+  el.className = 'nempty';
+  el.textContent = text;
+  return el;
+}
+
+/* Полоса тем. От каждой темы телефон знает только имя, число записей и дату —
+   этого хватает, чтобы выбрать, а файлов у него нет. Разделов в полосе нет:
+   раздел выбранной темы виден в тексте, а здесь он только сбивал бы с толку.
+   Порядок — свежие первыми, потому что хозяин обычно продолжает последнее. */
+function drawNotes(sections) {
+  notesList.textContent = '';
+  const список = Array.isArray(sections) ? sections : [];
+  /* Разделы разворачиваем в один список: таблетки идут подряд, без подписей. */
+  const темы = [];
+  список.forEach((section) => {
+    const раздел = String(section.name || '');
+    (Array.isArray(section.topics) ? section.topics : []).forEach((topic) => {
+      темы.push({ раздел: раздел, имя: String(topic.name || ''),
+        записей: Number(topic.entries) || 0,
+        updated: String(topic.updated || ''),
+        порядок: темы.length });
+    });
+  });
+  if (!темы.length) {
+    notesRead.textContent = '';
+    notesRead.appendChild(
+        noteNote('Заметок пока нет. Нажми «Записать» и продиктуй'));
+    return;
+  }
+  /* Свежие сверху. При одинаковой дате — как пришли: `порядок` для того и
+     заведён, чтобы порядок не зависел от сравнения строк. */
+  темы.sort((a, b) => (a.updated < b.updated ? 1
+    : a.updated > b.updated ? -1 : a.порядок - b.порядок));
+  темы.forEach((тема) => {
+    const строка = document.createElement('div');
+    строка.className = 'ntopic';
+    строка.setAttribute('role', 'button');
+    строка.dataset.section = тема.раздел;
+    строка.dataset.topic = тема.имя;
+    const nm = document.createElement('div');
+    nm.className = 'nm';
+    /* Имя темы текстом: разметки тут быть не может, это хозяинский текст. */
+    nm.textContent = тема.имя;
+    const count = document.createElement('div');
+    count.className = 'ct';
+    /* Число записей — мелкой цифрой рядом с именем: «Труба · 2». */
+    count.textContent = '· ' + (Number(тема.записей) || 0);
+    строка.append(nm, count);
+    строка.addEventListener('click', () => {
+      openTopic(тема.раздел, тема.имя);
+    });
+    notesList.appendChild(строка);
+  });
+  /* Открываем сразу самую свежую: с неё хозяин начнёт. */
+  openTopic(темы[0].раздел, темы[0].имя);
+}
+
+function openTopic(section, topic) {
+  notePicked = { section: section, topic: topic };
+  notesList.querySelectorAll('.ntopic').forEach((строка) => {
+    const наша = строка.dataset.section === section
+        && строка.dataset.topic === topic;
+    строка.classList.toggle('on', наша);
+    /* Выбранную таблетку показываем: полоса могла остаться на других темах. */
+    if (наша) {
+      строка.scrollIntoView({ inline: 'nearest', block: 'nearest' });
+    }
+  });
+  notesRead.textContent = '';
+  notesRead.scrollTop = 0;
+  notesRead.appendChild(noteNote('Открываю…'));
+  send({ type: 'notes_topic', section: section, topic: topic });
+}
+
+/* Разбор текста записи на блоки: абзацы по пустым строкам, «- » — список,
+   «### » — подзаголовок. Всё, что не подошло, идёт абзацем. */
+function noteBlocks(text) {
+  const блоки = [];
+  String(text || '').split(/\n\s*\n/).forEach((кусок) => {
+    const строки = кусок.split('\n').map((s) => s.trim()).filter(Boolean);
+    if (!строки.length) return;
+    if (строки[0].startsWith('### ')) {
+      блоки.push({ вид: 'заголовок', текст: строки[0].slice(4) });
+      строки.shift();
+      if (!строки.length) return;
+    }
+    if (строки.every((s) => s.startsWith('- '))) {
+      блоки.push({ вид: 'список', строки: строки.map((s) => s.slice(2)) });
+      return;
+    }
+    блоки.push({ вид: 'абзац', текст: строки.join(' ') });
+  });
+  return блоки;
+}
+
+/* Ответ с темой: записи новыми сверху. В файле они по датам, от ранних к
+   поздним, а читать хозяину начинает с последней. */
+function drawNoteTopic(msg) {
+  if (!notePicked) return;
+  if (String(msg.section || '') !== notePicked.section
+      || String(msg.topic || '') !== notePicked.topic) return;
+  notesRead.textContent = '';
+  /* Раздел в полосе не показывается, поэтому здесь он и виден: мелко, под ним
+     название темы. Обе строки текстом — это хозяинский текст. */
+  if (notePicked.section) {
+    const раздел = document.createElement('div');
+    раздел.className = 'nsec';
+    раздел.textContent = notePicked.section;
+    notesRead.appendChild(раздел);
+  }
+  const заголовок = document.createElement('div');
+  заголовок.className = 'nread-head';
+  заголовок.textContent = notePicked.topic;
+  notesRead.appendChild(заголовок);
+  /* Новая тема — текст с начала, а не с того места, где хозяин остановился. */
+  notesRead.scrollTop = 0;
+  if (msg.error) {
+    notesRead.appendChild(noteNote('Не прочитала'));
+    return;
+  }
+  const записи = Array.isArray(msg.entries) ? msg.entries.slice().reverse() : [];
+  if (!записи.length) {
+    notesRead.appendChild(noteNote('Пока пусто'));
+    return;
+  }
+  записи.forEach((запись) => {
+    const card = document.createElement('div');
+    card.className = 'nentry';
+    if (запись.when) {
+      const when = document.createElement('div');
+      when.className = 'nwhen';
+      when.textContent = String(запись.when);
+      card.appendChild(when);
+    }
+    if (запись.title) {
+      const name = document.createElement('div');
+      name.className = 'nentry-head';
+      name.textContent = String(запись.title);
+      card.appendChild(name);
+    }
+    const body = document.createElement('div');
+    body.className = 'ntext';
+    noteBlocks(запись.text).forEach((блок) => {
+      if (блок.вид === 'заголовок') {
+        const h = document.createElement('h4');
+        h.textContent = блок.текст;
+        body.appendChild(h);
+        return;
+      }
+      if (блок.вид === 'список') {
+        const ul = document.createElement('ul');
+        блок.строки.forEach((пункт) => {
+          const li = document.createElement('li');
+          li.textContent = пункт;
+          ul.appendChild(li);
+        });
+        body.appendChild(ul);
+        return;
+      }
+      const p = document.createElement('p');
+      p.textContent = блок.текст;
+      body.appendChild(p);
+    });
+    card.appendChild(body);
+    notesRead.appendChild(card);
+  });
+}
+
+/* Повторное нажатие кнопки «заметка»: диктуем. Оверлей при этом закрываем,
+   а круг сразу показывает, что слушает. */
+notesRecord.addEventListener('click', () => {
+  closeNotes();
+  send({ type: 'note_start' });
+  listenNow();
+});
+notesClose.addEventListener('click', closeNotes);
+
+/* ---------- Программы ---------- */
+/* Цвет — главный опознавательный знак на маленьком экране: подписи
+   читать некогда, а по цвету кнопка узнаётся боковым зрением. */
+const APP_COLORS = {
+  firefox: '#ff7139',
+  youtube: '#ff3d3d',
+  claude: '#d98b52',
+  chatgpt: '#9aa7ff',
+  happ: '#6b8afd',
+  discord: '#7f8ff4',
+};
+
+/* Значок одной программы: тот же рисунок, что и в раскладке, только без
+   обработчика нажатия. */
+function appFace(item) {
+  /* Настоящий значок программы узнаётся мгновенно, рисованный — нет.
+     Для ссылок значка нет, там остаётся наша иконка.
+     В режиме правки картинке запрещено тянуться: иначе мышь перетаскивает
+     именно её (см. `body.edit .app img` в стилях). */
+  if (item.image) {
+    return '<img src="' + item.image + '" alt=""'
+      + (EDIT ? ' draggable="false"' : '') + '>';
+  }
+  return ICONS[item.icon] || ICONS.app;
+}
+
+function drawApps(items, layout) {
+  const вид = gridView(layout);
+  appsBox.innerHTML = '';
+  /* Вид плитки и подписи — по серверу: у `#apps` появляется класс. */
+  appsBox.classList.toggle('round', вид.style === 'round');
+  appsBox.classList.toggle('bare', вид.style === 'bare');
+  appsBox.classList.toggle('labels', вид.labels);
+  items.forEach((item, index) => {
+    const el = document.createElement('div');
+    el.className = 'app';
+    el.style.animationDelay = (index * 40) + 'ms';
+    /* Свой цвет программы из apps.json важнее нашего: хозяин выбрал его
+       сам, а наш — только на время, пока своего ещё нет. */
+    el.style.color = item.color || APP_COLORS[item.id] || 'var(--muted)';
+    el.title = item.title;
+    el.setAttribute('role', 'button');
+    el.setAttribute('aria-label', item.title);
+    el.dataset.app = item.id;
+    el.innerHTML = appFace(item);
+    if (вид.labels) {
+      const name = document.createElement('span');
+      name.className = 'app-name';
+      name.textContent = item.title;
+      el.appendChild(name);
+    }
+    if (EDIT) {
+      editBindTile(el, item);
+    } else {
+      el.addEventListener('click', () => {
+        /* С меню — открываем подменю, без меню — запускаем. */
+        if (item.menu && item.menu.length) { openMenu(item); return; }
+        send({ type: 'launch', id: item.id });
+        flash(el);
+      });
+    }
+    appsBox.appendChild(el);
+  });
+  /* Пустые клетки с «+» — только в макете пульта: плюс занимает место
+     программы, того же размера, а не сбоку. Нажатие на любую зовёт пульт
+     добавить программу — та же кнопка «+ Программа», только с экрана. Новая
+     программа встаёт следующей по порядку, а не на место нажатой клетки:
+     пустот между программами не бывает. Программ больше, чем клеток, —
+     тогда клеток нет. */
+  if (EDIT) editНарисоватьПустые(вид);
+  layoutApps(items.length, вид);
+}
+
+/* Сколько пустых клеток не хватает до конца сетки `рядов × 4`. */
+function editСколькоПустых(вид) {
+  return Math.max(0, вид.rows * TILE_COLS - appsBox.querySelectorAll('.app[data-app]').length);
+}
+
+/* Дорисовать пустые клетки до конца сетки. На настоящем телефоне их нет
+   вовсе: функцию зовёт только `drawApps` под `if (EDIT)`. */
+function editНарисоватьПустые(вид) {
+  for (let i = 0, сколько = editСколькоПустых(вид); i < сколько; i++) {
+    appsBox.appendChild(editПустаяКлетка());
+  }
+}
+
+/* Одна пустая клетка: «+» по центру, пунктирная рамка. Перетаскиванием и
+   выбором она не участвует — это не программа (см. `editOrder` и
+   `editBindTile`, где ищутся только `.app[data-app]`). */
+function editПустаяКлетка() {
+  const el = document.createElement('div');
+  el.className = 'app пусто';
+  el.textContent = '+';
+  el.title = 'Добавить программу';
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'Добавить программу');
+  el.addEventListener('click', () => {
+    editSay({ type: 'truba-edit-add' });
+  });
+  return el;
+}
+
+function flash(el) {
+  el.classList.add('done');
+  setTimeout(() => el.classList.remove('done'), 900);
+}
+
+/* ---------- Раскладка значков ----------
+   Колонок всегда четыре, рядов один или два. Размер плитки считаем по всей сетке
+   4 × рядов, даже когда программ три: иначе три плитки растянулись бы на весь
+   экран и макет в пульте врал бы. Рядов, занятых значками, не больше, чем нужно:
+   одна программа в двух рядах — это одна огромная плитка посреди пустоты. Больше,
+   чем влезает в 4 × рядов, — колонок больше, и листаем вбок: лишние плитки
+   остаются доступны прокруткой, а не пропадают. Портретная раскладка (два
+   столбца по центру) не трогаем. */
+const TILE_MIN = 60, TILE_MAX = 92, TILE_GAP = 10, TILE_ROWS = 2;
+const TILE_COLS = 4, TILE_ROWS_MIN = 1, TILE_ROWS_MAX = 2;
+/* Подпись под значком: 15 px текст, 3 px зазор, округление на всякий
+   случай. Столько высоты плитка теряет на каждый ряд. */
+const LABEL_H = 22;
+
+function layoutApps(count, layout) {
+  const вид = gridView(layout);
+  lastLayout = вид;
+  if (!count && !(EDIT && вид.rows)) return;
+  /* Вертикальная раскладка остаётся прежней: там два столбца по центру. */
+  if (window.innerHeight >= window.innerWidth) {
+    appsBox.style.removeProperty('--cols');
+    appsBox.style.removeProperty('--tile');
+    appsBox.classList.remove('narrow');
+    $('right').style.removeProperty('--right');
+    return;
+  }
+
+  /* В макете пульта сетка показана целиком: пустые клетки с «+» тоже клетки,
+     иначе при трёх программах в двух рядах макет показал бы один ряд и «+»
+     было бы некуда ставить. На настоящем телефоне клеток нет — там `count`
+     и есть число программ. */
+  const клеток = EDIT ? Math.max(count, вид.rows * TILE_COLS) : count;
+  if (!клеток) return;
+  /* Рядов не больше, чем нужно под столько клеток: одна программа в
+     трёх рядах — это одна огромная плитка посреди пустого экрана. */
+  const рядов = Math.max(1, Math.min(вид.rows, Math.ceil(клеток / TILE_COLS)));
+  /* В сетку 4 × рядов не влезает — колонок больше, и листаем вбок. Иначе
+     лишние программы уехали бы в новый ряд и срезались снизу. */
+  const неВлезает = клеток > TILE_COLS * вид.rows;
+  const значений = неВлезает ? Math.ceil(клеток / рядов) : TILE_COLS;
+  /* Свободное место между кругом и столбцом режимов — то, куда встаёт
+     колонка программ. Считаем от самого `#middle` и его отступов: между
+     кругом и колонкой, и между колонкой и режимами, стоит одинаковый
+     зазор, и оба надо оставить. От ширины окна считать нельзя — поля
+     и сам столбец режимов со временем поменяются. */
+  const middle = $('middle');
+  const gaps = 2 * (parseFloat(getComputedStyle(middle).columnGap) || 0);
+  /* Столбец режимов стал шире на язычок громкости. В альбомной ориентации
+     он стоит сбоку от круга и `#middle` этого в своей ширине не видит, так
+     что ширину язычка прибавляем руками — иначе значки залезли бы под него.
+     В портретной он лежит отдельной строкой под кругом и ничего не занимает:
+     вычитать там нечего, иначе плитки потеряли бы 36 px зря. */
+  const сбоку = window.matchMedia('(orientation: landscape)').matches;
+  const tab = сбоку ? $('язычок') : null;
+  const tabWidth = tab ? tab.offsetWidth + 6 : 0;
+  const free = Math.max(TILE_MIN,
+    Math.floor(middle.clientWidth - orb.offsetWidth - gaps - tabWidth));
+  /* Плитку меряем всегда по четырём колонкам: при трёх программах в двух рядах
+     занят один ряд, но значок должен быть того же размера, что и на
+     заполненной сетке, — иначе добавление первой программы «скакало» бы. */
+  const byWidth = Math.floor((free - TILE_GAP * (TILE_COLS - 1)) / TILE_COLS);
+  /* По высоте все ряды тоже должны поместиться, иначе значки уедут вниз
+     и появятся прокрученные ряды. Подписи под значками высоту едят.
+     Высота считается по факту: снизу под сеткой живут нижние кнопки и две
+     постоянные карточки, и обе могут стать выше или ниже (подписи, портрет,
+     поворот) — магическое число здесь быстро разъехалось бы с макетом. */
+  const room = window.innerHeight - 10 - 12 - 10
+    - $('stats').offsetHeight - actionsBox.offsetHeight
+    - cardsBox.offsetHeight - 8 - 8;
+  const label = вид.labels ? LABEL_H : 0;
+  const byHeight = Math.floor(
+    (room - TILE_GAP * (рядов - 1) - label * рядов) / рядов);
+
+  const tile = Math.max(TILE_MIN, Math.min(TILE_MAX, byWidth, byHeight));
+  const need = значений * tile + TILE_GAP * (значений - 1);
+  /* Не влезает в свободное место даже по 60 — листаем вбок: колонка
+     занимает всё место до режимов, плитки идут от левого края, иначе
+     под центрированием левый край уехал бы за невидимое. */
+  const scroll = неВлезает || need > free;
+  appsBox.style.setProperty('--cols', значений);
+  appsBox.style.setProperty('--tile', tile + 'px');
+  appsBox.classList.toggle('narrow', scroll);
+  $('right').style.setProperty('--right', Math.min(need, free) + 'px');
+}
+
+/* Вид сетки. Колонок всегда четыре: серверное `cols` не читаем вовсе (в живом
+   `settings.json` может остаться «auto», и девятая программа раздула бы
+   сетку до пяти колонок). Ряды — один или два: лишние плитки никуда не
+   деваются — они уезжают вбок по прокрутке. */
+function gridView(layout) {
+  const l = (layout && typeof layout === 'object') ? layout : {};
+  const n = parseInt(l.rows, 10);
+  const rows = (Number.isFinite(n) && n >= TILE_ROWS_MIN && n <= TILE_ROWS_MAX)
+    ? n : TILE_ROWS;
+  const style = (l.style === 'round' || l.style === 'bare') ? l.style : 'plate';
+  return { cols: TILE_COLS, rows: rows, style: style, labels: l.labels === true };
+}
+
+/* ---------- Размер экрана ----------
+   Пульт рисует макет в iframe того же размера, какой у настоящего телефона:
+   иначе при 4 колонках значки в макете врут. Сообщаем компьютеру целые
+   `innerWidth`/`innerHeight` — с паузой, потому что при повороте событие
+   приходит десяток раз, а телефон всё равно один. */
+let viewportTimer = null;
+function sendViewport() {
+  send({ type: 'viewport', w: Math.round(window.innerWidth),
+         h: Math.round(window.innerHeight) });
+}
+function scheduleViewport() {
+  clearTimeout(viewportTimer);
+  viewportTimer = setTimeout(sendViewport, 300);
+}
+
+/* Поворот телефона и изменение окна меняют свободное место: пересчитываем.
+   Кнопки приходят сразу при подключении, поэтому условия «после касания»
+   тут больше нет. */
+window.addEventListener('resize', () => {
+  layoutApps(appsBox.childElementCount, lastLayout);
+  /* Макет в пульте к компьютеру не подключён: размер оттуда не пошлёт. */
+  if (!EDIT) scheduleViewport();
+});
+window.addEventListener('orientationchange', () => {
+  setTimeout(() => layoutApps(appsBox.childElementCount, lastLayout), 250);
+});
+
+/* ---------- Подменю программы ----------
+   Открывается поверх всего экрана: подписей нет, как у значков, название
+   пункта — в title и aria-label. Закрывается касанием пустого места и
+   само через 12 секунд. Само не закрывается после нажатия: хозяин часто
+   жмёт дважды подряд (замутился — размутился). */
+let menuTimer = null;
+/* Программа, чьё подменю сейчас открыто: по ней телефон поймёт, чей это
+   пункт, — id приходит с плитки и на комп попадает ключом. */
+let currentMenu = null;
+
+function closeMenu() {
+  clearTimeout(menuTimer);
+  menuTimer = null;
+  menuBox.classList.remove('on');
+}
+
+/* Плитка-переключатель помнит, что уже «выключено». Источник правды —
+   сервер: он присылает `menu_state`, и страница по нему ставит класс. Ни
+   чего не додумываем: переключил хозяин мышкой в самом Discord — значит,
+   подсветка разошлась, и её надо поправить руками. */
+function markMenuState(appId, on) {
+  if (currentMenu && currentMenu.id === appId) {
+    menuTiles.querySelectorAll('.app.flip').forEach((el) => {
+      el.classList.toggle('on', !!on[el.dataset.key]);
+    });
+  }
+  /* Нижняя кнопка с тем же пунктом подменю показывает то же самое: сервер
+     считает состояние один раз, и пункт в подменю и кнопка внизу обязаны
+     выглядеть одинаково. */
+  actionsBox.querySelectorAll('.act.flip').forEach((el) => {
+    if (el.dataset.app !== appId) return;
+    el.classList.toggle('on', !!on[el.dataset.key]);
+  });
+}
+
+/* Закладка или пункт-сайт — карточка в две плитки: значок слева, название
+   справа. Квадратной плиткой это читается плохо: фавиконка мылится,
+   а названия нет — какая закладка какая, не понять. */
+function menuCard(item) {
+  const el = document.createElement('div');
+  el.className = 'app card';
+  el.title = item.title;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', item.title);
+
+  /* Логотип — только настоящий: без превью карточка без логотипа — одно
+     название. */
+  if (item.image) {
+    const face = document.createElement('div');
+    face.className = 'card-face';
+    const img = document.createElement('img');
+    img.src = item.image;
+    img.alt = '';
+    face.appendChild(img);
+    el.appendChild(face);
+  } else {
+    el.classList.add('без-лого');
+  }
+
+  const текст = document.createElement('div');
+  текст.className = 'card-text';
+  const имя = document.createElement('div');
+  имя.className = 'card-name';
+  имя.textContent = item.title || '';
+  текст.appendChild(имя);
+  if (item.caption) {
+    const подпись = document.createElement('div');
+    подпись.className = 'card-cap';
+    подпись.textContent = item.caption;
+    текст.appendChild(подпись);
+  }
+  el.appendChild(текст);
+  return el;
+}
+
+function menuItem(item, app, номер) {
+  /* Закладки и сайты — карточками, остальное — квадратными плитками. */
+  if (item.kind === 'bookmark' || item.kind === 'site') {
+    const card = menuCard(item);
+    menuBindClick(card, item, app, номер);
+    return card;
+  }
+  const el = document.createElement('div');
+  el.className = 'app';
+  el.title = item.title;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', item.title);
+  el.innerHTML = ICONS[item.icon] || ICONS[MENU_FALLBACK[item.kind]] || ICONS.hotkey;
+  if (item.caption) {
+    el.classList.add('captioned');
+    const tag = document.createElement('span');
+    tag.className = 'cap-tag';
+    tag.textContent = item.caption;
+    el.appendChild(tag);
+  }
+  menuBindClick(el, item, app, номер);
+  return el;
+}
+
+/* Нажатие и удержание — одни и те же и для плитки, и для карточки.
+   В макете пульта (`?edit=1`) плитка ничего не выполняет — комп только
+   сообщает пульту, какой пункт выбран: `truba-edit-menu-pick`. */
+function menuBindClick(el, item, app, номер) {
+  if (EDIT) {
+    el.addEventListener('click', () => {
+      editSay({ type: 'truba-edit-menu-pick', app: app.id, index: номер });
+    });
+    return;
+  }
+  if (item.toggle) {
+    el.classList.add('flip');
+    el.dataset.key = item.key;
+    if (item.on) el.classList.add('on');
+    /* Удержание — поправить подсветку, ничего не нажимая. Тот же жест, что
+       у круга (см. HOLD_MS ниже): палец на плитке, 0.6 с, и отпустил. */
+    let held = false;
+    let timer = null;
+    let сброс = null;
+    el.addEventListener('pointerdown', () => {
+      held = false;
+      clearTimeout(сброс);
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        held = true;
+        send({ type: 'menu_flip', app: currentMenu.id, item: item.key });
+        showToast('подсветка поправлена', true);
+        /* Палец увели за плитку, и отпускать придётся уже не здесь: снимем
+           флаг сам, иначе следующее обычное касание проглотилось бы. */
+        clearTimeout(сброс);
+        сброс = setTimeout(() => { held = false; }, 800);
+      }, HOLD_MS);
+    });
+    const stop = () => { clearTimeout(timer); };
+    el.addEventListener('pointerup', stop);
+    el.addEventListener('pointercancel', stop);
+    el.addEventListener('click', () => {
+      /* Долгое нажатие уже отправило `menu_flip` — нажатием это не станет. */
+      if (held) { held = false; return; }
+      send({ type: 'menu', app: currentMenu.id, item: item.key });
+      flash(el);
+      armMenu();
+    });
+    return;
+  }
+  el.addEventListener('click', () => {
+    send({ type: 'menu', app: currentMenu.id, item: item.key });
+    flash(el);
+    armMenu();
+  });
+}
+
+function openMenu(app) {
+  closeMenu();
+  currentMenu = app;
+  menuTiles.innerHTML = '';
+  /* Пункты приходят от сервера, а в макете — от пульта (`прогПозиции`), и у
+     программы без пунктов их нет вовсе: подменю всё равно нужно, там главная
+     плитка и «+». */
+  const пункты = Array.isArray(app.menu) ? app.menu : [];
+  /* Подменю считается от своего окна, а не от раскладки программ: здесь
+     сверху ничего нет, места больше, а первая плитка вдвое выше обычной и
+     занимает два столбца. Считаем по самим пунктам: закладка занимает две
+     колонки, а плитка одну — по одному числу пунктов это не узнать.
+     В макете в конце ещё плитка «+», и в раскладку она тоже входит: иначе
+     последний пункт уехал бы за нижний край. */
+  layoutMenu(EDIT ? пункты.concat([{ kind: 'плюс' }]) : пункты);
+
+  const main = document.createElement('div');
+  main.className = 'app main';
+  main.title = 'открыть ' + app.title;
+  main.setAttribute('role', 'button');
+  main.setAttribute('aria-label', 'открыть ' + app.title);
+  main.style.color = APP_COLORS[app.id] || 'var(--muted)';
+  main.innerHTML = appFace(app);
+  main.addEventListener('click', () => {
+    /* В макете программа не запускается — она выбирается для правки. */
+    if (EDIT) { editSay({ type: 'truba-edit-pick', id: app.id }); return; }
+    send({ type: 'menu', app: app.id, item: 'launch' });
+    flash(main);
+    armMenu();
+  });
+  menuTiles.appendChild(main);
+
+  пункты.forEach((item, номер) => menuTiles.appendChild(menuItem(item, app, номер)));
+  /* Плитка «+» — только в макете: хозяин жмёт её и получает в пульте новый
+     пункт подменю. Настоящему телефону добавлять нечего. */
+  if (EDIT) menuTiles.appendChild(editПлиткаПлюс(app));
+  menuBox.classList.add('on');
+  armMenu();
+}
+
+/* Плитка «+» в подменю макета. Рисованная, как обычный пункт, с подписью
+   «добавить»: хозяин должен узнать её по подписи, а не по рисунку. */
+function editПлиткаПлюс(app) {
+  const el = document.createElement('div');
+  el.className = 'app captioned';
+  el.title = 'добавить пункт';
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'добавить пункт');
+  el.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+    + ' stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+  const tag = document.createElement('span');
+  tag.className = 'cap-tag';
+  tag.textContent = 'добавить';
+  el.appendChild(tag);
+  el.addEventListener('click', () => editПоказатьВиды(app));
+  return el;
+}
+
+/* Что добавлять: две крупные плитки во всю ширину подменю. Раскладка тут
+   своя — плитки программы в этом виде нет, и резервировать под неё два ряда
+   незачем: `layoutMenu` всегда считает её. */
+function editПоказатьВиды(app) {
+  menuTiles.innerHTML = '';
+  const w = window.innerWidth - 20, h = window.innerHeight - 34;
+  const tile = Math.max(TILE_MIN, Math.min(TILE_MAX,
+    Math.floor((w - TILE_GAP) / 2), Math.floor((h - TILE_GAP) / 2)));
+  menuTiles.style.setProperty('--cols', 2);
+  menuTiles.style.setProperty('--tile', tile + 'px');
+  menuTiles.classList.remove('narrow');
+  menuTiles.appendChild(editПлиткаВида(app, 'site', 'browser', 'Сайт'));
+  menuTiles.appendChild(editПлиткаВида(app, 'hotkey', 'keyboard', 'Сочетание клавиш'));
+}
+
+function editПлиткаВида(app, вид, значок, подпись) {
+  const el = document.createElement('div');
+  el.className = 'app card';
+  el.title = 'добавить: ' + подпись;
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-label', 'добавить пункт ' + подпись);
+  const face = document.createElement('div');
+  face.className = 'card-face';
+  face.innerHTML = ICONS[значок] || ICONS.app;
+  el.appendChild(face);
+  const текст = document.createElement('div');
+  текст.className = 'card-text';
+  const имя = document.createElement('div');
+  имя.className = 'card-name';
+  имя.textContent = подпись;
+  текст.appendChild(имя);
+  el.appendChild(текст);
+  el.addEventListener('click', () => {
+    editSay({ type: 'truba-edit-menu-add', app: app.id, kind: вид });
+  });
+  return el;
+}
+
+/* Само меню не закрывается само — только касанием пустого места. */
+function armMenu() {
+  clearTimeout(menuTimer);
+}
+
+/* Подменю — сетка во весь экран, и считается она сама, а не от раскладки
+   программ: сверху здесь ничего нет, места больше. Плитка «открыть
+   программу» занимает два столбца и два ряда, закладка — два столбца и один
+   ряд, остальное — по одному. Поэтому ряды считаем раскладкой в столбцах, а
+   не делением на «cols-2»: иначе карточки вылезли бы за нижний край. */
+function menuSpans(items) {
+  return items.map((item) => (item && (item.kind === 'bookmark' || item.kind === 'site') ? 2 : 1));
+}
+
+/* Сколько рядов займёт меню при `cols` колонках.
+
+   `следующий[c]` — первый ряд, в котором колонка `c` ещё свободна. Плитка
+   программы занимает колонки 0 и 1 в двух рядах, поэтому у них следующий ряд
+   — третий. Пункт шириной в две колонки встаёт в тот ряд, где обе колонки
+   свободны, и заполняет дыру, оставленную плиткой программы (плотная
+   укладка, как `grid-auto-flow: row dense` в стилях). */
+function menuRows(spans, cols) {
+  const следующий = new Array(cols).fill(0);
+  следующий[0] = 2;
+  следующий[1] = 2;
+  for (const span of spans) {
+    let ряд = -1, начало = 0;
+    for (let c = 0; c + span <= cols; c++) {
+      let кандидат = 0;
+      for (let k = 0; k < span; k++) кандидат = Math.max(кандидат, следующий[c + k]);
+      if (ряд < 0 || кандидат < ряд) { ряд = кандидат; начало = c; }
+    }
+    if (ряд < 0) ряд = 0;
+    for (let k = 0; k < span; k++) следующий[начало + k] = ряд + 1;
+  }
+  return Math.max(2, следующий.reduce((a, b) => Math.max(a, b), 0));
+}
+
+function layoutMenu(items) {
+  const список = Array.isArray(items) ? items : [];
+  const spans = menuSpans(список);
+  const w = window.innerWidth - 20, h = window.innerHeight - 34;
+  const best = [];
+  for (let cols = 2; cols <= Math.min(6, spans.reduce((a, b) => a + b, 0) + 1); cols++) {
+    const rows = menuRows(spans, cols);
+    const byWidth = Math.floor((w - TILE_GAP * (cols - 1)) / cols);
+    const byHeight = Math.floor((h - TILE_GAP * (rows - 1)) / rows);
+    const tile = Math.max(TILE_MIN, Math.min(TILE_MAX, byWidth, byHeight));
+    best.push({ cols, tile, need: cols * tile + TILE_GAP * (cols - 1) });
+  }
+  /* Из подходящих берём самые крупные. Если не подошёл ни один — плитки
+     уедут вбок, и прижимать их надо к левому краю. */
+  const fit = best.filter((v) => v.need <= w);
+  const pick = (fit.length ? fit : best).sort((a, b) => b.tile - a.tile)[0];
+  menuTiles.style.setProperty('--cols', pick.cols);
+  menuTiles.style.setProperty('--tile', pick.tile + 'px');
+  menuTiles.classList.toggle('narrow', pick.need > w);
+}
+
+menuBox.addEventListener('pointerdown', (event) => {
+  if (event.target.closest('.app')) { armMenu(); return; }
+  closeMenu();
+});
+
+/* ---------- Нагрузка ---------- */
+/* Цвет полосы меняется по нагрузке — так видно состояние, не читая цифр.
+   Спокойный сине-голубой, к пределу уходит в жёлтый и красный. */
+function loadColor(percent) {
+  if (percent >= 90) return '#ff5c5c';
+  if (percent >= 75) return '#ffa03d';
+  if (percent >= 50) return '#ffd24a';
+  if (percent >= 25) return '#5bc8f5';
+  return '#4a9eff';
+}
+
+function bar(id, percent, value) {
+  const box = $(id);
+  if (!box) return;
+  const clamped = Math.max(0, Math.min(100, percent));
+  box.querySelector('.value').textContent = value;
+  const fill = box.querySelector('.bar i');
+  fill.style.width = clamped + '%';
+  fill.style.background = loadColor(clamped);
+}
+
+function drawSystem(d) {
+  bar('s-cpu', d.cpu, d.cpu + '%' + (d.cpu_temp !== undefined ? '  ' + d.cpu_temp + '°' : ''));
+  bar('s-ram', d.ram, d.ram_used + ' / ' + d.ram_total);
+  if (d.gpu_load !== undefined) {
+    bar('s-gpu', d.gpu_load,
+        d.gpu_load + '%' + (d.gpu_temp !== undefined ? '  ' + d.gpu_temp + '°' : ''));
+  }
+}
+
+/* ---------- Сигналы ----------
+   Телефон стоит сбоку, а человек смотрит в игру: надпись он не заметит,
+   звук услышит. Синтезируем на месте — файлы качать и хранить не нужно,
+   да и звучат они одинаково на любой громкости.
+
+   Каждый сигнал — список [частота, начало, длительность, громкость]. */
+const SOUNDS = {
+  /* Затвор фотоаппарата: щелчок вниз, отзвук вверх. */
+  shutter: [[1800, 0, 0.035, 0.30], [1200, 0.045, 0.05, 0.18]],
+  /* Момент записан: две ноты вверх — «взяла». */
+  moment:  [[660, 0, 0.09, 0.22], [990, 0.10, 0.14, 0.22]],
+  /* Разговор открыт: одна мягкая нота вверх. */
+  open:    [[520, 0, 0.07, 0.14], [780, 0.07, 0.09, 0.14]],
+  /* Разговор закрыт: та же пара вниз. */
+  close:   [[780, 0, 0.07, 0.12], [430, 0.07, 0.11, 0.12]],
+  /* Не вышло: низкое двойное. */
+  fail:    [[300, 0, 0.10, 0.22], [220, 0.13, 0.16, 0.22]],
+};
+
+/* Нажатие — щелчок как у клавиатуры телефона, а не тон: синусоидальные
+   «пики» звучат скрипуче. Настоящий щелчок —
+   доли миллисекунды шума, который быстро гаснет и срезан до средних
+   частот. Шум один на все нажатия (посчитан один раз), поэтому звучит
+   одинаково. Играется на месте, не дожидаясь компа. */
+let clickBuffer = null;
+
+/* Звук на iPhone будит не одним состоянием. Кроме обычного 'suspended' там
+   есть ещё 'interrupted' — телефон глушит звук сам (переключатель «бесшумно»,
+   ушедшее приложение, входящий звонок). Мы будили только 'suspended', и на
+   айфоне после блокировки экрана щелчки пропадали совсем. Одна функция
+   вместо условия в пяти местах: состояние называет она. */
+function разбудитьЗвук() {
+  if (!audioCtx) return;
+  if (audioCtx.state !== 'suspended' && audioCtx.state !== 'interrupted') return;
+  try { audioCtx.resume(); } catch (e) {}
+}
+
+function playClick() {
+  if (!audioCtx) return;
+  разбудитьЗвук();
+  if (!clickBuffer) {
+    const rate = audioCtx.sampleRate;
+    const length = Math.round(rate * 0.02);
+    clickBuffer = audioCtx.createBuffer(1, length, rate);
+    const data = clickBuffer.getChannelData(0);
+    let seed = 7;
+    for (let i = 0; i < length; i++) {
+      seed = (seed * 16807) % 2147483647;
+      const noise = seed / 1073741823.5 - 1;
+      data[i] = noise * Math.exp(-i / (rate * 0.0018));
+    }
+  }
+  const source = audioCtx.createBufferSource();
+  source.buffer = clickBuffer;
+  const band = audioCtx.createBiquadFilter();
+  band.type = 'bandpass';
+  band.frequency.value = 2400;
+  band.Q.value = 0.8;
+  const vol = audioCtx.createGain();
+  /* Громкость щелчка — 35 %: при 1.4 и 60 % он звучит слишком резко. */
+  vol.gain.value = 0.35;
+  source.connect(band);
+  band.connect(vol);
+  /* Мимо анализатора: иначе кружок дёргается от собственных щелчков. */
+  vol.connect(audioCtx.destination);
+  source.start();
+}
+
+function playSound(name) {
+  if (name === 'tap') { playClick(); return; }
+  const parts = SOUNDS[name];
+  if (!parts || !audioCtx) return;
+  /* Браузер телефона усыпляет звук, когда экран гаснет или страница
+     уходит в фон, и сам его не будит. Без этого после блокировки
+     экрана пропадали и сигналы, и её голос. */
+  разбудитьЗвук();
+  const now = audioCtx.currentTime;
+  for (const [freq, at, len, gain] of parts) {
+    const osc = audioCtx.createOscillator();
+    const vol = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = freq;
+    /* Резкий обрыв щёлкает, поэтому громкость гасим плавно. */
+    vol.gain.setValueAtTime(0.0001, now + at);
+    vol.gain.exponentialRampToValueAtTime(gain, now + at + 0.008);
+    vol.gain.exponentialRampToValueAtTime(0.0001, now + at + len);
+    osc.connect(vol);
+    /* Мимо анализатора: иначе кружок дёргается от собственных сигналов. */
+    vol.connect(audioCtx.destination);
+    osc.start(now + at);
+    osc.stop(now + at + len + 0.02);
+  }
+}
+
+/* ---------- Фон во время поиска ----------
+   Пока она ходит в интернет, звучит тихий круг — иначе секунды ожидания
+   не отличить от зависания. Файл один раз приходит с компа, дальше крутится
+   на телефоне по кругу, пока не придёт `search_hum false`.
+
+   Всё, что нужно `connect()`, — функцией или `var`: `connect()` зовётся при
+   загрузке выше по тексту, и `let` на его месте ещё не был бы объявлен. */
+var humХочу = false, humБуфер = null, humИсточник = null, humГромкость = null,
+    humГрузится = false;
+
+function searchHum(on, gain) {
+  humХочу = !!on;
+  if (!audioCtx) return;
+  /* Браузер телефона усыпляет звук, когда гаснет экран, — как в playSound. */
+  разбудитьЗвук();
+  if (on) {
+    /* Уже играет — второй раз нечего. */
+    if (humИсточник) return;
+    if (!humБуфер) {
+      if (humГрузится) return;
+      humГрузится = true;
+      fetch('/search_hum.wav')
+        .then((r) => r.arrayBuffer())
+        .then((data) => audioCtx.decodeAudioData(data))
+        .then((buf) => {
+          humБуфер = buf;
+          humГрузится = false;
+          /* Пока грузили, мог прийти `false` — тогда не включаем вовсе. */
+          if (humХочу) searchHum(true, gain);
+        })
+        .catch(() => { humГрузится = false; });
+      return;
+    }
+    const src = audioCtx.createBufferSource();
+    src.buffer = humБуфер;
+    src.loop = true;
+    const vol = audioCtx.createGain();
+    vol.gain.value = 0.0001;
+    src.connect(vol);
+    /* Мимо анализатора: иначе кружок дёргается весь ответ. */
+    vol.connect(audioCtx.destination);
+    const now = audioCtx.currentTime;
+    vol.gain.setValueAtTime(0.0001, now);
+    vol.gain.exponentialRampToValueAtTime(Math.max(0.0001, gain), now + 0.4);
+    src.start(now);
+    humИсточник = src;
+    humГромкость = vol;
+    return;
+  }
+  humХочу = false;
+  if (!humИсточник) return;
+  const src = humИсточник, vol = humГромкость;
+  humИсточник = null;
+  humГромкость = null;
+  const now = audioCtx.currentTime;
+  vol.gain.cancelScheduledValues(now);
+  vol.gain.setValueAtTime(Math.max(vol.gain.value, 0.0001), now);
+  vol.gain.exponentialRampToValueAtTime(0.0001, now + 0.3);
+  try { src.stop(now + 0.35); } catch (e) {}
+}
+
+/* Щелчок под палец. Вешаем одним обработчиком на всю страницу: кнопки
+   создаются на лету, а подписываться на каждую — забыть половину.
+   pointerdown, а не click: отклик должен прийти на касание, а не после
+   того, как палец отпустили. */
+document.addEventListener(
+  'pointerdown',
+  (event) => {
+    if (!audioCtx) return;
+    /* Заметки — те же кнопки под палец: «✕»
+       закрывает их молча. Строки карточки поиска — тоже: там касание
+       открывает браузер на компьютере, и хозяин ждёт отклика. */
+    if (event.target.closest('.act, .app, .mode, #orb, #expand, #s-wx, #язычок, .гром-шаг, .nclose, .nrec, .ntopic, #find .qrow, #find .srow, #find .x, #cards .card, #remcard .x, #remcard .rbtn, #histcard .x, #histcard .row, #histcard .rbtn, #histcard .hbtn')) {
+      playSound('tap');
+    }
+  },
+  { passive: true }
+);
+
+/* ---------- Запуск ---------- */
+/* Касание нужно браузеру ровно для одного: запустить `AudioContext` —
+   без жеста он не стартует. Больше касание не требуется ничего, поэтому
+   звук включается первым же касанием в любом месте экрана, а связь с
+   компом поднята ниже сразу при загрузке страницы. */
+async function wakeUp() {
+  if (EDIT) return;
+  if (started) return;
+  started = true;
+
+  /* Полный экран — первым и без ожидания: браузер разрешает его только
+     в пределах жеста, а после `await` жест уже может считаться истёкшим. */
+  try { goFullscreen(); } catch (e) {}
+  try { keepAwake(); } catch (e) {}
+
+  try {
+        /* iPhone: говорим системе, что это обычное воспроизведение, а не звонок
+       или системный звук. Иначе переключатель «бесшумно» глушит всё, что мы
+       играем, и щелчков не слышно. Свойства может не быть — тогда пробуем
+       без него. Ставим до создания контекста. */
+    try {
+      if (navigator.audioSession) navigator.audioSession.type = 'playback';
+    } catch (e2) {}
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    await audioCtx.resume();
+    if (!analyser) {
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      analyser.connect(audioCtx.destination);
+    }
+  } catch (e) {
+    hint.textContent = 'звук не включился: ' + e.message;
+    started = false;
+    return;
+  }
+
+  hint.classList.add('off');
+  /* Комп до сих пор считал, что звука нет, и говорил в колонки. */
+  send({ type: 'audio', ready: true });
+  kickAnimate();
+  updateExpand();
+}
+
+/* Первое касание экрана — где угодно, включая кнопку под пальцем: звук
+   включается, а сама кнопка срабатывает как обычно (своё событие мы не
+   отменяем, только слушаем). Ловим отрыв пальца (`touchend`) и `click`, а
+   не `pointerdown`: для касания пальцем браузер считает жестом только
+   отрыв, и без жеста не даёт полный экран. */
+document.addEventListener('touchend', wakeUp, { passive: true });
+document.addEventListener('click', wakeUp);
+
+/* Связь — сразу, без касания: страница перезагружается сама при новой
+   версии, и ждать касания нельзя — до него телефон для компьютера «не на
+   связи»: не работали бы кнопки, режимы, погода и заряд.
+
+   В режиме правки связи нет: страница живёт в iframe пульта как макет, и
+   подключение выдало бы компьютеру второй «телефон» — он заговорил бы
+   в макет, а хозяин ещё и считал бы, что программа запустилась. */
+if (!EDIT) {
+  connect();
+  watchBattery();
+  дописатьКлючВМанифест();
+  /* Кнопку полного экрана решаем сразу, а не после первого касания: на iPhone
+     её место занимает плашка-подсказка, и человек должен видеть её сразу. */
+  updateExpand();
+}
+
+function goFullscreen() {
+  const el = document.documentElement;
+  const request = el.requestFullscreen || el.webkitRequestFullscreen;
+  if (!request) return;
+  try {
+    const result = request.call(el, { navigationUI: 'hide' });
+    if (result && result.catch) result.catch(() => {});
+  } catch (e) {
+    try { request.call(el); } catch (e2) {}
+  }
+}
+
+/* Экран не гасим. Wake Lock браузер даёт только защищённым адресам (https),
+   а мы открыты по адресу компьютера в локальной сети обычным http — там его
+   просто нет, и телефон засыпал по своему таймеру (у MIUI максимум 10 минут).
+   Запасной путь — крошечное беззвучное видео по кругу: пока играет видео,
+   Android экран не гасит. Ролики взяты из NoSleep.js (Rich Tibbett, MIT,
+   github.com/richtr/NoSleep.js). Надёжнее всего — «Не выключать экран»
+   в настройках самого телефона, см. СОСТОЯНИЕ. */
+const AWAKE_WEBM = "data:video/webm;base64,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";
+const AWAKE_MP4 = "data:video/mp4;base64,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";
+let awakeVideo = null;
+
+function awakeByVideo() {
+  if (!awakeVideo) {
+    awakeVideo = document.createElement('video');
+    awakeVideo.setAttribute('title', 'Не засыпать');
+    awakeVideo.setAttribute('playsinline', '');
+    for (const [type, src] of [['webm', AWAKE_WEBM], ['mp4', AWAKE_MP4]]) {
+      const source = document.createElement('source');
+      source.src = src;
+      source.type = 'video/' + type;
+      awakeVideo.appendChild(source);
+    }
+    awakeVideo.addEventListener('loadedmetadata', () => {
+      if (awakeVideo.duration <= 1) awakeVideo.setAttribute('loop', '');
+      else awakeVideo.addEventListener('timeupdate', () => {
+        if (awakeVideo.currentTime > 0.5) awakeVideo.currentTime = Math.random();
+      });
+    });
+  }
+  const played = awakeVideo.play();
+  if (played && played.catch) played.catch(() => {});
+}
+
+async function keepAwake() {
+  if (window.isSecureContext && 'wakeLock' in navigator) {
+    try { await navigator.wakeLock.request('screen'); return; } catch (e) {}
+  }
+  awakeByVideo();
+}
+
+/* После разблокировки телефон выходит из полного экрана и забывает
+   про удержание экрана — возвращаем и то и другое. */
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible' || !started) return;
+  keepAwake();
+  updateExpand();
+  /* Возврат на экране — самый частый момент, когда телефон глушит звук:
+     после блокировки контекст лежит в 'suspended' или 'interrupted'. */
+  разбудитьЗвук();
+});
+
+/* Полный экран по-настоящему умеют не все. На iPhone его нет вовсе: Fullscreen
+   API для страниц не поддерживают ни Safari, ни Firefox (оба на движке
+   Safari), и кнопка «во весь экран» там просто ничего не делала. Скрыть
+   панели браузера на айфоне можно только ярлыком «На экран „Домой“» в режиме
+   веб-приложения. Поэтому:
+     • умеет браузер — обычная кнопка, как была;
+     • не умеет и это iPhone — плашка «как на весь экран?» с подсказкой;
+     • уже открыто как веб-приложение (или полный экран) — кнопки нет:
+       показывать её там незачем. */
+function полныйЭкранУмеется() {
+  const el = document.documentElement;
+  return !!(el.requestFullscreen || el.webkitRequestFullscreen);
+}
+
+function открытоКакПриложение() {
+  if (navigator.standalone) return true;
+  try {
+    if (window.matchMedia
+        && (window.matchMedia('(display-mode: standalone)').matches
+            || window.matchMedia('(display-mode: fullscreen)').matches)) return true;
+  } catch (e) {}
+  return false;
+}
+
+/* iPhone: по userAgent (iPhone, iPad, iPod) или по `navigator.standalone`,
+   который есть только у веб-приложения на iOS. */
+function этоАйфон() {
+  return /iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+    || navigator.standalone !== undefined;
+}
+
+function updateExpand() {
+  if (document.fullscreenElement || открытоКакПриложение()) {
+    expand.style.display = 'none';
+    return;
+  }
+  if (полныйЭкранУмеется()) {
+    expand.textContent = 'во весь экран';
+    expand.classList.remove('подсказка');
+    expand.style.display = 'block';
+    return;
+  }
+  /* Ни полного экрана, ни ярлыка: на iPhone это единственный честный ответ. */
+  expand.textContent = 'как на весь экран?';
+  expand.classList.add('подсказка');
+  expand.style.display = 'block';
+}
+document.addEventListener('fullscreenchange', updateExpand);
+
+/* Карточка-подсказка с крестиком: длинный текст не влезет в плашку, а
+   сама плашка должна остаться маленькой и не мешать экрану. */
+function показатьПодсказкуЭкрана() {
+  if (EDIT) return;
+  let карточка = $('подсказка-экрана');
+  if (карточка) { карточка.remove(); return; }
+  карточка = document.createElement('div');
+  карточка.id = 'подсказка-экрана';
+  const крест = document.createElement('button');
+  крест.className = 'пзакрыть';
+  крест.type = 'button';
+  крест.textContent = '✕';
+  крест.addEventListener('click', () => карточка.remove());
+  const текст = document.createElement('div');
+  текст.className = 'птекст';
+  текст.textContent = 'Поделиться → На экран „Домой“ → включи '
+    + '„Открывать как веб-приложение“ → Добавить. Открывай Трубу с этой иконки.';
+  карточка.append(крест, текст);
+  document.body.appendChild(карточка);
+}
+
+expand.addEventListener('click', () => {
+  if (expand.classList.contains('подсказка')) { показатьПодсказкуЭкрана(); return; }
+  goFullscreen();
+  updateExpand();
+});
+
+/* ---------- Главная кнопка ---------- */
+/* Круг и кнопка «найти» означают одно и то же — «слушаю без имени», —
+   поэтому жест общий, а не продублирован в двух местах. Подпись своя:
+   после «найти» от человека ждут запрос, а не просто слова. */
+function listenNow(text = 'слушает тебя') {
+  label.textContent = text;
+  label.style.color = 'var(--info)';
+}
+
+/* Круг. Касание — «замолчи и хватит»: оборвать речь и закрыть разговор,
+   режим слуха не трогать: касание не должно выключать слух. Выключить слух —
+   кнопкой «не слушаю» справа; перечёркнутый микрофон (#orb.muted) остаётся
+   признаком этого режима. Удержание — «слушай без имени». */
+const HOLD_MS = 600;
+let holdTimer = null;
+let held = false;
+
+orb.addEventListener('pointerdown', () => {
+  orb.classList.add('pressed');
+  held = false;
+  clearTimeout(holdTimer);
+  holdTimer = setTimeout(() => {
+    held = true;
+    if (currentMode === 'off') {
+      send({ type: 'mode', value: lastOnMode });
+      markMode(lastOnMode);
+    }
+    send({ type: 'listen_now' });
+    listenNow();
+  }, HOLD_MS);
+});
+orb.addEventListener('pointerup', () => {
+  orb.classList.remove('pressed');
+  clearTimeout(holdTimer);
+  /* Звук ещё не включён — это первое касание, оно только будит страницу
+     (отрыв пальца придёт следом и включит звук). Слух не трогаем, иначе
+     первое касание по кругу заодно выключало бы ей слух. */
+  if (!started) return;
+  if (held) return;
+  /* Касание — «замолчи и хватит»: оборвать речь и закрыть разговор.
+     Спросили, она ответила, продолжать не надо. Касание не должно
+     выключать ей слух вовсе — потом его пришлось бы включать обратно.
+     Режим не трогаем — дальше её зовут по имени; совсем выключить слух —
+     кнопкой «не слушаю» в правом столбце. */
+  send({ type: 'hush' });
+});
+orb.addEventListener('pointercancel', () => {
+  orb.classList.remove('pressed');
+  clearTimeout(holdTimer);
+});
+
+/* ---------- Свечение по краям ----------
+   Рамка повторяет её состояние: хозяин должен видеть, дошла ли
+   речь. «Труба» — окно открыто, рамка тихо дышит: говори. Фраза дошла —
+   тёплая, пока она думает. Не зажглась — значит, не дошло. */
+let edgeDict = false, edgeLast = 'off';
+
+function edgeApply() {
+  let cls = '';
+  if (edgeDict) cls = 'dict';
+  else if (edgeLast === 'thinking') cls = 'think';
+  /* Говорит — светлая рамка: раз есть все типы анимаций.
+     В любом режиме: её речь видна всегда. */
+  else if (edgeLast === 'speaking') cls = 'talk';
+  /* «Слышит всё» — окно открыто всегда, и вечно горящая рамка ничего бы
+     не сообщала. Там рамка только «думает». */
+  else if (edgeLast === 'listening' && currentMode !== 'always') cls = 'open';
+  if (edgeBox.className !== cls) edgeBox.className = cls;
+}
+
+/* Состояние с компа — из setState. */
+function edgeState(name) { edgeLast = name; edgeApply(); }
+
+/* Идёт ли диктовка заметки: край тлеет янтарём всё это время. */
+function edgeDictation(on) { edgeDict = !!on; edgeApply(); }
+
+/* ---------- Тема ----------
+   Меняет тему пульт, на телефоне кнопок нет: страница только показывает
+   то, что прислал сервер. Запоминает в localStorage, чтобы после
+   перезагрузки не мигать тёмным, пока не придёт сообщение. Всё в try:
+   телефон может быть в режиме инкогнито или с запретом хранилища —
+   тогда просто не запомнит, но покрасится как надо. */
+function applyTheme(value) {
+  const тема = value === 'light' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = тема;
+  try { localStorage.setItem('тема', тема); } catch (e) { /* не страшно */ }
+  const панель = document.getElementById('цвет-панели');
+  if (панель) панель.setAttribute('content', тема === 'light' ? '#f2f2f5' : '#15151a');
+}
+
+/* ---------- Связь ---------- */
+function setState(name, detail) {
+  edgeState(name);
+  let [color, text] = STATES[name] || STATES.off;
+  /* Если комп прислал в `text` состояния проценты загрузки — показываем их:
+     «загружаюсь, подожди…» без конца выглядело зависанием. Модели голосов
+     качает пульт по выбору хозяина, а не включение голоса,
+     но проценты в `text` по-прежнему понимаем. */
+  const доля = name === 'loading' && /(\d+)\s*%/.exec(String(detail || ''));
+  if (доля) text = 'качаю голос: ' + доля[1] + ' %';
+  core.style.background = color;
+  glow.style.background = color;
+  ring.style.borderColor = name === 'off' ? 'var(--line)' : color;
+  spinner.classList.toggle('on', name === 'thinking' || name === 'loading');
+  label.textContent = text;
+  label.style.color = 'var(--muted)';
+}
+
+/* Ключ привязки: приходит в ссылке из QR-кода (`?k=…`) и запоминается —
+   дальше телефон открывают из закладки или с главного экрана без него.
+   Без ключа комп не пускает телефон из сети: иначе любой в том же
+   Wi-Fi мог снять экран и прочитать заметки.
+   Функция, а не переменная: `connect()` зовётся при загрузке выше по
+   тексту, и `let` здесь ещё не был бы объявлен. */
+function ключПривязки() {
+  let изСсылки = '';
+  try { изСсылки = new URLSearchParams(location.search).get('k') || ''; } catch (e) {}
+  try {
+    if (изСсылки) localStorage.setItem('ключ', изСсылки);
+    return изСсылки || localStorage.getItem('ключ') || '';
+  } catch (e) {
+    return изСсылки;
+  }
+}
+
+/* Ссылка манифеста с ключом. Ярлык «На экран „Домой“» — отдельное
+   веб-приложение со своим хранилищем: `localStorage` из Safari в него не
+   попадает, и ключ из ссылки теряется. Единственный путь — сам манифест:
+   Safari идёт в `/manifest.json` и открывает `start_url` оттуда. Сервер
+   отдаёт манифест с ключом тому, кто ключ уже прислал; если страницу открыли
+   из старой закладки (или манифест закэшировался без ключа), дописываем его
+   здесь. В режиме правки не трогаем: макет в пульте ничего не ставит. */
+function дописатьКлючВМанифест() {
+  if (EDIT) return;
+  let ключ = '';
+  try { ключ = ключПривязки(); } catch (e) {}
+  if (!ключ) return;
+  const link = document.querySelector('link[rel="manifest"]');
+  if (!link) return;
+  const href = link.getAttribute('href') || '';
+  if (href.indexOf('k=') !== -1) return;
+  link.setAttribute('href', '/manifest.json?k=' + encodeURIComponent(ключ));
+}
+var needKey = false;
+
+/* Сообщение на весь экран: элемент `#offline` показывается крупно, по центру,
+   с понятным действием. Узкой полосой внизу (12 px) на горизонтальном
+   телефоне текст почти не виден, и в журнале его читают десятками строк
+   «телефон без ключа не пустила», не понимая, что делать. */
+function сообщениеНаЭкране(текст, крупно) {
+  offline.textContent = текст;
+  offline.classList.toggle('крупно', !!крупно);
+  offline.style.display = крупно ? 'flex' : 'block';
+}
+
+/* Ярлык без ключа: на iPhone он смотрится не как браузерная вкладка, и слово
+   «айфон» в тексте нужно только там. На Android (и на всяком другом) — тот же
+   текст без него. */
+function текстНепривязанного() {
+  if (!этоАйфон()) {
+    return 'Этот ярлык не привязан к компьютеру. В пульте открой «Настройки → '
+      + 'Телефон», наведи камеру телефона на QR-код, открой ссылку и заново '
+      + 'добавь её на экран «Домой». Старый ярлык удали.';
+  }
+  return 'Этот ярлык не привязан к компьютеру. В пульте открой «Настройки → '
+    + 'Телефон», наведи камеру айфона на QR-код, открой ссылку и заново '
+    + 'добавь её на экран «Домой». Старый ярлык удали.';
+}
+
+function connect() {
+  const phoneKey = ключПривязки();
+  const ключ = phoneKey ? '?k=' + encodeURIComponent(phoneKey) : '';
+  socket = new WebSocket('ws://' + location.host + '/ws' + ключ);
+  socket.binaryType = 'arraybuffer';
+
+  socket.onopen = () => {
+    offline.classList.remove('крупно');
+    offline.style.display = 'none';
+    /* Настоящее состояние присылает комп сразу после подключения. */
+    setState('off');
+    /* Честно говорим про звук: обычно он ещё выключен, потому что палец
+       не касался экрана. Пока `ready` не true, комп говорит в колонки. */
+    send({ type: 'audio', ready: !!audioCtx });
+    /* Сразу свой размер экрана: макет в пульте должен быть его копией. */
+    if (!EDIT) sendViewport();
+  };
+
+  socket.onmessage = (event) => {
+    if (typeof event.data !== 'string') {
+      const data = event.data, epoch = stopEpoch;
+      /* Разбор по очереди: порядок кусков должен сохраниться. */
+      decoding = decoding.then(() => schedule(data, epoch));
+      return;
+    }
+
+    const msg = JSON.parse(event.data);
+    if (msg.type === 'state') setState(msg.state, msg.text);
+    else if (msg.type === 'mode') markMode(msg.value);
+    else if (msg.type === 'volume') markVolume(msg.value);
+    else if (msg.type === 'theme') applyTheme(msg.value);
+    else if (msg.type === 'system') drawSystem(msg.data);
+    else if (msg.type === 'weather') drawWeather(msg);
+    else if (msg.type === 'apps') { closeMenu(); drawApps(msg.items, msg.layout); }
+    else if (msg.type === 'actions') drawActions(msg.items);
+    else if (msg.type === 'menu_state') markMenuState(msg.app, msg.on || {});
+    else if (msg.type === 'search_result') showSearch(msg);
+    else if (msg.type === 'search_fail') showToast(msg.text || 'не нашла', false);
+    else if (msg.type === 'shot') showShot(msg.image, msg.caption, msg.hide);
+    else if (msg.type === 'toast') showToast(msg.text, msg.ok);
+    else if (msg.type === 'sound') playSound(msg.name);
+    else if (msg.type === 'search_hum') searchHum(!!msg.on, Number(msg.gain) || 1);
+    else if (msg.type === 'dictation') edgeDictation(!!msg.on);
+    else if (msg.type === 'notes') drawNotes(msg.sections);
+    else if (msg.type === 'reminders') drawReminders(msg);
+    else if (msg.type === 'search_history') drawHistory(msg);
+    else if (msg.type === 'note_topic') drawNoteTopic(msg);
+    else if (msg.type === 'stop') {
+      stopEpoch += 1;
+      /* Оборванные куски не отчитываем: комп на «стоп» уже сбросил счёт,
+         а запоздалый отчёт снял бы заглушку с микрофона посреди новой речи. */
+      for (const source of live) {
+        source.onended = null;
+        try { source.stop(); } catch (e) {}
+      }
+      live.clear();
+      playAt = 0;
+    } else if (msg.type === 'version') {
+      if (FRESH && msg.value !== PAGE_VERSION) reloadSoon();
+    } else if (msg.type === 'need_key') {
+      needKey = true;
+    }
+  };
+
+  socket.onclose = () => {
+    setState('off');
+    edgeDictation(false);
+    if (needKey) {
+      /* Не «нет связи»: связь есть, но комп этот телефон не знает. Пробовать
+         каждые полторы секунды незачем — ключ сам не появится. Показываем
+         крупно и по центру: это единственный экран, который увидит человек,
+         открывший непривязанный ярлык. */
+      сообщениеНаЭкране(текстНепривязанного(), true);
+      needKey = false;
+      setTimeout(connect, 15000);
+      return;
+    }
+    сообщениеНаЭкране('нет связи с компом, переподключаюсь...', false);
+    setTimeout(connect, 1500);
+  };
+
+  socket.onerror = () => {
+    сообщениеНаЭкране('не могу соединиться с ' + location.host, false);
+    try { socket.close(); } catch (e) {}
+  };
+}
+
+function send(obj) {
+  if (socket && socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(obj));
+  }
+}
+
+/* ---------- Самообновление ---------- */
+const FRESH = PAGE_VERSION !== '__VER' + 'SION__';
+
+function reloadSoon() {
+  /* Макет в пульте перезагружать нельзя: он потерял бы всё, что хозяин
+     нарисовал, и пульт счёл бы страницу сломанной. */
+  if (EDIT) return;
+  сообщениеНаЭкране('обновляюсь до свежей версии...', false);
+  setTimeout(() => location.reload(), 400);
+}
+
+setInterval(async () => {
+  if (EDIT) return;
+  if (!FRESH) return;
+  try {
+    const response = await fetch('/version', { cache: 'no-store' });
+    const latest = (await response.text()).trim();
+    if (latest && latest !== PAGE_VERSION) reloadSoon();
+  } catch (e) {}
+}, 30000);
+
+/* ---------- Звук ---------- */
+async function schedule(data, epoch) {
+  /* Отчёт — за каждый кусок: комп считает отправленные куски и снимает
+     заглушку с микрофона, когда доиграны все. Отчёт на одну опустевшую
+     очередь сбивает счёт, и микрофон включился бы только по запасному
+     таймеру — на секунды позже, чем она замолчала. */
+  if (epoch !== stopEpoch) return;
+  /* Страховка: пошёл её голос — фон гасим, даже если комп не успел прислать
+     `search_hum false` (связь могла вернуться с задержкой). */
+  searchHum(false);
+  /* Комп не шлёт куски, пока мы не сказали `audio ready`, так что это
+     страховка на случай гонки. Играть нечем — кусок тихо выбрасываем, и
+     отчёта не шлём: его ждёт счётчик на компе, и лишний «played» сбил бы
+     его ещё сильнее. */
+  if (!audioCtx) return;
+  let buffer = null;
+  try {
+    /* Будим, но не ждём вечно: на айфоне `resume()` в состоянии
+       'interrupted' (звонок) не возвращается, пока звонок не кончится, а
+       очередь кусков и отчёты «played» за это время встали бы. */
+    if (audioCtx.state !== 'running') {
+      await Promise.race([
+        audioCtx.resume().catch(() => {}),
+        new Promise((готово) => setTimeout(готово, 500)),
+      ]);
+    }
+    buffer = await audioCtx.decodeAudioData(data.slice(0));
+  } catch (e) {
+    /* Битый кусок пропускаем: молчание лучше зависшей очереди. */
+  }
+  if (epoch !== stopEpoch) return;
+  if (!buffer) { send({ type: 'played' }); return; }
+
+  const source = audioCtx.createBufferSource();
+  source.buffer = buffer;
+  source.connect(analyser);
+  const start = Math.max(audioCtx.currentTime + 0.03, playAt);
+  source.onended = () => { live.delete(source); send({ type: 'played' }); };
+  live.add(source);
+  kickAnimate();
+  source.start(start);
+  playAt = start + buffer.duration;
+}
+
+/* Круг дышит под громкость речи — только пока она звучит: цикл, идущий
+   60 раз в секунду, ел бы батарею телефона даже в тишине. Будит его
+   `schedule`, а в тишине он засыпает сам. */
+let animating = false;
+let bins = null;
+
+function kickAnimate() {
+  if (animating || !analyser) return;
+  animating = true;
+  requestAnimationFrame(animate);
+}
+
+function animate() {
+  if (!analyser) { animating = false; return; }
+  if (!bins) bins = new Uint8Array(analyser.frequencyBinCount);
+  analyser.getByteFrequencyData(bins);
+  let sum = 0;
+  for (let i = 0; i < bins.length; i++) sum += bins[i];
+  const level = Math.min(sum / bins.length / 70, 1);
+
+  if (live.size === 0 && level < 0.01) {
+    core.style.transform = glow.style.transform = ring.style.transform = '';
+    glow.style.opacity = '';
+    animating = false;
+    return;
+  }
+  core.style.transform = 'scale(' + (1 + level * 0.14) + ')';
+  glow.style.transform = 'scale(' + (1 + level * 0.5) + ')';
+  glow.style.opacity = 0.1 + level * 0.3;
+  ring.style.transform = 'scale(' + (1 + level * 0.07) + ')';
+  requestAnimationFrame(animate);
+}
+
+/* ---------- Режим правки ----------
+   Пульт открывает эту страницу в `<iframe src="/?edit=1">` — как живой
+   макет телефона, на котором хозяин правит программы руками. Здесь страница
+   не телефон, а чужое окно, поэтому:
+     • связи с сервером нет (иначе комп заговорил бы в макет) — проверяет
+       `EDIT` у вызова `connect()`;
+     • данных нет ниоткуда, кроме родителя: пульт шлёт `{type: 'truba-edit'}`
+       и ждёт ответа `truba-edit-ready`;
+     • программа не запускается, а выбирается; порядок меняется
+              перетаскиванием. Пустые клетки сетки — это «+» добавления: плюсик
+        занимает место приложения, а не висит сбоку отдельной кнопкой.
+   Всё остальное на экране — для вида: круг, режимы, действия и погода
+   показаны, но не нажимаются (`pointer-events: none` в стилях). */
+function editSay(data) {
+  try {
+    parent.postMessage(data, location.origin);
+  } catch (e) {}
+}
+
+/* Тащим мышью (pointer-события одинаковы для мыши и для пальца). Отпустили
+   на другом месте — порядок поменялся на экране и ушёл родителю. Касание
+   без сдвига — это выбор, а не перетаскивание, поэтому порог в 6 px. */
+const EDIT_DRAG_PX = 6;
+let editDrag = null;
+
+function editBindTile(el, item) {
+  el.addEventListener('pointerdown', (event) => {
+    if (event.button) return;   /* правая кнопка — не перетаскивание */
+    editDrag = { el: el, x: event.clientX, y: event.clientY, moved: false };
+    /* Указатель берём в плитку: без этого `pointermove` перестал бы
+       приходить, как только курсор ушёл с плитки, и тащить было бы нечем. */
+    try { el.setPointerCapture(event.pointerId); } catch (e) {}
+  });
+  el.addEventListener('pointermove', (event) => {
+    if (!editDrag || editDrag.el !== el) return;
+    const dx = Math.abs(event.clientX - editDrag.x);
+    const dy = Math.abs(event.clientY - editDrag.y);
+    if (dx < EDIT_DRAG_PX && dy < EDIT_DRAG_PX) return;
+    if (!editDrag.moved) el.classList.add('dragging');
+    editDrag.moved = true;
+    /* Плитка под курсором — значит, встаём на её место. Ищем элемент под
+       указателем: плитки одного размера, так что «середина экрана» работала
+       бы только при ровном сетчатом шаге. Ищем именно программу
+       (`.app[data-app]`): пустая клетка «+» перетаскиванием не участвует. */
+    const под = document.elementFromPoint(event.clientX, event.clientY);
+    const over = под && под.closest ? под.closest('.app[data-app]') : null;
+    if (!over || over === el || over.parentElement !== el.parentElement) return;
+    const box = over.getBoundingClientRect();
+    /* По вертикали решает сетка, а в одну строку (когда листаем вбок) —
+       только правый край. */
+    const после = Math.abs(box.height) < 1
+      ? event.clientX > box.left + box.width / 2
+      : event.clientY > box.top + box.height / 2;
+    if (после) over.after(el); else over.before(el);
+  });
+  const конец = () => {
+    if (!editDrag || editDrag.el !== el) return;
+    const перенесли = editDrag.moved;
+    editDrag = null;
+    el.classList.remove('dragging');
+    if (!перенесли) { editSay({ type: 'truba-edit-pick', id: item.id });
+      /* Касание значка открывает и подменю — той же раскладкой, что на
+         телефоне. Программа без пунктов тоже: там главная плитка и «+».
+         Перетаскивание подменю не открывает (сюда мы не доходим). */
+      openMenu(item);
+      return;
+    }
+    editSay({ type: 'truba-edit-order', ids: editOrder() });
+  };
+  el.addEventListener('pointerup', конец);
+  el.addEventListener('pointercancel', конец);
+}
+
+/* Порядок программ в том виде, в каком он на экране. */
+function editOrder() {
+  return Array.from(appsBox.querySelectorAll('.app[data-app]'))
+    .map((el) => el.dataset.app);
+}
+
+function editPick(id) {
+  appsBox.querySelectorAll('.app[data-app]').forEach((el) => {
+    el.classList.toggle('picked', el.dataset.app === id);
+  });
+}
+
+/* Пришло новое сообщение, а подменю открыто: перерисовать его с новыми
+   пунктами той же программы и не закрывать. Иначе хозяин только что добавил
+   пункт в пульте, а макет остался бы со старым списком — и правка была бы не
+   видна. Программу узнаём по `id`, а не по объекту: пульт присылает новые. */
+function editОбновитьМеню(items) {
+  if (!menuBox.classList.contains('on') || !currentMenu) return;
+  const такая = items.find((item) => item && item.id === currentMenu.id);
+  if (!такая) { closeMenu(); return; }
+  openMenu(такая);
+}
+
+if (EDIT) {
+  /* Макет — значит, подсказки «коснись» и «во весь экран» тут лишние: их
+     нажатие в iframe всё равно ничего не делает. Показатели — прочерки,
+     часы настоящие: телефон у хозяина всё равно один. */
+  document.body.classList.add('edit');
+  hint.classList.add('off');
+  expand.style.display = 'none';
+  for (const id of ['s-cpu', 's-ram', 's-gpu']) {
+    $(id).querySelector('.value').textContent = '—';
+    $(id).querySelector('.bar i').style.width = '0%';
+  }
+  batBox.hidden = true;
+
+  /* Мышь на значке начинает тянуть саму картинку, и жест не доходит до
+     плитки. Запрещаем перетаскивание целиком — в макете тянуть нечего,
+     а на настоящем телефоне этого запрета нет. */
+  document.addEventListener('dragstart', (event) => { event.preventDefault(); });
+
+  /* Слушаем только родителя нашего же адреса: сообщение с чужой страницы не
+     должно ни нарисовать programs, ни узнать содержимое макета. */
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    if (event.origin !== location.origin) return;
+    const msg = event.data;
+    if (!msg || typeof msg !== 'object' || msg.type !== 'truba-edit') return;
+    const items = Array.isArray(msg.items) ? msg.items : [];
+    drawApps(items, msg.layout);
+    /* Нижние кнопки макет рисует по черновику хозяина: переключил вид — сразу
+       видно на макете, до «Сохранить». Пустой список значит «пульт ещё не
+       прислал» — тогда остаются запасные кнопки. */
+    if (Array.isArray(msg.actions) && msg.actions.length) drawActions(msg.actions);
+    editPick(msg.selected);
+    editPickAction(msg.action);
+    editОбновитьМеню(items);
+  });
+
+  editSay({ type: 'truba-edit-ready' });
+}
+</script>
+</body>
+</html>
