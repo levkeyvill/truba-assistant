@@ -5,6 +5,7 @@
 <title>Труба — пульт</title>
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/pult/pult.css">
+<link rel="stylesheet" href="/pult/home.css">
 </head>
 <body>
 
@@ -24,19 +25,27 @@
     <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>
   </button>
   <div class="меню-список" id="меню-список">
-  <a class="пункт активный" data-раздел="панель">
+  <a class="пункт активный" data-раздел="панель" href="#панель">
     <svg viewBox="0 0 24 24"><path d="M4 4h7v9H4zm9 0h7v5h-7zM4 15h7v5H4zm9-7h7v12h-7z"/></svg>
-    <span>Панель</span>
+    <span>Главная</span>
   </a>
-  <a class="пункт" data-раздел="чат">
+  <a class="пункт" data-раздел="чат" href="#чат">
     <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3V12a8 8 0 0 1 8-8h2a8 8 0 0 1 8 8z"/></svg>
     <span>Чат</span>
   </a>
-  <a class="пункт" data-раздел="заметки">
+  <a class="пункт" data-раздел="заметки" href="#заметки">
     <svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>
     <span>Заметки</span>
   </a>
-  <a class="пункт" data-раздел="голос">
+  <a class="пункт" data-раздел="программы" href="#программы">
+    <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg>
+    <span>Программы</span>
+  </a>
+  <a class="пункт" data-раздел="состояние" href="#состояние">
+    <svg viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg>
+    <span>Состояние</span>
+  </a>
+  <a class="пункт" data-раздел="голос" href="#голос">
     <svg viewBox="0 0 24 24"><path d="M12 3v10m0 0a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v4a3 3 0 0 0 3 3zm-7-1a7 7 0 0 0 14 0M12 17v4"/></svg>
     <span>Голос</span>
   </a>
@@ -46,11 +55,11 @@
     <button type="button" data-голос="распознавание">Распознавание</button>
     <button type="button" data-голос="звук">Звук</button>
   </div>
-  <a class="пункт" data-раздел="логи">
+  <a class="пункт" data-раздел="логи" href="#логи">
     <svg viewBox="0 0 24 24"><path d="M4 5h16M4 10h16M4 15h10M4 20h7"/></svg>
     <span>Логи</span>
   </a>
-  <a class="пункт" data-раздел="настройки">
+  <a class="пункт" data-раздел="настройки" href="#настройки">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M5 5l2 2m10 10l2 2M19 5l-2 2M7 17l-2 2"/></svg>
     <span>Настройки</span>
   </a>
@@ -63,19 +72,15 @@
     <button type="button" data-настройка="телефон">Телефон</button>
     <button type="button" data-настройка="система">Система</button>
   </div>
-  <a class="пункт" data-раздел="проверка">
+  <a class="пункт" data-раздел="проверка" href="#проверка">
     <svg viewBox="0 0 24 24"><path d="M9 12l2 2 4-5"/><circle cx="12" cy="12" r="9"/></svg>
     <span>Проверка</span>
   </a>
-  <a class="пункт" data-раздел="программы">
-    <svg viewBox="0 0 24 24"><path d="M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z"/></svg>
-    <span>Программы</span>
-  </a>
-  <a class="пункт" data-раздел="команды">
+  <a class="пункт" data-раздел="команды" href="#команды">
     <svg viewBox="0 0 24 24"><path d="M8.5 9a3.5 3.5 0 1 1 4.9 3.2c-.8.4-1.4 1.1-1.4 2v.3"/><path d="M12 17.8h.01"/><circle cx="12" cy="12" r="9"/></svg>
     <span>Команды</span>
   </a>
-  <a class="пункт" data-раздел="программа">
+  <a class="пункт" data-раздел="программа" href="#программа">
     <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6"/><path d="M12 7.5h.01"/></svg>
     <span>О программе</span>
   </a>
@@ -135,6 +140,8 @@
 </div>
 
 <script src="/pult/notes_markdown.js"></script>
+<script src="/pult/home_wave.js"></script>
+<script src="/pult/home.js"></script>
 <script src="/pult/pult.js"></script>
 </body>
 </html>

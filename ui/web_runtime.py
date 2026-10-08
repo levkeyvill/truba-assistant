@@ -839,10 +839,16 @@ class WebRuntime:
             retry = data.get("retry")
             return [f"мгновенный повтор не включился: {data.get('error', '?')}"
                     + (f", попробую через {retry} с" if retry else "")]
+        if kind == "browser_search":
+            return [f"поиск в браузере: {data.get('query', '')}" if data.get("ok") else
+                    f"поиск в браузере не открылся: {data.get('error', '')}"]
         if kind == "web_search":
             return [f"поиск в интернете [{data.get('backend', '?')}, "
                     f"{float(data.get('took', 0)):.1f} с, найдено {data.get('found', 0)}]: "
                     f"{str(data.get('query', ''))[:120]}"]
+        if kind == "web_queries" and data.get("direct"):
+            return ["поиск без переформулирования моделью: " +
+                    "; ".join(data.get("queries") or [])]
         if kind == "web_queries":
             # Что модель сделала из его фразы для поисковика — иначе в журнале
             # видны только запросы и непонятно, откуда они взялись.
@@ -899,6 +905,8 @@ class WebRuntime:
                 f"в телефон {_сек(data.get('say'))}",
                 f"инструменты {int(data.get('rounds', 0))} круг",
             ]
+            if "answer" in data:
+                части.append(f"ответ по делу {_сек(data.get('answer'))}")
             return [f"задержка {_сек(data.get('total'))} с: " + " · ".join(части)]
         if kind == "spoken":
             first = data.get("first_sound")
@@ -998,10 +1006,84 @@ class WebRuntime:
         loading = текст if running and not ready and isinstance(текст, str) else ""
         stop = getattr(self.voice, "_stop", None)
         stopping = running and isinstance(stop, threading.Event) and stop.is_set()
-        return {"running": running, "ready": ready, "mode": config.LISTEN_MODE,
+        activity = "off" if not running else "loading" if not ready else "listening"
+        if ready:
+            if not getattr(self.voice, "_speaker_idle", lambda: True)():
+                activity = "speaking"
+            elif in_conv and getattr(self.voice, "_speech_from", None) is not None:
+                activity = "hearing"
+            elif getattr(self.voice, "_turn", None) is not None and self.voice._turn.locked():
+                activity = "thinking"
+        def level(value):
+            import math
+            if not isinstance(value, (int, float)) or not math.isfinite(value):
+                return 0.0
+            return round(max(0.0, min(1.0, float(value))), 4)
+        listener = getattr(self.voice, "_listener", None)
+        input_level = level(getattr(listener, "last_level", 0.0)) if ready and in_conv else 0.0
+        output_level = 0.0
+        if ready:
+            for speaker in (getattr(self.voice, "_speaker", None), getattr(self.voice, "_fallback", None)):
+                output_level = max(output_level, level(getattr(getattr(speaker, "meter", None), "level", 0.0)))
+        return {"activity": activity, "input_level": input_level, "output_level": output_level,
+                "running": running, "ready": ready, "mode": config.LISTEN_MODE,
                 "in_conversation": in_conv,
                 "volume": int(getattr(config, "VOICE_VOLUME", 10)),
                 "loading_text": loading, "stopping": stopping}
+
+    def home_action(self, body: dict) -> dict:
+        """Кнопки главной страницы выполняются локально по явному нажатию."""
+        kind = body.get("action")
+        if kind == "search":
+            from core import browser_search
+
+            query = body.get("query")
+            if not isinstance(query, str) or not query.strip() or len(query) > 1000:
+                return {"ok": False, "error": "Напиши, что искать: до 1000 символов."}
+            result = browser_search.open_query(query)
+            if not result.get("ok"):
+                return {"ok": False, "error": result.get("text") or "Поиск не открылся."}
+            self._remember("browser_search", result["query"])
+            return {"ok": True, "text": "Поиск открыт в браузере."}
+        if kind == "volume":
+            level = body.get("level")
+            if type(level) is not int:
+                return {"ok": False, "error": "Нужен целый уровень громкости."}
+            return self.voice_volume(level=level)
+        if kind == "screenshot":
+            self._screenshot()
+            return {"ok": True, "text": "Делаю скриншот."}
+        if kind == "timer":
+            from datetime import timedelta
+            from core import reminders
+
+            seconds = body.get("seconds")
+            if type(seconds) is not int or not 1 <= seconds <= 86400:
+                return {"ok": False, "error": "Таймер: от секунды до 24 часов."}
+            record = reminders.add(reminders.local_now() + timedelta(seconds=seconds),
+                                   kind=reminders.KIND_TIMER, minutes=seconds // 60)
+            self._remember("reminder", reminders.phrase(record))
+            return {"ok": True, "text": reminders.phrase(record)}
+        if kind in ("clipboard", "note", "listen"):
+            voice = self.voice
+            if not voice or not voice.running or not voice.ready:
+                return {"ok": False, "error": "Сначала включи голос и дождись загрузки."}
+            if kind == "listen":
+                voice.arm_button()
+                return {"ok": True, "text": "Говори, слушаю."}
+            if kind == "note":
+                ok = voice.start_note()
+            else:
+                from core import clipboard
+
+                copied = clipboard.text(limit=clipboard.MAX_CHARS)
+                if not copied.get("ok"):
+                    return {"ok": False, "error": copied.get("why") or "В буфере нет текста."}
+                ok, why = voice.read_aloud(copied["text"], name="Буфер обмена")
+                if not ok:
+                    return {"ok": False, "error": why}
+            return {"ok": bool(ok), "text": "Готово." if ok else "Действие не началось."}
+        return {"ok": False, "error": "Такой кнопки нет."}
 
     def voice_autostart(self) -> None:
         """Голос — сразу при запуске пульта, если так настроено.
@@ -3324,7 +3406,7 @@ class WebRuntime:
         except Exception:
             pass
         try:
-            if not self.voice._speaker_idle():
+            if not getattr(self.voice, "_speaker_idle", lambda: True)():
                 return True
         except Exception:
             pass

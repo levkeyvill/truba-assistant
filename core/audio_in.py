@@ -283,9 +283,17 @@ class Listener:
         # Громкость последней попытки заговорить поверх неё. Нужна, чтобы
         # порог можно было подобрать по замерам.
         self.last_start_peak = 0.0
+        self._analysis_lock = threading.RLock()
         self._reset_echo()
 
     # --- Замер эха и мгновенное перебивание ---------------------------------
+
+    def _analysis_locked(self):
+        """Сброс детектора и разбор звука используют один замок."""
+        lock = getattr(self, "_analysis_lock", None)
+        if lock is None:
+            lock = self._analysis_lock = threading.RLock()
+        return lock
 
     def _reset_echo(self) -> None:
         """Забыть замер её прошлой речи.
@@ -294,11 +302,12 @@ class Listener:
         громко: фон новой реплики начинается с нуля, иначе перебивание
         сравнивалось бы с эхом той, прошлой.
         """
-        self._echo: deque[float] = deque(maxlen=ECHO_FLOOR_CHUNKS)
-        self._echo_samples = 0
-        self._barge_run: deque[float] = deque()
-        self._barge_fired = False
-        self.last_echo_peak = 0.0
+        with self._analysis_locked():
+            self._echo: deque[float] = deque(maxlen=ECHO_FLOOR_CHUNKS)
+            self._echo_samples = 0
+            self._barge_run: deque[float] = deque()
+            self._barge_fired = False
+            self.last_echo_peak = 0.0
 
     def echo_measure(self) -> tuple[float, float]:
         """Замер её последней речи: (фон, пик).
@@ -307,7 +316,8 @@ class Listener:
         `stop_listening_loudly`, который замер обнуляет. По этим двум
         числам в журнале подбираются пороги.
         """
-        return float(self._echo_floor()), float(self.last_echo_peak)
+        with self._analysis_locked():
+            return float(self._echo_floor()), float(self.last_echo_peak)
 
     # --- Заглушка на время своей речи -------------------------------------
 
@@ -324,18 +334,21 @@ class Listener:
         проходит, а обращённая к ней фраза — проходит.
         """
         self._muted.clear()
-        self._barge_threshold = threshold
-        # Новая её реплика — фон эха прежний больше не годится.
-        self._reset_echo()
+        with self._analysis_locked():
+            self._barge_threshold = threshold
+            # Новая реплика начинает новый замер эха.
+            self._reset_echo()
 
     def stop_listening_loudly(self) -> None:
-        self._barge_threshold = 0.0
-        self._reset_echo()
+        with self._analysis_locked():
+            self._barge_threshold = 0.0
+            self._reset_echo()
 
     def unmute(self, keep_seconds: float = TAIL_KEPT) -> None:
         self._muted.clear()
-        self._vad.reset()
-        self._reset_echo()
+        with self._analysis_locked():
+            self._vad.reset()
+            self._reset_echo()
         # Накопленное за время своей речи выбрасываем — но не всё.
         #
         # Оставляем последнюю секунду очереди: ответ может начаться сразу
@@ -602,17 +615,18 @@ class Listener:
                 # раз в 32 мс, на поток звука это не слышно.
                 self.last_level = voice_level(chunk)
 
-                prob = self._vad.probability(chunk)
+                with self._analysis_locked():
+                    prob = self._vad.probability(chunk)
 
-                # Пока она говорит — меряем её эхо и ждём его голоса. Идёт
-                # по каждому куску, а не по началу фразы: перебивание должно
-                # случиться, пока она ещё замолчала не успел.
-                if self._barge_threshold > 0:
-                    # Линейная громкость (RMS), а не `voice_level`: та сжата
-                    # корнем для подсветки, и «в 2.5 раза громче фона» на ней
-                    # значило бы «в 6 раз» на деле.
-                    rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64))))
-                    self._watch_barge(rms, prob)
+                    # Пока она говорит — меряем её эхо и ждём его голоса. Идёт
+                    # по каждому куску, а не по началу фразы: перебивание должно
+                    # случиться, пока она ещё замолчала не успел.
+                    if self._barge_threshold > 0:
+                        # Линейная громкость (RMS), а не `voice_level`: та сжата
+                        # корнем для подсветки, и «в 2.5 раза громче фона» на ней
+                        # значило бы «в 6 раз» на деле.
+                        rms = float(np.sqrt(np.mean(np.square(chunk, dtype=np.float64))))
+                        self._watch_barge(rms, prob)
 
                 if not speaking:
                     preroll = np.concatenate([preroll, chunk])[-preroll_len:]

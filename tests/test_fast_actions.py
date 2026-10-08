@@ -418,6 +418,47 @@ class ShortActionTests(unittest.TestCase):
         self.assertEqual(_rounds(brain), 2)
         self.assertEqual(said[-1], "Открыла, и вот что нового.")
 
+    def test_reading_aloud_and_opening_a_file_need_no_second_round(self):
+        # Чтение буфера и документа вслух и открытие найденного файла
+        # отвечают готовой фразой инструмента: второй круг стоил бы ~2 с.
+        готово = json.dumps({"ok": True, "text": "Читаю буфер, слушай."},
+                            ensure_ascii=False)
+        for имя, функция, аргументы in (
+                (hands.CLIP_NAME, "run_clipboard",
+                 '{"mode": "read", "because": "прочитай скопированное"}'),
+                (hands.DOC_NAME, "run_document",
+                 '{"which": "open", "mode": "aloud", "because": "прочитай скопированное"}'),
+                (hands.FIND_NAME, "run_find_file",
+                 '{"name": "план", "open": true, "because": "прочитай скопированное"}')):
+            with self.subTest(инструмент=имя):
+                brain = _brain([_tool_call(имя, аргументы),
+                                [_chunk("Лишний второй круг.")]])
+                # Поиск файла начинается заранее, вместе с судьёй, — по
+                # дискам он не ходит и здесь.
+                with mock.patch.object(hands, функция, return_value=готово), \
+                        mock.patch("core.files.find", return_value={"found": []}):
+                    said = list(brain.reply("Труба, прочитай скопированное."))
+                self.assertEqual(_rounds(brain), 1)
+                self.assertEqual(said[-1], "Читаю буфер, слушай.")
+
+    def test_reading_after_a_web_search_still_asks_the_model(self):
+        # Интернет в том же ответе: нужен ответ по найденному, а не готовая
+        # фраза чтения.
+        brain = _brain([
+            _two_calls(("web_search", '{"query": "курс"}'),
+                       (hands.CLIP_NAME,
+                        '{"mode": "read", "because": "прочитай скопированное"}')),
+            [_chunk("Вот курс, а буфер прочитала.")],
+        ])
+        готово = json.dumps({"ok": True, "text": "Читаю буфер, слушай."},
+                            ensure_ascii=False)
+        with mock.patch.object(config, "WEB_SEARCH", True), \
+                mock.patch.object(hands, "run_clipboard", return_value=готово), \
+                mock.patch.object(web, "run_tool", return_value='{"results": []}'):
+            said = list(brain.reply("Найди курс и прочитай скопированное"))
+        self.assertEqual(_rounds(brain), 2)
+        self.assertEqual(said[-1], "Вот курс, а буфер прочитала.")
+
 
 class TimingTests(unittest.TestCase):
     """Замер каждого голосового ответа: событие `timing` и его подпись."""
@@ -437,7 +478,7 @@ class TimingTests(unittest.TestCase):
         loop._answer("как дела?", heard_at=heard, stt=0.2)
         data = _timing_of(loop)
         self.assertEqual(set(data), {"total", "stt", "duck", "word", "sentence",
-                                     "synth", "say", "rounds"})
+                                     "synth", "say", "rounds", "answer"})
         self.assertEqual(data["stt"], 0.2)
         self.assertEqual(data["rounds"], 1)
         # Числа правдоподобные: счёт от конца фразы, всё в пределах ответа.

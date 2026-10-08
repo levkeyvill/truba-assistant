@@ -632,8 +632,9 @@ DOC_TOOL = {
     "function": {
         "name": DOC_NAME,
         "description": (
-            "Прочитать документ хозяина — PDF, Word или текст. Зови на "
-            "«прочитай открытый документ», «перескажи то, что у меня открыто», "
+            "Прочитать документ хозяина — PDF, DOCX, RTF или текст. Зови на "
+            "«прочитай открытый документ», «изучи открытый документ», "
+            "«разбери этот документ», «перескажи то, что у меня открыто», "
             "«что в этой заметке?», «перескажи последний скачанный PDF», «что в "
             "файле с отчётом?», «прочитай выделенный документ», «прочитай вслух "
             "последний скачанный», «зачитай мне это», «продолжи читать». which: "
@@ -642,12 +643,15 @@ DOC_TOOL = {
             "открыто», «эту заметку»; selected — файл, выделенный в окне "
             "проводника; latest_download — самый новый скачанный; by_name — по "
             "словам из name («отчёт», «договор»): ищет в загрузках, документах и "
-            "на рабочем столе. mode: retell — пересказать своими словами, это "
-            "обычный случай; aloud — прочесть вслух дословно её голосом, на "
+            "на рабочем столе. mode: retell — "
+            "получить текст для пересказа, разбора или ответа на вопрос; "
+            "aloud — прочесть вслух дословно её голосом, на "
             "«прочитай вслух», «зачитай», «прочти мне дословно» и на «продолжи "
             "читать». При retell ответ приходит полем text — это сам текст "
-            "документа: перескажи его хозяину коротко, своими словами; на его "
-            "вопрос отвечай по этому тексту, а не по своим догадкам, и не "
+            "документа: выполни по нему именно просьбу хозяина. На «изучи», "
+            "«разбери», «проанализируй» дай содержательный разбор; короткий "
+            "пересказ нужен только на просьбу пересказать. На его вопрос "
+            "отвечай по этому тексту, а не по своим догадкам, и не "
             "выдумывай того, чего в тексте нет. Если cut true — скажи, что "
             "прочитала только начало. Если unsaved true — в редакторе есть "
             "несохранённые правки, скажи об этом одной фразой: читается "
@@ -672,7 +676,7 @@ DOC_TOOL = {
                          "description": "Слова названия файла, только для "
                                         "by_name: «отчёт», «счёт за март»"},
                 "mode": {"type": "string", "enum": list(DOC_MODES),
-                         "description": "retell — пересказать (по умолчанию), "
+                         "description": "retell — текст для пересказа/разбора (по умолчанию), "
                                         "aloud — прочесть вслух её голосом"},
                 "resume": {"type": "boolean",
                            "description": "true — только вместе с mode: "
@@ -1111,7 +1115,11 @@ JUDGE_PROMPT = (
     "компьютер — только когда он прямо велит: «выключи компьютер», "
     "«перезагрузи», «отправь в сон». «А ты умеешь выключаться?», «он у нас "
     "ночью выключается», «давай выключим потом» и любое упоминание выключения "
-    "в разговоре — не просьба. Ответь одним словом: "
+    "в разговоре — не просьба. Для документов просьбы «изучи открытый "
+    "документ», «разбери этот файл» и «можешь сделать анализ текста "
+    "открытого документа?» разрешают прочитать его и разобрать сейчас. "
+    "Рассказ «я открыл документ» сам по себе не разрешает чтение. "
+    "Ответь одним словом: "
     "да или нет.\n\n"
     "Предыдущий обмен:\n{context}\n"
     "Реплика: «{said}»\n"
@@ -1578,8 +1586,27 @@ def _приблизительно(что: dict) -> dict:
     return {"approx": True} if что.get("approx") else {}
 
 
-def run_find_file(arguments: str, on_event: Event | None = None) -> str:
+def find_file_words(arguments: str) -> tuple[str, str] | None:
+    """Слова и диск для поиска файла. `None` — искать нечего.
+
+    Поиск только читает диск, поэтому мозг может начать его заранее, не дожидаясь
+    ответа судьи: слова и диск берутся отсюда же, что и в `run_find_file`.
+    """
+    args = _rem_args(arguments)
+    if args is None:
+        return None
+    слова = str(args.get("name") or "").strip()
+    if not слова:
+        return None
+    return слова, str(args.get("drive") or "").strip()
+
+
+def run_find_file(arguments: str, on_event: Event | None = None,
+                  found=None) -> str:
     """Ищет файл по названию и, если просили, открывает. Строка — для tool.
+
+    `found` — готовый результат `files.find` (словарь или функция, которая
+    его отдаст). Без него ищет сама.
 
     Пути в облако уходят без имени пользователя Windows (`core/files.py`): в
     пути имя человека, а модели оно ни к чему. Найдено одно — имя, путь и папка;
@@ -1598,7 +1625,9 @@ def run_find_file(arguments: str, on_event: Event | None = None) -> str:
     from core import files
 
     try:
-        что = files.find(слова, str(args.get("drive") or "").strip())
+        что = found() if callable(found) else (
+            found if found is not None else files.find(
+                слова, str(args.get("drive") or "").strip()))
     except Exception as exc:
         return _error(f"не искала файл: {type(exc).__name__}: {exc}")
     found = list(что.get("found") or [])
@@ -1830,8 +1859,7 @@ def _rem_due(args: dict, now=None):
     `seconds` — целое число от текущего момента, `at` — местное время ISO.
     Порядок именно такой: «через двадцать минут» модель передаёт секундами,
     а назвала час — `at`, и обе формы сразу она не передаёт (см. описание
-    инструмента). Разборщиков «через полчаса» тут нет и не будет: время
-    понимает модель, у неё часы в каждом запросе.
+    инструмента). Простую длительность заранее разбирает commands, сложное время — модель.
     """
     from core import reminders
 
@@ -1875,18 +1903,8 @@ def confirm_phrase(record: dict) -> str:
     from core import reminders
 
     if str(record.get("kind") or "") == reminders.KIND_TIMER:
-        # Меньше минуты — секундами: «таймер на тридцать секунд», а не «на
-        # одну минуту» (минуты в записи округлены вверх до одной).
-        left = (reminders.parse(record.get("due"))
-                - reminders.parse(record.get("created"))).total_seconds()
-        if 0 < left < 60:
-            return personas.say("timer_set", config.PERSONA_PRESET,
-                                time=reminders.seconds_said(round(left)))
-        minutes = int(record.get("minutes") or 0)
-        if minutes > 0:
-            return personas.say("timer_set", config.PERSONA_PRESET,
-                                time=reminders.minutes_said(minutes))
-        return personas.say("timer_set", config.PERSONA_PRESET, time="заданное время")
+        return personas.say("timer_set", config.PERSONA_PRESET,
+                            time=reminders.timer_duration_said(record) or "заданное время")
     return personas.say("reminder_set", config.PERSONA_PRESET,
                         time=reminders.when_said(record.get("due")))
 

@@ -1,10 +1,8 @@
 r"""Таймеры и напоминания: где они лежат, когда звонят и кто звонит.
 
-Время из фразы «напомни через двадцать минут» **понимает модель**, а не код.
-В каждом запросе у неё есть часы (системное сообщение), и в инструмент
-она передаёт готовые секунды или готовый момент.
-Здесь поэтому нет ни одного разборщика «через полчаса» и ни одной попытки
-угадать: этот модуль только хранит, проверяет и будит.
+Простую длительность таймера разбирает core/commands.py без модели.
+Календарное время и сложные напоминания понимает модель, передавая готовый
+момент. Этот модуль только хранит, проверяет и будит.
 
 Одна запись — одна строка в `data/reminders.json`:
 
@@ -187,6 +185,18 @@ def when_said(due, now=None) -> str:
     return f"{moment.day} {MONTHS[moment.month - 1]} в {time_words}"
 
 
+def timer_duration_said(record: dict) -> str:
+    """Длительность таймера без округления секунд до минут."""
+    try:
+        seconds = round((parse(record.get("due")) - parse(record.get("created"))).total_seconds())
+    except (ValueError, TypeError):
+        seconds = 0
+    if seconds > 0 and seconds % 60:
+        return seconds_said(seconds)
+    minutes = seconds // 60 if seconds > 0 else int(record.get("minutes") or 0)
+    return minutes_said(minutes) if minutes > 0 else ""
+
+
 def phrase(record: dict) -> str:
     """Фраза при срабатывании: своя из `say`, иначе собранная здесь.
 
@@ -198,10 +208,9 @@ def phrase(record: dict) -> str:
     if said:
         return said
     if str(record.get("kind") or "") == KIND_TIMER:
-        minutes = int(record.get("minutes") or 0)
-        if minutes > 0:
-            return personas.say("timer_done", config.PERSONA_PRESET,
-                                time=minutes_said(minutes))
+        duration = timer_duration_said(record)
+        if duration:
+            return personas.say("timer_done", config.PERSONA_PRESET, time=duration)
         return personas.say("timer_done_short", config.PERSONA_PRESET)
     text = str(record.get("text") or "").strip()
     return (personas.say("reminder_fire", config.PERSONA_PRESET, name=text)

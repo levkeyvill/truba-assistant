@@ -44,3 +44,5 @@ Non-Commercial License, Copyright (c) Boson AI USA, Inc.
   (список — `requirements.txt`): PyTorch (BSD), onnxruntime и onnx-asr (MIT),
   FastAPI и Uvicorn (MIT / BSD), pywebview (BSD), sounddevice (MIT), pycaw
   (MIT), psutil (BSD), segno (BSD), openai (Apache 2.0), ddgs (MIT) и другие.
+
+- [striprtf](https://github.com/joshy/striprtf) — локальное извлечение текста RTF, BSD 3-Clause; текст в [`licenses/striprtf-LICENSE.txt`](licenses/striprtf-LICENSE.txt).

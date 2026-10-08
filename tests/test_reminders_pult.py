@@ -314,12 +314,10 @@ class Навыки(unittest.TestCase):
         # Длинные формулировки, которых нет в мгновенной таблице.
         self.assertTrue(any("слушай" in пример for пример in примеры))
 
-    def test_таймеры_не_ушли_в_мгновенную_таблицу(self):
-        # Время понимает модель, а не регулярка: если бы эти строки стояли
-        # в `COMMANDS`, «напомни через двадцать минут» поехало бы мимо неё.
-        мгновенные = " ".join(spec.forms[0] for spec in commands.COMMANDS).lower()
-        for кусок in ("напомн", "таймер"):
-            self.assertNotIn(кусок, мгновенные)
+    def test_простые_таймеры_локальные_а_напоминания_у_модели(self):
+        self.assertEqual(commands.understand("таймер на пять минут").action, "timer")
+        self.assertIsNone(commands.understand("напомни через двадцать минут проверить духовку"))
+        self.assertIsNone(commands.understand("поставь таймер в пять вечера"))
 
 
 class Панель(unittest.TestCase):
@@ -423,46 +421,39 @@ class Панель(unittest.TestCase):
 
 
 class КомандыСтраница(unittest.TestCase):
-    """Второй блок на странице «Команды» — в той же вёрстке."""
+    """Команды и навыки объединены в один каталог из серверных данных."""
 
     @classmethod
     def setUpClass(cls):
         cls.js = PULT_JS.read_text(encoding="utf-8")
         cls.css = PULT_CSS.read_text(encoding="utf-8")
         cls.код = _тело(cls.js, "нарисоватьКоманды")
-        cls.карточка = _тело(cls.js, "комНавык")
+        cls.карточка = _тело(cls.js, "комКарточка")
+        cls.группы = _тело(cls.js, "комГруппы")
 
-    def test_блок_идёт_сразу_под_мгновенными(self):
-        self.assertIn("данные.skills", self.код)
-        self.assertIn("Понимает по смыслу", self.код)
-        self.assertLess(self.код.index("данные.commands"),
-                        self.код.index("данные.skills"))
+    def test_both_server_tables_supply_the_grouped_catalog(self):
+        self.assertIn("данные.commands", self.группы)
+        self.assertIn("данные.skills", self.группы)
+        self.assertIn("комГруппы(данные)", self.код)
 
-    def test_карточка_навыка_в_том_же_классе_что_у_команд(self):
-        команда = _тело(self.js, "комКарточка")
-        for класс in ("ком-карточка", "ком-что", "ком-примеры"):
-            self.assertIn("'" + класс + "'", self.карточка, класс)
-            self.assertIn("'" + класс + "'", команда, класс)
-        # Плашки примеров — те же, что у мгновенных команд.
+    def test_all_call_styles_use_one_card(self):
+        for name in ("ком-карточка", "ком-что", "ком-примеры"):
+            self.assertIn("'" + name + "'", self.карточка)
         self.assertIn("комПлашка", self.карточка)
+        self.assertNotIn("function комНавык(", self.js)
 
     def test_помощники_объявлены(self):
-        объявлены = set(re.findall(r"^function ([\wЁё]+)\(", self.js, re.M))
-        for имя in ("комНавык", "комПлашка", "комКарточка", "комСекция"):
-            self.assertIn(имя, объявлены, имя)
-        вызваны = set(re.findall(r"(?<![\w.])(ком\w+)\(", self.код))
-        self.assertEqual(sorted(вызваны - объявлены), [],
-                         "вызваны, но не объявлены: страница упала бы в браузере")
+        declared = set(re.findall(r"^function ([\wЁё]+)\(", self.js, re.M))
+        called = set(re.findall(r"(?<![\w.])(ком\w+)\(", self.код))
+        self.assertEqual(sorted(called - declared), [])
 
     def test_страница_не_вставляет_разметку_из_ответа(self):
-        # Название и примеры приходят с сервера: разметку из ответа в DOM
-        # подставлять нельзя.
         self.assertNotIn("innerHTML", self.код + self.карточка)
 
     def test_в_оформлении_страницы_нет_зелёного(self):
-        начало = self.css.index("/* ---------- Команды:")
-        for зелёный in ("--живой", "#4ea86a", "green"):
-            self.assertNotIn(зелёный, self.css[начало:], зелёный)
+        start = self.css.index("/* ---------- Команды:")
+        for color in ("--живой", "#4ea86a", "green"):
+            self.assertNotIn(color, self.css[start:])
 
 
 class СтраховкаДанных(Хранилище):

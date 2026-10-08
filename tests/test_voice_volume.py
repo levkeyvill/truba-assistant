@@ -88,6 +88,8 @@ def _loop():
     """Голосовой цикл из заглушек: ни микрофона, ни синтеза, ни динамика."""
     loop = object.__new__(VoiceLoop)
     loop._voice = _Voice()
+    loop._stop = threading.Event()
+    loop._interrupt = threading.Event()
     loop._ref = None
     loop._speaker = _Speaker()
     loop._fallback = None

@@ -1882,41 +1882,43 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 @media (max-width: 760px) { .прог-сетка { grid-template-columns: repeat(2, minmax(0, 1fr)); } .прог-поле.широкий { grid-column: span 2; } }
 @media (max-width: 520px) { .прог-сетка { grid-template-columns: minmax(0, 1fr); } .прог-поле.широкий { grid-column: span 1; } .прог-верх { flex-wrap: wrap; } .прог-две { gap: 14px; } }
 
-/* ---------- Команды: инструкция, что сказать и что будет ---------- */
-/* Три раздела подряд, карточки команд в две колонки от 1100 px. Зелёного
-   в оформлении нет: акцент янтарный, второй цвет синий. */
-.лист.командный { padding: 20px 24px 24px; }
-.команды { max-width: 1000px; }
-.ком-секция { padding: 12px 0 16px; border-bottom: 1px solid var(--линия); }
-.ком-секция:last-child { border-bottom: 0; padding-bottom: 2px; }
-.ком-секция h2 { margin: 0 0 2px; font-size: 15px; font-weight: 600; }
-.ком-пояснение { margin-bottom: 9px; font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
-.ком-статус { padding: 14px 0; font-size: 13px; color: var(--тусклый); }
-.ком-пункт { margin: 0 0 7px; font-size: 13px; line-height: 1.6; color: var(--приглушён); overflow-wrap: anywhere; }
-.ком-пункт:last-child { margin-bottom: 0; }
-.ком-пункт b { color: var(--текст); font-weight: 600; }
-.ком-текст { margin: 0; font-size: 13px; line-height: 1.65; color: var(--приглушён); overflow-wrap: anywhere; }
-/* `align-items: start` — иначе короткая карточка («Громкость») вытягивается
-   до высоты соседней и внутри неё пустое поле. */
-.ком-сетка { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; }
-@media (min-width: 1100px) { .ком-сетка { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-.ком-карточка {
-  padding: 12px 14px; border: 1px solid var(--линия); border-radius: 11px;
-  background: var(--панель-выше); min-width: 0;
+/* ---------- Команды: одна возможность, понятные примеры ---------- */
+.лист.командный { padding: 20px 24px 28px; }
+.команды { max-width: 1100px; margin: 0 auto; }
+.ком-секция { padding: 20px 0; scroll-margin-top: 12px; }
+.ком-секция:not(:first-child) { border-top: 1px solid var(--линия); }
+.ком-секция:first-child { padding-top: 0; padding-bottom: 14px; }
+.ком-секция h2 { margin: 0 0 12px; font-size: var(--ui-title); font-weight: 600; }
+.ком-секция:not(:first-child) h2 { padding-left: 10px; border-left: 3px solid var(--акцент); }
+.ком-секция:first-child h2 { margin-bottom: 6px; }
+.ком-пояснение, .ком-статус { margin: 0; font-size: var(--ui-body); color: var(--приглушён); line-height: 1.65; }
+.ком-разговор { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.ком-подсказка { margin: 0; font-size: var(--ui-body); line-height: 1.6; color: var(--приглушён); }
+.ком-подсказка b { display: block; margin-bottom: 3px; color: var(--текст); font-weight: 600; }
+.ком-навигация { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 0 16px; border-bottom: 1px solid var(--линия); }
+.ком-навигация a { padding: 6px 10px; border: 1px solid var(--линия); border-radius: 8px; background: var(--панель-выше); color: var(--текст); font-size: var(--ui-hint); text-decoration: none; }
+.ком-навигация a:hover { background: var(--панель-выше); color: var(--текст); }
+.ком-навигация a:focus-visible, .ком-программы summary:focus-visible { outline: 2px solid var(--синий); outline-offset: 3px; }
+.ком-сетка { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+.ком-карточка { padding: 16px 18px; border: 1px solid var(--линия); border-radius: 12px; background: var(--панель); min-width: 0; }
+.ком-шапка { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 8px; }
+.ком-карточка h3 { flex: 1 1 160px; margin: 0; font-size: var(--ui-body); font-weight: 600; color: var(--акцент); }
+.ком-режим { flex: none; color: var(--синий); font-size: var(--ui-hint); padding: 3px 7px; border: 1px solid var(--линия); border-radius: 6px; background: var(--панель-выше); }
+.ком-режим[data-mode="ai"], .ком-режим[data-mode="confirm"] { color: var(--акцент); background: var(--акцент-тень); border-color: var(--свечение-акцент); }
+.ком-что { margin: 0 0 12px; font-size: var(--ui-body); line-height: 1.65; color: var(--приглушён); overflow-wrap: anywhere; }
+.ком-подпись { margin: 0 0 6px; font-size: var(--ui-hint); color: var(--приглушён); }
+.ком-примеры { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.ком-фраза { padding: 6px 10px; border-left: 2px solid var(--синий); border-radius: 0 6px 6px 0; background: var(--фон); font-size: var(--ui-body); font-weight: 600; line-height: 1.5; color: var(--текст); overflow-wrap: anywhere; }
+.ком-программы { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--линия); }
+.ком-программы summary { cursor: pointer; color: var(--синий); font-size: var(--ui-hint); }
+.ком-программы .ком-пояснение { margin-top: 8px; }
+.ком-программа { margin: 8px 0 0; font-size: var(--ui-body); color: var(--приглушён); overflow-wrap: anywhere; }
+.ком-программа b { color: var(--текст); font-weight: 600; }
+@media (max-width: 1000px) { .ком-сетка { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 700px) {
+  .лист.командный { padding: 16px; }
+  .ком-разговор { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 }
-.ком-карточка h3 { margin: 0 0 3px; font-size: 14px; font-weight: 600; color: var(--акцент); }
-.ком-что { margin: 0 0 8px; font-size: 13px; line-height: 1.5; color: var(--текст); overflow-wrap: anywhere; }
-.ком-примеры { display: flex; flex-wrap: wrap; gap: 6px; }
-.ком-плашка {
-  padding: 4px 9px; border-radius: 8px; background: var(--панель);
-  color: var(--приглушён); font: inherit; font-size: 13px; font-weight: 600;
-  overflow-wrap: anywhere;
-}
-.ком-арг { margin: 8px 0 0; font-size: 12px; color: var(--тусклый); overflow-wrap: anywhere; }
-.ком-программы { margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--линия); }
-.ком-программа { padding: 2px 0; font-size: 12px; color: var(--приглушён); overflow-wrap: anywhere; }
-.ком-программа b { color: var(--синий); font-weight: 600; }
-.ком-прозвища { color: var(--тусклый); }
 
 /* ---------- Готовые характеры ----------
    Четыре карточки над полем «Характер»; выбранная — янтарной обводкой, как

@@ -67,7 +67,7 @@ def разобрать_аргументы(аргументы) -> dict:
 
 
 class PultBridge:
-    """Нативный выбор файла: браузер не раскрывает путь к чужому exe."""
+    """Связь страницы с нативным окном и выбором файлов."""
 
     def __init__(self, runtime) -> None:
         # pywebview проходит рекурсивно по открытым атрибутам js_api.
@@ -75,6 +75,24 @@ class PultBridge:
         # уходит в WinForms и подвешивает весь пульт.
         self._runtime = runtime
         self._window = None
+        self._chrome = None
+
+    def set_home_quiet(self, quiet: bool) -> dict:
+        if type(quiet) is not bool:
+            return {"ok": False, "error": "неверный режим окна"}
+        if self._chrome is None:
+            return {"ok": False, "error": "окно ещё не готово"}
+        return self._chrome.set_quiet(quiet)
+
+    def toggle_fullscreen(self) -> dict:
+        if self._window is None:
+            return {"ok": False, "error": "окно ещё не готово"}
+        if self._chrome is not None:
+            result = self._chrome.set_quiet(False)
+            if not result["ok"]:
+                return result
+        self._window.toggle_fullscreen()
+        return {"ok": True}
 
     def pick_icon(self, app_id: str) -> dict:
         import webview
@@ -150,17 +168,20 @@ class PultBridge:
 
 
 class TrayWindowController:
-    """Крестик и сворачивание прячут окно, выход из трея завершает процесс."""
+    """Крестик спрашивает о выходе, сворачивание прячет окно в трей."""
 
     def __init__(self, window) -> None:
         self._window = window
         self._tray = None
         self._quitting = False
         self._notified = False
+        from ui.window_chrome import WindowChrome
+        self._chrome = WindowChrome(window)
 
     def bind(self) -> bool:
         from ui.tray import Tray
 
+        self._window.events.closing += self.closing
         tray = Tray(on_show=self.show, on_quit=self.quit)
         if not tray.available:
             return False
@@ -170,28 +191,40 @@ class TrayWindowController:
             tray.stop()
             return False
         self._tray = tray
-        self._window.events.closing += self.closing
         self._window.events.minimized += self.minimized
         return True
 
     def _hide(self) -> None:
         if self._tray is None or self._quitting:
             return
+        self._chrome.set_quiet(False)
         self._window.hide()
         if not self._notified:
             self._tray.notify("Труба работает в фоне. Открой пульт через значок рядом с часами.")
             self._notified = True
 
     def closing(self) -> bool | None:
-        if self._tray is None or self._quitting:
+        if self._quitting:
             return None
-        self._hide()
-        return False  # pywebview отменяет закрытие, процесс и телефон остаются живы
+        from ui.window_chrome import confirm_close
+
+        self._chrome.set_quiet(False)
+        try:
+            accepted = confirm_close(self._window)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("не удалось спросить о выходе")
+            return False
+        if not accepted:
+            return False
+        self._quitting = True
+        return None
 
     def minimized(self) -> None:
         self._hide()
 
     def show(self) -> None:
+        self._chrome.set_quiet(False)
         self._window.show()
         self._window.restore()
         self._notified = False
@@ -431,9 +464,10 @@ def запустить(в_трей: bool = False) -> None:
     bridge._window = окно
 
     управление_окном = TrayWindowController(окно)
+    bridge._chrome = управление_окном._chrome
     # Пульт умеет закрывать себя сам (перезапуск после обновления). Здесь
     # он знает, чем именно окно гасится: `quit` — это выход из трея, а
-    # `closing` только прячет окно.
+    # `closing` спрашивает о выходе только при закрытии человеком.
     среда._pult_close = управление_окном.quit
 
     # Сервер поднимается в своём потоке и уже слушает; окно ждать его не

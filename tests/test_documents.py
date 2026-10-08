@@ -21,7 +21,7 @@ from unittest import mock
 from core import commands, documents, folders, hands
 from core.brain import Brain
 
-ФОРМАТ = ("pdf", "docx", "txt", "md", "csv", "log", "json", "ini")
+ФОРМАТ = ("pdf", "docx", "rtf", "txt", "md", "csv", "log", "json", "ini")
 ОБРАЗЕЦ = "Отчёт за сентябрь: выручка выросла на 12 процентов."
 
 

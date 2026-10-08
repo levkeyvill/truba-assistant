@@ -388,3 +388,24 @@ def speakable(text: str) -> bool:
     пропадает целиком — молча, человек просто не дожидается ответа.
     """
     return bool(CYRILLIC.search(text or ""))
+
+
+def speech_chunks(text: str, limit: int = 300) -> list[str]:
+    """Ограничивает кусок синтеза, сохраняя все слова и знаки препинания."""
+    if limit < 1:
+        raise ValueError("limit must be positive")
+    rest = str(text or "")
+    chunks = []
+    while len(rest) > limit:
+        # Пауза удобнее произвольного слова, но короткие куски не множим.
+        boundaries = [m.end() for m in re.finditer(r"[.!?…;:,]\s+", rest[:limit])]
+        edge = next((n for n in reversed(boundaries) if n >= limit // 2), 0)
+        if not edge:
+            edge = rest.rfind(" ", 0, limit + 1)
+        if edge <= 0:
+            edge = limit
+        chunks.append(rest[:edge])
+        rest = rest[edge:]
+    if rest:
+        chunks.append(rest)
+    return chunks

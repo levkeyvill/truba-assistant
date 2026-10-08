@@ -19,6 +19,7 @@ import json
 import re
 import shutil
 import socket
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,7 +44,7 @@ PULT_HTML = Path(config.ROOT) / "ui" / "web" / "pult.html"
 # Функции страницы: между ними нет постороннего кода, иначе проверки внизу
 # нарезали бы чужой текст.
 ТЕКСТ_СТРАНИЦЫ = (
-    "нарисоватьКоманды", "комСекция", "комЧасти", "комПлашка", "комКарточка",
+    "нарисоватьКоманды", "комГруппы", "комСекция", "комПлашка", "комКарточка",
     "комСписокПрограмм",
 )
 
@@ -207,12 +208,28 @@ class PageTests(unittest.TestCase):
         for зелёный in ("--живой", "#4ea86a", "green"):
             self.assertNotIn(зелёный, своё)
 
-    def test_the_titles_of_the_sections_are_there(self):
-        # Страница содержит вызов, мгновенные команды и навыки по смыслу.
-        for заголовок in ("Как позвать и понять, что услышала",
-                          "Мгновенные команды — без облака, сразу",
-                          "Всё остальное — своими словами"):
-            self.assertIn(заголовок, self.код)
+    def test_the_sections_group_tasks_instead_of_repeating_call_styles(self):
+        for heading in ("Говори обычными словами", "Поиск и интернет",
+                        "Документы и заметки", "Компьютер и программы",
+                        "Голос и напоминания"):
+            self.assertIn(heading, self.код)
+        self.assertNotIn("Мгновенные команды — без облака", self.код)
+
+    def test_actual_catalog_is_complete_deduplicated_and_current(self):
+        node = shutil.which('node')
+        if not node:
+            bundled = Path.home() / '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node.exe'
+            node = str(bundled) if bundled.exists() else None
+        if not node:
+            self.skipTest('Node не установлен')
+        with tempfile.TemporaryDirectory() as folder:
+            fixture = Path(folder) / 'catalog.json'
+            with mock.patch.object(launcher, 'read_list', return_value=ПРИМЕРЫ):
+                fixture.write_text(json.dumps(commands.commands_guide(), ensure_ascii=False), encoding='utf-8')
+            result = subprocess.run([node, str(PULT_JS.parents[2] / 'tests/commands_catalog_checks.cjs'), str(fixture)],
+                                    cwd=PULT_JS.parents[2], capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('"passed":8', result.stdout)
 
 
 if __name__ == "__main__":

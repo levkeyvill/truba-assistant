@@ -119,8 +119,8 @@ class TableTests(unittest.TestCase):
 
     def test_arguments_of_the_examples(self):
         for пример, ждём in (
-            ("найди в интернете курс доллара", ("search", "курс доллара")),
-            ("поищи что будет с рублем", ("search", "что будет с рублем")),
+            ("найди в интернете курс доллара", ("browser_search", "курс доллара")),
+            ("поищи что будет с рублем", ("browser_search", "что будет с рублем")),
             ("открой канал Корзинка", ("youtube", "корзинка")),
             ("найди на ютубе обзор 5070", ("youtube", "обзор 5070")),
             ("закрой дискорд", ("close", "discord")),
@@ -152,7 +152,8 @@ class TableTests(unittest.TestCase):
         self.assertEqual(
             {spec.id for spec in commands.COMMANDS},
             {"screenshot", "moment", "layout", "media", "pc_volume", "volume",
-             "launch", "close", "youtube", "note", "search", "folder"},
+             "launch", "close", "youtube", "note", "search", "folder",
+             "browser_search", "timer", "clipboard_read"},
         )
 
 
@@ -185,8 +186,8 @@ class NotCommandsTests(unittest.TestCase):
 class SearchTests(unittest.TestCase):
     def test_search_keeps_what_to_look_for(self):
         order = commands.understand("найди в интернете курс доллара", APPS)
-        self.assertEqual((order.action, order.target), ("search", "курс доллара"))
-        # Ответа у поиска нет: ответит модель по найденному.
+        self.assertEqual((order.action, order.target), ("browser_search", "курс доллара"))
+        # Подтверждение приходит после открытия браузера.
         self.assertEqual(order.reply, "")
 
     def test_search_without_a_query_is_not_a_command(self):
@@ -198,13 +199,13 @@ class SearchTests(unittest.TestCase):
         order = commands.understand(
             "найди в интернете, что такое квантовый компьютер?", APPS)
         self.assertEqual((order.action, order.target),
-                         ("search", "что такое квантовый компьютер"))
+                         ("browser_search", "что такое квантовый компьютер"))
 
     def test_a_long_search_is_still_a_search(self):
         длинная = ("найди в инете сколько стоит билет на поезд из Москвы "
                    "в Питер на эти выходные и есть ли места в купе")
         self.assertGreater(len(длинная.split()), commands.MAX_WORDS)
-        self.assertEqual(commands.understand(длинная, APPS).action, "search")
+        self.assertEqual(commands.understand(длинная, APPS).action, "browser_search")
 
     def test_a_question_is_never_another_command(self):
         # Поиску «?» не мешает, остальным командам — по-прежнему мешает.
@@ -264,9 +265,9 @@ class SearchThroughTheModelTests(unittest.TestCase):
 
     def test_search_goes_to_the_model_with_the_search_flag(self):
         loop = _цикл()
-        loop._turn_body("найди в интернете курс доллара", _ФРАЗА, 0.0, 0.0, False)
+        loop._turn_body("найди и расскажи про курс доллара", _ФРАЗА, 0.0, 0.0, False)
         self.assertEqual(loop.ran, [])  # _run_command не звался
-        self.assertEqual(loop.answers, [("найди в интернете курс доллара", True)])
+        self.assertEqual(loop.answers, [("найди и расскажи про курс доллара", True)])
 
     def test_another_command_still_runs_by_itself(self):
         loop = _цикл()

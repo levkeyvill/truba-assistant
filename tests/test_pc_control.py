@@ -636,7 +636,7 @@ class InstantCommandTests(unittest.TestCase):
                               ("закрой дискорд", "close"),
                               ("выключи телеграм", "close"),
                               ("включи фаерфокс", "launch"),
-                              ("поищи кошек", "search"),
+                              ("поищи кошек", "browser_search"),
                               ("открой на ютубе ремонт видеокарты", "youtube")):
             with self.subTest(фраза=фраза):
                 order = commands.understand(фраза, APPS)

@@ -732,9 +732,9 @@ class SearchModeTests(unittest.TestCase):
                 brain, _ = self._переписала(ответ)
                 with mock.patch.object(config, "WEB_SEARCH_MODE", "free", create=True), \
                         mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
-                    list(brain.reply("курс доллара", search=True))
+                    list(brain.reply("курс доллара сегодня", search=True))
                 self.assertEqual(json.loads(поиск.call_args[0][1]),
-                                 {"queries": ["курс доллара"]})
+                                 {"queries": ["курс доллара сегодня"]})
 
     def test_a_hanging_rewrite_is_not_waited_for(self):
         # Пустые байты не нарушают сетевой timeout; общий срок ограничивается
@@ -747,9 +747,9 @@ class SearchModeTests(unittest.TestCase):
         with mock.patch.object(brain_module, "REWRITE_TIMEOUT", 0.2), \
                 mock.patch.object(config, "WEB_SEARCH_MODE", "free", create=True), \
                 mock.patch.object(web, "run_tool", return_value=self.FOUND) as поиск:
-            list(brain.reply("курс доллара", search=True))
+            list(brain.reply("курс доллара сегодня", search=True))
         self.assertLess(time.monotonic() - начало, 2.0)
-        self.assertEqual(json.loads(поиск.call_args[0][1]), {"queries": ["курс доллара"]})
+        self.assertEqual(json.loads(поиск.call_args[0][1]), {"queries": ["курс доллара сегодня"]})
 
     def test_the_journal_shows_what_the_model_made_of_the_phrase(self):
         строки = WebRuntime._log_messages("web_queries", {

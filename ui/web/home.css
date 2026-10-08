@@ -1,0 +1,139 @@
+/* Размеры органов управления не растут вместе с монитором. */
+:root {
+  --ui-title: 15px;
+  --ui-body: 13px;
+  --ui-hint: 11px;
+  --ui-mono: 12px;
+  --ui-read: 15px;
+  --home-glass: rgba(23, 31, 43, .76);
+  --home-edge: rgba(164, 184, 211, .15);
+  --home-shine: rgba(205, 224, 255, .07);
+}
+:root[data-theme="light"] {
+  --home-glass: rgba(255, 255, 255, .80);
+  --home-edge: rgba(56, 79, 107, .19);
+  --home-shine: rgba(255, 255, 255, .7);
+}
+body { font-size: var(--ui-body); }
+#меню { width: 184px; padding: 17px 10px 12px; }
+body.home-page main { padding: 0; overflow: hidden; min-width: 0; }
+body.home-page #меню {
+  position: absolute; z-index: 5; inset: 0 auto 0 0; width: 184px;
+  padding: 17px 10px 12px;
+  background: var(--home-glass); backdrop-filter: blur(16px);
+  border-color: var(--home-edge); transition: opacity .32s ease;
+}
+.шапка { gap: 10px; padding-bottom: 26px; }
+.шапка b { font-size: var(--ui-title); }
+.пункт { padding: 9px 10px; gap: 10px; font-size: var(--ui-body); }
+.пункт svg { width: 17px; height: 17px; }
+.пункт[data-раздел="состояние"] { margin-top: 24px; }
+body.home-page header {
+  position: absolute; z-index: 4; top: 0; right: 0; left: 184px;
+  height: 54px; padding: 14px 24px; align-items: center;
+  border-bottom: 1px solid var(--home-edge);
+  background: linear-gradient(110deg, var(--home-shine), transparent);
+  transition: opacity .32s ease;
+}
+body.home-page header h1 { font-size: var(--ui-title); margin: 0; }
+body.home-page header p { display: none; }
+.шапка-справа { gap: 15px; }
+.огонёк, .часы { font-size: var(--ui-hint); }
+.тема-значок { width: 28px; height: 28px; }
+.home {
+  position: relative; height: 100vh; min-height: 560px; padding: 0;
+  border: 0; background: transparent; overflow: hidden;
+}
+.home-stage { position: absolute; inset: 0; pointer-events: none; }
+.home-wave { width: 100%; height: 100%; display: block; }
+.home-chrome { transition: opacity .32s ease; }
+.home button, .home input { font: inherit; }
+.home button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  min-height: 32px; padding: 6px 12px; border: 1px solid transparent;
+  border-radius: 8px; background: transparent; color: var(--приглушён);
+  cursor: pointer; white-space: nowrap;
+}
+.home button:hover { background: var(--home-shine); color: var(--текст); }
+.home button:disabled { opacity: .4; cursor: default; }
+.home button:focus-visible, .home input:focus-visible {
+  outline: 2px solid var(--акцент); outline-offset: 3px;
+}
+.home svg { width: 17px; height: 17px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.home-toolbar {
+  position: absolute; z-index: 3; top: 74px; right: 26px;
+  display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end;
+  gap: 4px; padding: 5px 8px; max-width: calc(100% - 220px);
+  background: var(--home-glass); border: 1px solid var(--home-edge);
+  border-radius: 12px; box-shadow: inset 0 1px var(--home-shine), 0 8px 24px rgba(0,0,0,.08);
+  backdrop-filter: blur(12px); font-size: var(--ui-hint);
+}
+.home-volume { display: flex; align-items: center; gap: 9px; padding: 0 7px; color: var(--приглушён); }
+.home-volume input { width: 88px; height: 16px; margin: 0; accent-color: var(--акцент); cursor: pointer; }
+.home-volume output { width: 38px; font-size: var(--ui-hint); font-variant-numeric: tabular-nums; }
+.home-divider { width: 1px; height: 18px; background: var(--home-edge); margin: 0 3px; }
+.home-view { position: absolute; z-index: 5; top: 11px; right: 236px; display: flex; gap: 2px; }
+.home-view button { padding: 5px 7px; }
+.home-view button[aria-pressed="true"] { color: var(--акцент); background: var(--акцент-тень); }
+.home-controls {
+  position: absolute; z-index: 3; bottom: clamp(24px, 6.5vh, 70px);
+  left: 50%; transform: translateX(-50%); width: min(660px, calc(100% - 420px));
+  display: flex; flex-direction: column; gap: clamp(20px, 3vh, 34px);
+}
+.home-center { text-align: center; min-width: 0; }
+.home-title { margin: 0; font-size: calc(var(--ui-title) * 1.6); font-weight: 500; letter-spacing: -.3px; }
+.home-subtitle { margin: 6px 0 14px; font-size: var(--ui-body); color: var(--приглушён); }
+.home-modes { display: inline-flex; gap: 3px; padding: 3px; background: var(--home-glass); border: 1px solid var(--home-edge); border-radius: 10px; backdrop-filter: blur(12px); }
+.home-modes button { min-width: 90px; min-height: 28px; padding: 4px 12px; font-size: var(--ui-hint); }
+.home-modes button.selected { color: var(--акцент); background: var(--акцент-тень); border-color: var(--акцент); }
+.home .home-listen { display: flex; margin: 12px auto 0; border-color: var(--home-edge); background: var(--home-glass); font-size: var(--ui-hint); }
+.home .home-listen[hidden] { display: none; }
+.home-progress { margin: 14px auto 0; max-width: 460px; font-size: var(--ui-hint); color: var(--приглушён); overflow-wrap: anywhere; }
+.home-bottom { min-width: 0; }
+.home-quick { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 6px; margin-bottom: 12px; }
+.home-quick button { font-size: var(--ui-hint); padding: 4px 12px; }
+.home-search {
+  display: flex; align-items: center; gap: 6px; min-height: 48px; padding: 6px 7px 6px 15px;
+  border: 1px solid var(--home-edge); border-radius: 13px;
+  background: var(--home-glass); backdrop-filter: blur(14px);
+  box-shadow: inset 0 1px var(--home-shine), 0 8px 24px rgba(0,0,0,.08);
+}
+.home-search > svg { color: var(--приглушён); margin-right: 3px; }
+.home-search input {
+  width: 100%; min-width: 40px; height: 30px; border: 0; outline: none;
+  background: transparent; color: var(--текст); font-size: var(--ui-body);
+}
+.home-search input::placeholder { color: var(--тусклый); opacity: 1; }
+.home-search input:focus-visible { outline: none; }
+.home-search:focus-within { border-color: var(--тусклый); }
+.home-search button { border-color: var(--home-edge); font-size: var(--ui-hint); padding: 6px 13px; }
+.home button.home-answer { background: var(--акцент); border-color: var(--акцент); color: var(--на-акценте); }
+.home button.home-answer:hover { filter: brightness(1.1); }
+.home-reminder { margin: 12px 0 0; text-align: center; font-size: var(--ui-hint); color: var(--приглушён); overflow-wrap: anywhere; }
+.home-reminder span { margin-right: 12px; color: var(--тусклый); }
+.home-reminder strong { font-weight: 500; }
+.home-message { position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%); margin: 0; width: min(650px, 80%); text-align: center; font-size: var(--ui-hint); color: var(--приглушён); }
+.home-message.error { color: var(--тревога); }
+.home-timer { width: 300px; border: 1px solid var(--home-edge); border-radius: 15px; background: var(--панель); color: var(--текст); padding: 20px; font: inherit; }
+.home-timer::backdrop { background: rgba(0,0,0,.4); backdrop-filter: blur(4px); }
+.home-timer h2 { font-size: var(--ui-title); margin: 0 0 20px; }
+.home-timer label { display: grid; gap: 7px; font-size: var(--ui-body); }
+.home-timer input { background: var(--фон); border: 1px solid var(--линия); color: var(--текст); border-radius: 8px; padding: 9px; width: 100%; }
+.home-timer form > div { display: flex; justify-content: flex-end; gap: 6px; margin-top: 18px; }
+body.home-quiet #меню, body.home-quiet header, body.home-quiet .home-chrome { opacity: 0; pointer-events: none; }
+@media (max-width: 1100px) {
+  .home-controls { width: min(620px, calc(100% - 260px)); left: calc(50% + 60px); }
+  .home-toolbar { right: 20px; }
+  .home-volume > span { display: none; }
+  .home-stage { left: 0; }
+}
+@media (max-height: 680px) {
+  .home-controls { bottom: 24px; gap: 20px; }
+  .home-quick { margin-bottom: 8px; }
+  .home-subtitle { margin-bottom: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.home-page #меню, body.home-page header, .home-chrome { transition: none; }
+}
+
+#меню a { text-decoration: none; }

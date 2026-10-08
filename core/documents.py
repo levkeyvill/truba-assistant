@@ -18,7 +18,7 @@ from pathlib import Path
 import psutil
 
 # Порядок форматов сохраняется в ответе; расширение сравнивается целиком.
-SUPPORTED = (".pdf", ".docx", ".txt", ".md", ".csv", ".log", ".json", ".ini")
+SUPPORTED = (".pdf", ".docx", ".rtf", ".txt", ".md", ".csv", ".log", ".json", ".ini")
 
 # Предел чтения вслух ограничивает длительность ответа.
 TEXT_LIMIT = 12000
@@ -99,6 +99,8 @@ def read_text(path, limit: int = TEXT_LIMIT) -> dict:
     try:
         if suffix == ".pdf":
             return _read_pdf(target, limit, начало)
+        if suffix == ".rtf":
+            return _read_rtf(target, limit)
         if suffix == ".docx":
             return _read_docx(target, limit, начало)
         return _read_plain(target, limit)
@@ -320,6 +322,23 @@ def _read_plain(target: Path, limit: int) -> dict:
         return _отказ(target.name, "в файле нет текста")
     обрезанный, cut = _обрезать(текст, limit)
     return _готово(target.name, обрезанный, len(текст), 0, cut)
+
+
+def _read_rtf(target: Path, limit: int) -> dict:
+    """RTF разбирается локально, включая Unicode и объявленную кодировку."""
+    from striprtf.striprtf import rtf_to_text
+
+    raw = target.read_bytes()
+    page = re.search(rb"\\ansicpg(\d+)", raw[:4096])
+    encoding = "cp" + page.group(1).decode("ascii") if page else "cp1252"
+    source = raw.decode(encoding)
+    if not source.lstrip().startswith("{\\rtf"):
+        return _отказ(target.name, "файл не похож на RTF")
+    text = rtf_to_text(source)
+    if not text.strip():
+        return _отказ(target.name, "в файле нет текста")
+    clipped, cut = _обрезать(text, limit)
+    return _готово(target.name, clipped, len(text), 0, cut)
 
 
 def _read_pdf(target: Path, limit: int, начало: float) -> dict:

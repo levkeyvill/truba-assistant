@@ -820,6 +820,18 @@ class PhoneServer:
                        for имя in models)
 
         # Журнал событий — это дословно расслышанные фразы: только отсюда.
+        @app.get("/api/voice/visual")
+        async def api_voice_visual(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                return JSONResponse({"ok": True, "voice": rt.voice_state()})
+            except Exception as exc:
+                return _fail(exc)
+
         @app.get("/api/runtime")
         async def api_runtime(request: Request, after: int = 0):
             if not _local(request):
@@ -847,6 +859,22 @@ class PhoneServer:
             except Exception as exc:
                 return _fail(exc)
             return JSONResponse({"ok": True, "events": items})
+
+        @app.post("/api/home/action")
+        async def api_home_action(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                body = await request.json()
+                if not isinstance(body, dict):
+                    raise ValueError("нужен JSON с действием")
+                result = await asyncio.to_thread(rt.home_action, body)
+            except Exception as exc:
+                return _fail(exc, 400)
+            return JSONResponse(result, status_code=200 if result.get("ok") else 400)
 
         @app.post("/api/voice/toggle")
         async def api_voice_toggle(request: Request):
@@ -2543,6 +2571,7 @@ class PhoneSpeaker:
     # Телефон ставит куски встык по своим часам — можно слать предложение
     # частями, пока оно ещё синтезируется.
     gapless = True
+    accepts_cancel = True
 
     def __init__(self, server: PhoneServer, gap: float = 0.0):
         self.server = server
@@ -2554,6 +2583,8 @@ class PhoneSpeaker:
         self._lock = threading.Lock()
         self._last_sent = 0.0
         self._total_audio = 0.0
+        from core.playback_meter import PlaybackMeter
+        self.meter = PlaybackMeter()
 
         # Подписываемся на сервер сами: отчёты о воспроизведении должны
         # доходить сюда, иначе речь остаётся незаконченной, а микрофон — тихим.
@@ -2568,9 +2599,10 @@ class PhoneSpeaker:
             # запасного таймера в `wait()`.
             with self._lock:
                 self._pending = 0
+                self.meter.reset()
                 self.idle.set()
 
-    def say(self, wave: np.ndarray, sample_rate: int, gap: bool = True) -> None:
+    def say(self, wave: np.ndarray, sample_rate: int, gap: bool = True, cancel=None) -> None:
         """Шлёт кусок речи. gap=False — кусок не последний в предложении.
 
         Паузу после предложения добавляем здесь: телефон играет куски встык.
@@ -2585,11 +2617,14 @@ class PhoneSpeaker:
             silence = np.zeros(int(self.gap * sample_rate), dtype=np.float32)
             wave = np.concatenate([np.asarray(wave, dtype=np.float32), silence])
         with self._lock:
+            if cancel is not None and cancel.is_set():
+                return
+            self.meter.append(wave, sample_rate)
             self._pending += 1
             self._total_audio += len(wave) / sample_rate
             self._last_sent = time.monotonic()
             self.idle.clear()
-        self.server.send_audio(wave, sample_rate)
+            self.server.send_audio(wave, sample_rate)
 
     def pause(self, seconds: float, sample_rate: int = 24000) -> None:
         """Тишина после предложения, присланного кусками."""
@@ -2601,14 +2636,16 @@ class PhoneSpeaker:
         with self._lock:
             self._pending = max(0, self._pending - 1)
             if self._pending == 0:
+                self.meter.reset()
                 self.idle.set()
 
     def interrupt(self) -> None:
         with self._lock:
+            self.meter.reset()
             self._pending = 0
             self._total_audio = 0.0
             self.idle.set()
-        self.server.send_stop()
+            self.server.send_stop()
 
     def wait(self, timeout: float | None = None) -> bool:
         """Ждёт, пока телефон доиграет речь.
@@ -2620,6 +2657,7 @@ class PhoneSpeaker:
             limit = self._total_audio + 1.5
         done = self.idle.wait(timeout if timeout is not None else limit)
         with self._lock:
+            self.meter.reset()
             self._total_audio = 0.0
             self._pending = 0
             self.idle.set()

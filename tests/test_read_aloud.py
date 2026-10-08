@@ -435,6 +435,7 @@ def _чтение_без_звука():
     """Синтез и динамик подменены, чтобы проверить текст для сверки эха."""
     loop = object.__new__(VoiceLoop)
     loop._stop = threading.Event()
+    loop._interrupt = threading.Event()
     loop._ducker = mock.Mock()
     loop._listener = None
     loop._speaking_text = "Прежний ответ."

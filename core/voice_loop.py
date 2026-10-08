@@ -721,11 +721,13 @@ class VoiceLoop:
         if self.running:
             return
         self._stop.clear()
+        self._interrupt = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self.shut_up()
         if self._speaker is not None:
             self._speaker.interrupt()
         if self._listener is not None:
@@ -745,6 +747,9 @@ class VoiceLoop:
         """
         self._stop_reading_flag()
         self._interrupt.set()
+        runner = getattr(self, "_dialog_runner", None)
+        if runner is not None:
+            runner.cancel()
         for speaker in (self._speaker, self._fallback):
             if speaker is not None:
                 speaker.interrupt()
@@ -1077,6 +1082,46 @@ class VoiceLoop:
                 self._remember(text, said)
                 return True
 
+            elif order.action == "browser_search":
+                from core import browser_search
+
+                result = browser_search.open_query(order.target)
+                self._emit("browser_search", result)
+                self._say_back(result["text"])
+                self._remember(text, result["text"])
+                return True
+
+            elif order.action == "timer":
+                import json
+                from core import hands
+
+                result = json.loads(hands.run_set_reminder(
+                    json.dumps({"seconds": order.seconds, "kind": "timer"}), self._emit))
+                said = result.get("text") or "Не получилось поставить таймер."
+                self._say_back(said)
+                self._remember(text, said)
+                return True
+
+            elif order.action == "clipboard_read":
+                from core import clipboard
+
+                copied = clipboard.text(limit=clipboard.MAX_CHARS)
+                if not copied.get("ok"):
+                    said = str(copied.get("why") or "В буфере обмена нет текста.")
+                    self._emit("clipboard_failed", said)
+                else:
+                    started, why = self.read_aloud(str(copied.get("text") or ""), "буфер обмена")
+                    if started:
+                        self._emit("clipboard_aloud", clipboard.journal_line(copied))
+                        said = personas.say("clipboard_read_cut" if copied.get("cut") else
+                                            "clipboard_read", config.PERSONA_PRESET)
+                    else:
+                        said = why
+                        self._emit("clipboard_failed", why)
+                self._say_back(said)
+                self._remember(text, said)
+                return True
+
             elif order.action == "note":
                 # Не запись, а начало диктовки: мысль он ещё говорит.
                 return self._start_dictation(order, text)
@@ -1250,7 +1295,7 @@ class VoiceLoop:
                 for wave, rate in parts:
                     if self._stop.is_set() or (стоп is not None and стоп.is_set()):
                         break
-                    speaker.say(wave, rate, gap=not streamed)
+                    self._queue_audio(speaker, wave, rate, gap=not streamed, cancel=стоп)
             finally:
                 close = getattr(parts, "close", None)
                 if close is not None:
@@ -1293,9 +1338,9 @@ class VoiceLoop:
             return
         self._emit("document_stopped",
                    f"чтение остановлено на {состояние['at'] + 1} из {всего}")
-        # Окно держим открытым: «продолжи читать» — обычная фраза в разговоре,
-        # и имя звать не надо.
-        self._open_conversation()
+        # Отмена чтения не переоткрывает разговор после «спасибо»/«хватит».
+        if стоп is None or not стоп.is_set():
+            self._open_conversation()
 
     def _remember_reading(self, имя: str) -> None:
         """В историю отсюда ничего не пишем.
@@ -1800,14 +1845,19 @@ class VoiceLoop:
         self._speaking_text = words
         self._tell_phone(state="speaking")
         if self._listener is not None:
-            self._listener.mute()
+            if config.ALLOW_BARGE_IN:
+                self._listener.listen_while_speaking(config.BARGE_IN_LEVEL)
+            else:
+                self._listener.mute()
         try:
             if self._say_plainly(words, speaker):
                 speaker.wait()
                 self._spoke_at = time.monotonic()
         finally:
             if self._listener is not None:
-                self._listener.unmute(keep_seconds=0.2)
+                self._listener.stop_listening_loudly()
+                if not config.ALLOW_BARGE_IN:
+                    self._listener.unmute(keep_seconds=0.2)
             self._ducker.restore()
             self._tell_phone(state=self._idle_state())
 
@@ -1840,6 +1890,7 @@ class VoiceLoop:
             self._emit("announce_skipped", words[:80])
             return
         try:
+            self._interrupt = threading.Event()
             self._say_back(words)
             # В историю — так же, как заход первой: не его реплика, а её
             # собственная, поэтому в память о нём такая строка не идёт
@@ -1877,8 +1928,20 @@ class VoiceLoop:
 
     def _bye(self, text: str) -> None:
         """Закрыть разговор, ответив на прощание, а не молча."""
-        self._say_back(goodbye_words(text))
+        self.shut_up()
         self._close_conversation()
+        runner = getattr(self, "_dialog_runner", None)
+        if runner is None:
+            self._interrupt = threading.Event()
+            self._say_back(goodbye_words(text))
+            return
+        def goodbye(cancel):
+            with self._turn_lock():
+                if cancel.is_set() or self._stop.is_set():
+                    return
+                self._interrupt = cancel
+                self._say_back(goodbye_words(text))
+        runner.submit(goodbye)
 
     @property
     def _echoing(self) -> bool:
@@ -1921,6 +1984,25 @@ class VoiceLoop:
         начала = {w[:6] for w in said}
         чужих = sum(1 for w in heard[-3:] if w[:6] not in начала)
         return чужих < 2
+
+    def _echo_command_reply(self, text: str) -> bool:
+        """Новая просьба после её инструкции отличается от дословного эха."""
+        if not self._speaker_idle():
+            return False
+        words = _plain(text).split()
+        if len(words) < 2:
+            return False
+        request = re.search(
+            r"\b(?:прочитай|разбери|изучи|перескажи|открой|запусти|покажи|"
+            r"найди|поищи|объясни|сравни|проверь|включи|выключи|сохрани)\b",
+            _plain(text))
+        if not request:
+            return False
+        score = getattr(self, "_short_voice_score", None)
+        if score is not None and score >= config.OWNER_THRESHOLD:
+            return True
+        # Дословное повторение остаётся эхом; сходство корней недостаточно.
+        return _plain(text) not in _plain(self._speaking_text)
 
     def _is_echo_tail(self, phrase: np.ndarray | None, heard_at: float | None) -> bool:
         """Похож ли короткий обрывок на хвост её собственной речи.
@@ -2140,7 +2222,8 @@ class VoiceLoop:
             was_open, score = self._held_was_open, self._held_score
             self._forget_held()
             self._voice_score = score
-            self._turn_body(text, phrase, heard_at, stt_time, was_open)
+            self._interrupt = threading.Event()
+            self._turn_body(text, phrase, heard_at, stt_time, was_open, voice_score=score)
         finally:
             self._turn_lock().release()
 
@@ -2496,6 +2579,7 @@ class VoiceLoop:
 
     def _first_go(self, look: bool) -> None:
         """Снимок (если выпало), затем ответ. Срок назначается здесь."""
+        self._interrupt = threading.Event()
         image = None
         if look:
             try:
@@ -2535,7 +2619,7 @@ class VoiceLoop:
         return self._voiceprint
 
     def _log_short_score(self, print_, phrase) -> None:
-        """Сходство короткой фразы — только в журнал, решения по нему нет."""
+        """Короткий отпечаток подтверждает хозяина, но не отвергает его."""
         from core import speaker
 
         try:
@@ -2546,6 +2630,7 @@ class VoiceLoop:
             return
         if score is None:
             return
+        self._short_voice_score = float(score)
         self._emit("voice_score", {"score": score,
                                    "seconds": len(phrase) / config.SAMPLE_RATE,
                                    "short": True})
@@ -2611,9 +2696,6 @@ class VoiceLoop:
         Микрофон слышит всё в комнате: созвон, чужие голоса, звук из колонок.
         Без разбора он будет комментировать чужую речь.
         """
-        # Если её перебили посреди речи — это почти всегда «хватит».
-        # Проверяем до всех прочих правил: просьба замолчать должна
-        # срабатывать мгновенно, а не после разбора режимов.
         # Не себя ли она услышала. Динамик телефона стоит рядом с
         # микрофоном, и собственный голос возвращается обратно.
         #
@@ -2633,29 +2715,24 @@ class VoiceLoop:
         def узнан() -> bool:
             сверить()
             score = отпечаток["score"]
+            if score is None:
+                # Короткий отпечаток может подтвердить хозяина, но не отвергнуть его.
+                score = getattr(self, "_short_voice_score", None)
             return score is not None and score >= max(config.OWNER_THRESHOLD,
                                                       ECHO_OWNER_SURE)
 
-        if self._echoing and self._is_own_echo(text) and not узнан():
+        if (self._echoing and self._is_own_echo(text)
+                and not узнан() and not self._echo_command_reply(text)):
             self._emit("ignored", {"text": text, "why": "это её собственный голос"})
             return False
 
         # Короткий обрывок сразу после её речи — конец её же
         # голоса из динамика телефона. Словами не ловится: «Это.» не даёт ни
         # одного длинного слова, а отпечаток на полсекунды не судит вовсе.
-        if self._is_echo_tail(phrase, heard_at) and not узнан():
+        if (len(_plain(text).split()) <= 1 and
+                self._is_echo_tail(phrase, heard_at) and not узнан()):
             self._emit("ignored", {"text": text, "why": "похоже на хвост её речи"})
             return False
-
-        if not self._speaker_idle():
-            self.shut_up()
-            self._emit(
-                "interrupted",
-                {"text": text, "peak": getattr(self._listener, "last_start_peak", 0.0)},
-            )
-            if is_dismissal(text):
-                self._bye(text)
-                return False
 
         # Кнопку нажали посреди чужой фразы — она кнопкой не запрошена.
         # Флаги НЕ снимаем: ждём следующую фразу, ту, что начнётся после
@@ -2703,6 +2780,16 @@ class VoiceLoop:
                     "ignored",
                     {"text": text, "why": f"голос не его ({score:.2f})"},
                 )
+                return False
+
+        if not self._speaker_idle():
+            self.shut_up()
+            self._emit(
+                "interrupted",
+                {"text": text, "peak": getattr(self._listener, "last_start_peak", 0.0)},
+            )
+            if is_dismissal(text):
+                self._bye(text)
                 return False
 
         # Диктовка пишет речь в заметку без проверки имени, окна и фонового
@@ -2977,16 +3064,60 @@ class VoiceLoop:
         Одна ошибка распознавания не должна выключать голос. Замок `_handle`
         отпускает в `finally`, поэтому следующая фраза обработается как обычно.
         """
-        for phrase in self._listener.phrases():
-            if self._stop.is_set():
-                break
-            try:
-                self._handle(phrase)
-            except Exception as exc:
-                self._emit("error", f"фраза не обработана: {type(exc).__name__}: {exc}")
+        import queue
 
-    def _handle(self, phrase: np.ndarray) -> None:
-        heard_at = time.perf_counter()
+        from core.voice_turns import LatestTurnRunner
+        runner = LatestTurnRunner(
+            self.shut_up,
+            lambda exc: self._emit("error", f"ответ: {type(exc).__name__}: {exc}"),
+        )
+        self._dialog_runner = runner
+        pending = queue.Queue(maxsize=2)
+        finished = threading.Event()
+
+        def capture():
+            try:
+                for phrase in self._listener.phrases():
+                    if self._stop.is_set():
+                        break
+                    item = (phrase, time.perf_counter())
+                    while not self._stop.is_set():
+                        try:
+                            pending.put(item, timeout=0.1)
+                            break
+                        except queue.Full:
+                            continue
+            except Exception as exc:
+                self._emit("error", f"слушатель: {type(exc).__name__}: {exc}")
+            finally:
+                finished.set()
+
+        # Детектор продолжает разбирать микрофон, пока основной поток отвечает.
+        worker = threading.Thread(target=capture, name="truba-mic", daemon=True)
+        worker.start()
+        try:
+            while not self._stop.is_set():
+                try:
+                    phrase, heard_at = pending.get(timeout=0.1)
+                except queue.Empty:
+                    if finished.is_set():
+                        break
+                    continue
+                try:
+                    self._handle(phrase, heard_at=heard_at)
+                except Exception as exc:
+                    self._emit("error", f"фраза не обработана: {type(exc).__name__}: {exc}")
+        finally:
+            stop = getattr(self._listener, "stop", None)
+            if stop is not None:
+                stop()
+            worker.join(timeout=2.0)
+            runner.close(drain=not self._stop.is_set())
+            self._dialog_runner = None
+
+    def _handle(self, phrase: np.ndarray, heard_at: float | None = None) -> None:
+        if heard_at is None:
+            heard_at = time.perf_counter()
 
         # Под тем же замком, под которым reload_stt подменяет модель: смена
         # ждёт конца фразы, а не обрывает её на полуслове.
@@ -3006,6 +3137,7 @@ class VoiceLoop:
             return
 
         self._voice_score = None
+        self._short_voice_score = None
         # Был ли разговор открыт до этой фразы: на первую фразу и на
         # обращение по имени она обязана ответить, закрыть их нельзя.
         was_open = self.in_conversation
@@ -3016,6 +3148,8 @@ class VoiceLoop:
             self._barge_settled(False, text)
             return
         self._barge_settled(True, text)
+        if getattr(self, "_dialog_runner", None) is not None:
+            self.shut_up()
 
         # Недоговорённая фраза — не отвечаем, а ждём продолжения.
         #
@@ -3028,26 +3162,33 @@ class VoiceLoop:
             self._hold(text, phrase, heard_at, stt_time, was_open)
             return
 
-        # Фраза принята — забираем единственный разговорный ход. Держим
-        # его до конца ответа, чтобы сторож захода первой (он берёт замок
-        # неблокирующе) не влез в его речь. Отпускаем в `finally`: путь
-        # отсюда один, а выходов три, и забытый на одном повесил бы голос
-        # до перезапуска.
-        #
-        # Чтение вслух обрываем здесь, а не в `shut_up`: между предложениями
-        # динамик молчит, `shut_up` не сработает, и фраза встала бы в очередь
-        # за чтением вместо того, чтобы её прервать. Дальше её ждёт обычный
-        # ответ, а «продолжи читать» вернёт чтение с места.
+        score = self._voice_score
+        search = getattr(self, "_search_next", False)
+        self._search_next = False
         self._stop_reading_flag()
-        self._turn_lock().acquire()
-        # Ответил — отступ за молчание сбрасывается (он копится, когда на
-        # заход первой не ответили), и флажок ожидания снимается.
-        self._first_schedule().answered()
-        self._first_pending = False
-        try:
-            self._turn_body(text, phrase, heard_at, stt_time, was_open)
-        finally:
-            self._turn_lock().release()
+
+        def respond(cancel=None):
+            self._turn_lock().acquire()
+            try:
+                stop = getattr(self, "_stop", None)
+                if stop is not None and stop.is_set() or cancel is not None and cancel.is_set():
+                    return
+                if cancel is not None:
+                    self._interrupt = cancel
+                else:
+                    self._interrupt = threading.Event()
+                self._first_schedule().answered()
+                self._first_pending = False
+                self._turn_body(text, phrase, heard_at, stt_time, was_open,
+                                voice_score=score, search_requested=search)
+            finally:
+                self._turn_lock().release()
+
+        runner = getattr(self, "_dialog_runner", None)
+        if runner is not None:
+            runner.submit(respond)
+        else:
+            respond()
 
     def _turn_body(
         self,
@@ -3056,12 +3197,17 @@ class VoiceLoop:
         heard_at: float,
         stt_time: float,
         was_open: bool,
+        voice_score=None,
+        search_requested=None,
     ) -> None:
         """Обработка принятой фразы. Замок разговорного хода держит вызов."""
         # Фраза принята — забираем требование искать. Оно на одну фразу:
         # дальше это уже обычный разговор.
-        search = self._search_next
-        self._search_next = False
+        if search_requested is None:
+            search = self._search_next
+            self._search_next = False
+        else:
+            search = search_requested
 
         # Позвал и замолчал — он ещё формулирует. Разговор открываем,
         # чтобы имя не требовалось повторять, но молчим и слушаем дальше.
@@ -3079,8 +3225,9 @@ class VoiceLoop:
             },
         )
 
-        # Новая реплика — старое требование замолчать больше не действует.
-        self._interrupt.clear()
+        # Отмена принадлежит этому ходу; следующая реплика не может снять её.
+        if self._interrupt.is_set():
+            return
 
         # Идёт диктовка — фраза идёт в неё, а не в команды и не в облако.
         # Здесь же проверяются «всё» и «отмена», поэтому разбор команд ниже
@@ -3120,7 +3267,7 @@ class VoiceLoop:
             # Поиск — не команда, а требование искать: ответом будет живой
             # разговор по найденному, поэтому уходит к модели тем же путём,
             # что и кнопка «Найти» на телефоне (`_search_next`).
-            if order.action != "search":
+            if order.action != "search" and not (search and order.action == "browser_search"):
                 self._run_command(order, text)
                 self._open_conversation()
                 return
@@ -3136,12 +3283,22 @@ class VoiceLoop:
         self._answer(
             text,
             heard_at=heard_at,
-            voice=self._voice_score,
+            voice=voice_score,
             can_end=was_open and not CALLED_BY_NAME.search(text),
             search=search or (order is not None and order.action == "search"),
             stt=stt_time,
             named=named,
         )
+
+    def _queue_audio(self, speaker, wave, rate, *, gap=True, cancel=None):
+        token = self._interrupt if cancel is None else cancel
+        if token.is_set() or self._stop.is_set():
+            return
+        if getattr(speaker, "accepts_cancel", False) is True:
+            # Проверка под замком динамика: отмена и постановка куска атомарны.
+            speaker.say(wave, rate, gap=gap, cancel=token)
+        else:
+            speaker.say(wave, rate, gap=gap)
 
     def _sound_of(self, sentence: str, speaker):
         """Звук предложения: (куски (сигнал, частота), идут ли потоком).
@@ -3157,16 +3314,27 @@ class VoiceLoop:
         ходят и остаются как были.
         """
         stream = getattr(self._voice, "stream", None)
-        if stream is not None and getattr(speaker, "gapless", False):
-            parts = stream(sentence, self._ref, speed=config.TTS_SPEED)
-            streamed = True
-        else:
-            wave, rate = self._voice.say(
-                sentence, self._ref, nfe_step=config.TTS_NFE, speed=config.TTS_SPEED
-            )
-            parts = iter([(wave, rate)])
-            streamed = False
-        return _приглушить(parts, voice_gain()), streamed
+        from core.speech_text import speech_chunks
+
+        streamed = stream is not None and getattr(speaker, "gapless", False)
+        # Длинный разбор не должен упираться в длину кеша синтезатора.
+        chunks = speech_chunks(sentence)
+
+        def sounds():
+            for chunk in chunks:
+                if streamed:
+                    parts = stream(chunk, self._ref, speed=config.TTS_SPEED)
+                    try:
+                        yield from parts
+                    finally:
+                        close = getattr(parts, "close", None)
+                        if close is not None:
+                            close()
+                else:
+                    yield self._voice.say(
+                        chunk, self._ref, nfe_step=config.TTS_NFE, speed=config.TTS_SPEED)
+
+        return _приглушить(sounds(), voice_gain()), bool(streamed)
 
     # --- Облако -----------------------------------------------------------
 
@@ -3206,17 +3374,23 @@ class VoiceLoop:
 
     def _say_plainly(self, sentence: str, speaker) -> int:
         """Фраза от себя, мимо модели, посреди ответа. 1 — прозвучала."""
+        said = False
         try:
             parts, streamed = self._sound_of(sentence, speaker)
             try:
                 for wave, rate in parts:
-                    speaker.say(wave, rate, gap=not streamed)
+                    if self._interrupt.is_set() or self._stop.is_set():
+                        break
+                    self._queue_audio(speaker, wave, rate, gap=not streamed)
+                    said = True
             finally:
                 close = getattr(parts, "close", None)
                 if close is not None:
                     close()
         except Exception as exc:
             self._emit("error", f"синтез: {exc}")
+            return 0
+        if not said:
             return 0
         self._emit("sentence", sentence)
         self._tell_phone(who="bot", text=sentence)
@@ -3285,6 +3459,7 @@ class VoiceLoop:
             self._tell_phone(state="thinking", who="me", text=text)
 
         first_sound = None
+        answer_sound = None
         sentences = 0
         # Замер ответа: сколько стоил синтез первого куска и сколько —
         # отправка его в телефон. Оба считаются один раз, на первом куске.
@@ -3324,8 +3499,11 @@ class VoiceLoop:
             reply_args["search"] = True
         if named:
             reply_args["named"] = True
+        if getattr(self._brain, "supports_cancellation", False):
+            reply_args["cancel"] = self._interrupt
+        reply = self._brain.reply(text, **reply_args)
         try:
-            for sentence in self._brain.reply(text, **reply_args):
+            for sentence in reply:
                 # Предложение только что стало готово: от этого мига и
                 # считаем синтез первого куска.
                 ready_at = time.perf_counter()
@@ -3351,6 +3529,8 @@ class VoiceLoop:
                         # раньше, чем она договорит предложение. Первая фраза
                         # вытесняет прошлую реплику, остальные добавляются.
                         if index == 0:
+                            if answer_sound is None and sentence not in FILLERS:
+                                answer_sound = time.perf_counter() - heard_at
                             if first_sound is None:
                                 first_sound = time.perf_counter() - heard_at
                                 # Сколько занял синтез: от готового
@@ -3362,7 +3542,7 @@ class VoiceLoop:
                                 self._speaking_text += " " + sentence
                         # Кусок потока — без паузы: предложение ещё не кончилось.
                         said_at = time.perf_counter()
-                        speaker.say(wave, rate, gap=not streamed)
+                        self._queue_audio(speaker, wave, rate, gap=not streamed)
                         if say_first is None:
                             say_first = time.perf_counter() - said_at
                         if index == 0:
@@ -3412,6 +3592,11 @@ class VoiceLoop:
                     else:
                         sentences += self._say_plainly(_trouble_words(exc), speaker)
 
+        finally:
+            close = getattr(reply, "close", None)
+            if callable(close):
+                close()
+
         # Ответ кончился — любым путём: обычным, ошибкой или тем, что её
         # перебили. Фон должен уйти здесь, а не остаться до следующего раза.
         self._hum.stop()
@@ -3429,18 +3614,23 @@ class VoiceLoop:
             if isinstance(ошибка, str) and ошибка:
                 speaker.last_error = ""
                 self._emit("error", f"колонки не сыграли: {ошибка}")
+        if self._interrupt.is_set() and getattr(self._brain, "supports_cancellation", False):
+            self._brain.mark_voice_interrupted(self._interrupt)
+
         # С этого мига отсчитывается окно, в котором прилетевшая фраза
         # ещё может оказаться её собственным эхом.
         self._spoke_at = time.monotonic()
         # Хвост на затухание эха в комнате, если слушаешь колонками.
-        time.sleep(0.25)
+        if not self._interrupt.is_set():
+            time.sleep(0.25)
         self._ducker.restore()
         # Замер её речи — до сброса слушателя: дальше фон уже пустой.
         self._log_echo()
         self._listener.stop_listening_loudly()
         # После телефона в очереди может лежать её последний слог; оставляем
         # лишь короткий хвост, чтобы не принять его за новую фразу.
-        self._listener.unmute(keep_seconds=0.25)
+        if not config.ALLOW_BARGE_IN:
+            self._listener.unmute(keep_seconds=0.25)
         self._tell_phone(state="listening")
 
         # Карточка поиска: телефон ждал ответа с источниками — и после любого
@@ -3458,19 +3648,19 @@ class VoiceLoop:
         # Модель решила, что имя прозвучало, а говорили не с ней, и молчала.
         # Окно закрываем: иначе следующие три минуты чужая речь шла бы без
         # имени. Вслух не прощаемся — её не звали по-настоящему.
-        if getattr(self._brain, "not_to_me", False) and sentences == 0:
+        if not self._interrupt.is_set() and getattr(self._brain, "not_to_me", False) and sentences == 0:
             self._emit("ignored", {"text": text, "why": "не ей — решила модель"})
             self._close_conversation()
         # Модель поняла по смыслу, что разговор окончен («мы же уже
         # поговорили», «ок, всё»), — закрываем, как на «стоп».
-        elif getattr(self._brain, "ended", False):
+        elif not self._interrupt.is_set() and getattr(self._brain, "ended", False):
             self._emit("ended_by_model", text)
             if sentences == 0 and not self._stop.is_set():
                 self._say_back(goodbye_words(text))
                 sentences = 1
             self._open_conversation()
             self._close_conversation()
-        else:
+        elif not self._interrupt.is_set():
             # Окно всегда отсчитывается от конца ответа. Проверять, открыт
             # ли разговор, нельзя: длинная реплика идёт дольше окна, оно
             # истекает прямо во время речи — и ответную фразу человека он
@@ -3482,7 +3672,7 @@ class VoiceLoop:
         # до первого слова 2.1 с» в журнале только путает.
         if not first:
             self._emit("timing", self._timing(
-                heard_at, stt, duck_time, first_sound, synth_first, say_first,
+                heard_at, stt, duck_time, first_sound, synth_first, say_first, answer_sound,
             ))
         self._emit(
             "spoken",
@@ -3490,6 +3680,7 @@ class VoiceLoop:
                 "first_sound": first_sound,
                 "total": time.perf_counter() - heard_at,
                 "sentences": sentences,
+                "interrupted": self._interrupt.is_set(),
             },
         )
 
@@ -3501,6 +3692,7 @@ class VoiceLoop:
         first_sound: float | None,
         synth: float | None,
         say: float | None,
+        answer: float | None = None,
     ) -> dict:
         """Замер одного голосового ответа: где задержался первый звук.
 
@@ -3517,6 +3709,7 @@ class VoiceLoop:
         sentence = _since(first.get("sentence", 0.0), heard_at)
         return {
             "total": round(first_sound or time.perf_counter() - heard_at, 2),
+            "answer": round(answer, 2) if answer is not None else None,
             "stt": round(stt, 2),
             "duck": round(duck, 2),
             "word": word,

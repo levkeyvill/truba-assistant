@@ -15,6 +15,7 @@ import re
 import time
 import threading
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from queue import Empty, Queue
@@ -194,6 +195,14 @@ REWRITE_ASK = (
 REWRITE_TOKENS = 120
 # Дольше не ждём: ищем по фразе как есть.
 REWRITE_TIMEOUT = 4.0
+# Отсылки к разговору и относительные даты требуют подготовки запроса.
+QUERY_CONTEXT = re.compile(
+    r"\b(?:он|она|оно|они|его|ее|их|ему|ей|им|него|нее|них|нем|ней|это|этот|эта|эти|эту|"
+    r"этого|этой|этому|этим|этих|этими|этом|такой|такая|такие|такого|такую|"
+    r"подробнее|недавно|новые|новый|новое|"
+    r"новых|последние|последний|последнего|свежие|свежее|сейчас|сегодня|"
+    r"завтра|вчера|ныне)\b|^\s*(?:а|и)\b", re.IGNORECASE)
+
 # Кнопка поиска обходит словесные ворота `ASKS` и `FRESH`: нажатие само
 # задаёт намерение искать, а первый круг должен вызвать интернет.
 SEARCH_ASK = (
@@ -630,6 +639,9 @@ class _Hedge:
         self._on_winner = on_winner
         self._queue: Queue = Queue()
         self._streams: dict[str, object] = {}
+        self._closed = threading.Event()
+        self._closed_streams = set()
+        self._close_lock = threading.Lock()
         self._started: set[str] = set()
         self._done: set[str] = set()
         self._winner: str | None = None
@@ -661,7 +673,7 @@ class _Hedge:
                          daemon=True, name="hedge-main").start()
 
     def _start_spare(self) -> None:
-        if self._spare_started:
+        if self._spare_started or self._closed.is_set():
             return
         self._spare_started = True
         self._fired = True
@@ -673,16 +685,35 @@ class _Hedge:
         try:
             stream = opener()
             self._streams[who] = stream
+            if self._closed.is_set():
+                self._close_once(stream)
+                return
         except Exception as exc:
             self._queue.put((who, exc))
             return
         try:
             for chunk in stream:
+                if self._closed.is_set():
+                    return
                 self._queue.put((who, chunk))
         except Exception as exc:
             self._queue.put((who, exc))
             return
         self._queue.put((who, _END))
+
+    def _close_once(self, stream):
+        with self._close_lock:
+            identity = id(stream)
+            if identity in self._closed_streams:
+                return
+            self._closed_streams.add(identity)
+        _close_stream(stream)
+
+    def close(self):
+        self._closed.set()
+        for stream in list(self._streams.values()):
+            self._close_once(stream)
+        self._queue.put((self._winner or "main", _END))
 
     def _alive(self) -> bool:
         """Есть ли ещё кто-то, кто может ответить."""
@@ -692,12 +723,14 @@ class _Hedge:
         self._winner = who
         for name, stream in self._streams.items():
             if name != who:
-                _close_stream(stream)
+                self._close_once(stream)
         if self._on_winner is not None:
             self._on_winner(who, self._fired)
 
     def __next__(self):
         while True:
+            if self._closed.is_set():
+                raise StopIteration
             try:
                 who, item = self._queue.get(
                     timeout=self._after if self._winner is None else None
@@ -1235,6 +1268,8 @@ class Brain:
         except Exception:
             return ""
 
+    supports_cancellation = True
+
     def reply(
         self,
         user_text: str,
@@ -1246,6 +1281,7 @@ class Brain:
         search: bool = False,
         first: str | None = None,
         named: bool = False,
+        cancel: threading.Event | None = None,
     ) -> Iterator[str]:
         """Один разговор для голоса и чата: не смешиваем одновременные ответы.
 
@@ -1276,11 +1312,23 @@ class Brain:
         None — чат или фраза слишком короткая, чтобы судить. Сходство
         ложится в историю, и чужое не попадает в память (см. digest).
         """
+        from core.cancel_stream import ReplyCancelled, check
         with self._reply_lock:
-            yield from self._reply_unlocked(
-                user_text, context, image, voice, aloud, can_end, search, first,
-                named,
-            )
+            self._reply_cancel = cancel
+            completed = False
+            try:
+                check(cancel)
+                yield from self._reply_unlocked(
+                    user_text, context, image, voice, aloud, can_end, search, first,
+                    named,
+                )
+                completed = True
+            except ReplyCancelled:
+                return
+            finally:
+                if not completed and cancel is not None and cancel.is_set() and first is None:
+                    self._add_turn(user_text, "(ответ прерван пользователем)", voice)
+                self._reply_cancel = None
 
     def _reply_unlocked(
         self,
@@ -1337,6 +1385,7 @@ class Brain:
         # уходит одним событием в конце. Объявлен до `try`, чтобы `finally`
         # видел его даже после сбоя.
         usage: dict = {}
+        self.last_timing = {"rounds": []}
         try:
             found = None
             if search and first is None and image is None and self._tools_on():
@@ -1404,7 +1453,7 @@ class Brain:
         from core import commands, web
 
         order = commands.understand(user_text, [])
-        query = (order.target if order is not None and order.action == "search"
+        query = (order.target if order is not None and order.action in ("search", "browser_search")
                  and order.target else user_text)
         query = " ".join(str(query or "").split())[:200]
         if not query:
@@ -1432,7 +1481,11 @@ class Brain:
             except Exception:
                 pass
         yield personas.wait_phrase("web", getattr(config, "PERSONA_PRESET", None))
-        поиск.join(timeout=_search_wait())
+        deadline = time.monotonic() + _search_wait()
+        while поиск.is_alive() and time.monotonic() < deadline:
+            self._check_reply_cancelled()
+            поиск.join(timeout=min(.05, max(0, deadline - time.monotonic())))
+        self._check_reply_cancelled()
         result = str(box.get("result") or '{"error": "поиск не ответил"}')
         ok = not result.startswith('{"error"')
         if ok:
@@ -1486,7 +1539,7 @@ class Brain:
             pass
 
     def _search_queries(self, user_text: str, query: str) -> list[str]:
-        """Вопрос человека — в запросы для поисковика (REWRITE_ASK).
+        """Самостоятельный запрос ищется сразу, контекстный готовит модель.
 
         Не ответила за REWRITE_TIMEOUT или ответила криво — ищем по фразе
         как есть. Платный поиск запрос составляет сам — там не переписываем.
@@ -1498,6 +1551,9 @@ class Brain:
         from core import web
 
         if getattr(config, "WEB_SEARCH_MODE", "free") == "paid":
+            return [query]
+        if not QUERY_CONTEXT.search(query.lower().replace("ё", "е")):
+            self._tell("web_queries", {"queries": [query], "took": 0.0, "direct": True})
             return [query]
         recent = [t for t in list(self._history)[-4:] if t.get("role") in ("user", "assistant")]
         talk = "\n".join(
@@ -1566,6 +1622,10 @@ class Brain:
         # ответ повторным поиском.
         spoken = ""
         searched = found is not None
+        # Был ли в этом ответе интернет. Чтение буфера, файла или документа
+        # тоже ставит `searched`, но готовое подтверждение запрещает только
+        # интернет: там нужен ответ модели по найденному.
+        web_used = found is not None
         queries: list[str] = [found] if found else []
         search_started = None
         dead = False
@@ -1575,6 +1635,7 @@ class Brain:
         asked_at = time.monotonic()
 
         for round_no in range(TOOL_ROUNDS + 1):
+            self._check_reply_cancelled()
             budget = float(getattr(config, "WEB_SEARCH_BUDGET", TOOL_BUDGET))
             late = dead or (
                 search_started is not None and time.monotonic() - search_started > budget
@@ -1587,12 +1648,17 @@ class Brain:
             stream, tools = self._open_stream(
                 messages, tools, last=round_no == TOOL_ROUNDS or late
             )
+            from core.cancel_stream import wrap_reply_stream
+            stream = wrap_reply_stream(stream, getattr(self, "_reply_cancel", None))
             calls: dict[int, dict] = {}
             said: list[str] = []
             reasoning: list[str] = []
             state: dict = {}
-            yield from self._sentences(stream, calls, said, reasoning, usage, mark,
-                                       state)
+            try:
+                yield from self._sentences(stream, calls, said, reasoning, usage, mark,
+                                           state)
+            finally:
+                _close_stream(stream)
             # Ответ упёрся в потолок токенов: хвост фразы в озвучку не ушёл
             # (см. `_sentences`), и без продолжения голос замолчал бы посреди
             # слова. Продолжаем сами — но только если в круге не было вызовов
@@ -1601,6 +1667,7 @@ class Brain:
             if (state.get("finish") == "length" and not calls
                     and (said or state.get("tail"))):
                 yield from self._continue(messages, said, state, usage)
+            self._check_reply_cancelled()
             text = " ".join(said).strip()
             if text:
                 spoken = f"{spoken} {text}".strip()
@@ -1625,6 +1692,7 @@ class Brain:
                 # журнал «искать в интернете» и фраза про интернет — только
                 # для настоящего поиска.
                 web_now = any(call["name"] in WEB_TOOLS for call in ordered)
+                web_used = web_used or web_now
                 if not searched and web_now and self.on_event is not None:
                     try:
                         self.on_event("web_start",
@@ -1680,26 +1748,29 @@ class Brain:
             # Снимки — после всех ответов инструментов: OpenAI не принимает
             # сообщение пользователя между ответами на вызовы одного круга.
             shots: list[str] = []
+            # Судьи круга уходят в облако сразу, все сразу: по очереди каждая
+            # проверка стоит отдельных 1–1,5 с ожидания. В потоке только запрос,
+            # разбор ответа и событие остаются в основном потоке ниже.
+            answers, searches, отказы, pool = self._prejudge(ordered, user_text)
             for call in ordered:
+                self._check_reply_cancelled()
                 # Вызовы разводим по имени: интернет и действия — разные
                 # инструменты, и ни один не знает про другой.
                 call_shots: list[str] = []
-                if call["name"] in hands.GUARDED and not hands.asked_for(
-                    call["name"], user_text,
-                    because=str(_args_of(call).get("because") or ""),
-                ):
+                отказ = отказы.get(call["id"])
+                if отказ == "quote":
                     # Без цитаты из текущей реплики действие не выполняется.
                     results.append(hands.not_asked(call["name"]))
                     refused += 1
-                elif call["name"] == hands.YT_NAME and not hands.names_youtube(
-                        user_text):
+                elif отказ == "youtube":
                     # YouTube требует явного упоминания; без него проверка
                     # моделью не нужна.
                     results.append(hands.youtube_not_named())
                     refused += 1
                 elif call["name"] in hands.JUDGED and (
-                        judged := self._really_asked(
-                            call["name"], _args_of(call), user_text)) is not True:
+                        judged := self._judge_result(
+                            call["name"], _args_of(call), user_text,
+                            answers[call["id"]])) is not True:
                     # Цитата может быть упоминанием без просьбы. Если судья
                     # не ответил (`judged is None`), действие не выполняется.
                     results.append(
@@ -1762,9 +1833,12 @@ class Brain:
                 elif call["name"] == hands.FIND_NAME:
                     # Поиск файла по названию. Ответ — имена, пути и папки (путь
                     # без имени пользователя), а при `open` — ещё и готовая
-                    # фраза; строки в журнал из `core/files.py`.
+                    # фраза; строки в журнал из `core/files.py`. Поиск шёл
+                    # вместе с судьёй — берём его готовый результат.
                     results.append(hands.run_find_file(
-                        call["args"], self.on_event))
+                        call["args"], self.on_event,
+                        found=(searches[call["id"]].result
+                               if call["id"] in searches else None)))
                 elif call["name"] == hands.CLIP_NAME:
                     # Буфер обмена. При `mode: read` текст уходит в синтез на
                     # компьютере (действие `read_aloud`), и в ответе его уже
@@ -1839,6 +1913,8 @@ class Brain:
                         "result": _result_of(results[-1]),
                     })
                 shots.extend(call_shots)
+            if pool is not None:
+                pool.shutdown(wait=False)
             for shot in shots:
                 # `role: tool` не несёт картинку: снимок идёт отдельным
                 # сообщением пользователя и не сохраняется в истории.
@@ -1853,8 +1929,10 @@ class Brain:
             # Говорим подтверждение сами и заканчиваем ответ; в историю оно
             # идёт вместе со сказанным, чтобы потом помнила, что открыла.
             # Взгляд на экран сюда не попадает: там модель нужен снимок, и
-            # интернет тоже — там нужен живой ответ из сети.
-            if (not searched and not shots and not late
+            # интернет тоже — там нужен живой ответ из сети. Чтение вслух и
+            # открытие найденного файла попадают: у них готовая фраза
+            # (`confirm_forms`).
+            if (not web_used and not shots and not late
                     and all(hands.confirm_forms(call) for call in ordered)
                     and not any(r.startswith('{"error"') for r in results)):
                 # Формы — по `confirm_forms`, а не по имени: у `read_document`
@@ -1878,6 +1956,7 @@ class Brain:
                 dead = True
                 self._only_refused = True
 
+        self._check_reply_cancelled()
         if searched and not spoken:
             spoken = "Не вышло ничего толком найти, спроси по-другому."
             yield spoken
@@ -2067,7 +2146,7 @@ class Brain:
                 body["tool_choice"] = "required"
         for _ in range(4):
             try:
-                return client.chat.completions.create(**body)
+                return self._create_reply_stream(body, client=client)
             except BadRequestError as exc:
                 message = str(exc).lower()
                 if "stream_options" in body and (
@@ -2091,7 +2170,17 @@ class Brain:
                     body.pop("reasoning_effort", None)
                     continue
                 raise
-        return client.chat.completions.create(**body)
+        return self._create_reply_stream(body, client=client)
+
+    def _create_reply_stream(self, body, client=None):
+        from core.cancel_stream import open_reply_stream
+        client, request = self._client if client is None else client, dict(body)
+        cancel = getattr(self, "_reply_cancel", None)
+        return open_reply_stream(lambda: client.chat.completions.create(**request), cancel)
+
+    def _check_reply_cancelled(self):
+        from core.cancel_stream import check
+        check(getattr(self, "_reply_cancel", None))
 
     def _open_stream_here(self, messages: list[dict], tools: list[dict], last: bool,
                           think: bool = True):
@@ -2162,7 +2251,7 @@ class Brain:
         # reasoning_effort, инструменты — плюс последняя, уже чистая.
         for _ in range(4):
             try:
-                return self._client.chat.completions.create(**body), tools
+                return self._create_reply_stream(body), tools
             except BadRequestError as exc:
                 message = str(exc).lower()
                 if "stream_options" in body and (
@@ -2194,7 +2283,7 @@ class Brain:
                         body.pop(key, None)
                     continue
                 raise
-        return self._client.chat.completions.create(**body), tools
+        return self._create_reply_stream(body), tools
 
     @staticmethod
     def _sentences(
@@ -2345,9 +2434,10 @@ class Brain:
 
         Местные команды не проходят через модель. Запись даёт ей контекст
         выполненных действий для следующих реплик разговора.
+        Подтверждения действий не требуют извлечения фактов в облаке.
         """
         with self._reply_lock:
-            self._add_turn(user_text, reply)
+            self._add_turn(user_text, reply, local_turn=True)
 
     def end_talk(self) -> None:
         """Сохраняет границу завершившегося разговора на последней реплике."""
@@ -2373,7 +2463,7 @@ class Brain:
 
     def _add_turn(self, user_text: str, reply: str, voice: float | None = None,
                   searched: list[str] | None = None,
-                  first_turn: bool = False) -> None:
+                  first_turn: bool = False, local_turn: bool = False) -> None:
         """Реплика человека и её ответ — в историю и на диск.
 
         `searched` сохраняет контекст поиска для ответа, чтобы последующие
@@ -2384,18 +2474,49 @@ class Brain:
         """
         now = datetime.now().isoformat(timespec="seconds")
         turn = {"role": "user", "content": user_text, "at": now}
+        if local_turn:
+            turn["local"] = True
         if first_turn:
             turn["first"] = True
         elif voice is not None:
             turn["voice"] = round(float(voice), 2)
         self._history.append(turn)
         answer = {"role": "assistant", "content": reply, "at": now}
+        if local_turn:
+            answer["local"] = True
         if searched:
             answer["searched"] = searched
         self._history.append(answer)
+        cancel = getattr(self, "_reply_cancel", None)
+        if cancel is not None:
+            self._voice_answer = (cancel, answer)
         self._undigested += 2
         self._trim_history()
         self._keep_history()
+
+    def mark_voice_interrupted(self, cancel) -> None:
+        """Озвучку оборвали после конца модели — не считаем полный текст услышанным.
+
+        Память/чат могут держать замок: ожидание истории не задерживает голос.
+        Пометка привязана к Event ответа, а не к последней строке истории.
+        """
+        record = getattr(self, "_voice_answer", None)
+        if record is None or record[0] is not cancel:
+            return
+        def mark():
+            with self._reply_lock:
+                answer = record[1]
+                if any(item is answer for item in self._history):
+                    answer["content"] = "(ответ прерван пользователем)"
+                    answer["interrupted"] = True
+                    self._keep_history()
+        if self._reply_lock.acquire(blocking=False):
+            try:
+                mark()
+            finally:
+                self._reply_lock.release()
+        else:
+            threading.Thread(target=mark, name="truba-interrupted-history", daemon=True).start()
 
     def _trim_history(self) -> None:
         """Укорачивает историю пачкой, а не по одной реплике.
@@ -2458,12 +2579,66 @@ class Brain:
                     f"Помощница: {previous_answer.get('content', '')}")
         return "(нет)"
 
-    def _really_asked(self, name: str, args: dict, said: str) -> bool | None:
-        """Была ли в текущей реплике просьба выполнить действие.
+    def _prejudge(self, ordered: list, said: str):
+        """Судьи круга и поиск файла — все сразу, каждый в своём потоке.
 
-        True — да, делай. False — нет, не делай. None — облако не ответило
-        (проверку пропускать нельзя: неизвестно, просил ли, значит не делаем).
+        Отбор тот же, что в круге: без цитаты из реплики (`asked_for`) и без
+        названного YouTube судья не зовётся вовсе. Поиск файла только читает
+        диск, поэтому идёт вместе с судьёй: открыть файл можно лишь потом, а
+        искать — можно сразу. Возвращает будущие по `call["id"]` (ответы судьи,
+        поиск файла), отказы по `call["id"]` и пул потоков (`None`, если судей
+        нет).
         """
+        from core import files, hands
+
+        ответы = []
+        поиски = []
+        отказы = {}
+        for call in ordered:
+            args = _args_of(call)
+            if call["name"] in hands.GUARDED and not hands.asked_for(
+                call["name"], said, because=str(args.get("because") or ""),
+            ):
+                отказы[call["id"]] = "quote"
+                continue
+            if call["name"] == hands.YT_NAME and not hands.names_youtube(said):
+                отказы[call["id"]] = "youtube"
+                continue
+            if call["name"] in hands.JUDGED:
+                ответы.append((call["id"], call["name"], args))
+                if call["name"] == hands.FIND_NAME:
+                    где = hands.find_file_words(call["args"])
+                    if где is not None:
+                        поиски.append((call["id"], *где))
+        if not ответы:
+            return {}, {}, отказы, None
+        # Возврат к своему провайдеру берёт `_reply_lock`; здесь он у нас, а
+        # поток судьи на нём встал бы, пока мы ждём его ответа.
+        self._maybe_home()
+        пул = ThreadPoolExecutor(max_workers=len(ответы) + len(поиски),
+                                 thread_name_prefix="судья")
+        return ({ид: пул.submit(self._judge_request, имя, арги, said, True)
+                 for ид, имя, арги in ответы},
+                {ид: пул.submit(files.find, слова, диск)
+                 for ид, слова, диск in поиски},
+                отказы,
+                пул)
+
+    def _judge_request(self, name: str, args: dict, said: str,
+                       in_thread: bool = False) -> tuple[str | None, float, object]:
+        """Спросить у облака, просил ли человек: `(ответ, секунды, расход)`.
+
+        Только запрос: его можно унести в отдельный поток. События журнала
+        и вердикт — в основном. `in_thread` — запрос из потока судьи: смена
+        провайдера берёт `_reply_lock`, а его держит основной поток, который
+        ждёт этот ответ. Поэтому из потока провайдер не меняется: при отказе
+        региона или обрыве связи ответ — `None`, и основной поток повторяет
+        проверку сам (`_really_asked`). Расход из потока тоже отдаётся
+        основному: события идут оттуда. Без потока расход отмечает
+        `_ask_plainly`, и третье значение — `None`.
+        """
+        from openai import APIConnectionError, PermissionDeniedError
+
         from core import hands
 
         action = hands.action_words(name, args)
@@ -2475,15 +2650,52 @@ class Brain:
             prompt = hands.JUDGE_PROMPT.format(
                 context=context, said=str(said or ""), action=action)
         started = time.monotonic()
+        spent = None
         try:
-            answer = self._ask_plainly(
-                prompt,
-                max_tokens=5, note="проверка", timeout=8.0,
-            )
+            if in_thread:
+                answer = self._ask_plainly(
+                    prompt,
+                    max_tokens=5, note="проверка", timeout=8.0, in_thread=True,
+                )
+                spent = getattr(answer, "usage", None)
+            else:
+                answer = self._ask_plainly(
+                    prompt,
+                    max_tokens=5, note="проверка", timeout=8.0,
+                )
             text = без_размышлений(answer.choices[0].message.content or "")
+        except (PermissionDeniedError, APIConnectionError):
+            # Из потока — повтор в основном, со сменой провайдера.
+            text = None if in_thread else ""
         except Exception:
             text = ""  # облако молчало или упало — проверки нет
-        took = round(time.monotonic() - started, 2)
+        return text, round(time.monotonic() - started, 2), spent
+
+    def _judge_result(self, name: str, args: dict, said: str,
+                      future) -> bool | None:
+        """Вердикт судьи, запущенного заранее (`_prejudge`). Основной поток."""
+        while not future.done():
+            self._check_reply_cancelled()
+            threading.Event().wait(.05)
+        self._check_reply_cancelled()
+        text, took, spent = future.result()
+        if text is None:
+            return self._really_asked(name, args, said)
+        if spent is not None:
+            self._tell("tokens", {**read_usage(spent), "calls": 1,
+                                  "model": self.model, "note": "проверка"})
+        return self._judge_verdict(name, args, text, took)
+
+    def _judge_verdict(self, name: str, args: dict, text: str,
+                       took: float) -> bool | None:
+        """Разобрать ответ судьи и отметить проверку. Основной поток.
+
+        True — да, делай. False — нет, не делай. None — облако не ответило
+        (проверку пропускать нельзя: неизвестно, просил ли, значит не делаем).
+        """
+        from core import hands
+
+        action = hands.action_words(name, args)
         if not text:
             self._tell("action_check", {"action": action, "answer": "ошибка",
                                         "took": took})
@@ -2494,10 +2706,16 @@ class Brain:
                                     "took": took})
         return yes
 
+    def _really_asked(self, name: str, args: dict, said: str) -> bool | None:
+        """Была ли в текущей реплике просьба выполнить действие."""
+        text, took, _ = self._judge_request(name, args, said)
+        return self._judge_verdict(name, args, text, took)
+
     # --- Память -----------------------------------------------------------
 
     def _ask_plainly(self, prompt: str, max_tokens: int, json_mode: bool = False,
-                     note: str = "память", timeout: float | None = None):
+                     note: str = "память", timeout: float | None = None,
+                     in_thread: bool = False):
         """Разовый вопрос мимо разговора: без потока и без размышлений.
 
         Первый раз пробуем попросить не думать вслух. Не понял провайдер —
@@ -2510,9 +2728,16 @@ class Brain:
         note — чем помечен этот расход в журнале («память», «проверка»).
         timeout — сколько ждать облако; заданный уходит в сам запрос, чтобы
         проверка просьбы не висела, если облако молчит.
+
+        in_thread — вопрос из потока судьи, пока основной поток держит
+        `_reply_lock` и ждёт ответа: смена провайдера взяла бы тот же замок.
+        Поэтому провайдер не меняется (отказ региона и обрыв уходят наружу),
+        а расход не отмечается здесь — его отметит основной поток.
         """
         from openai import APIConnectionError, PermissionDeniedError
 
+        if in_thread:
+            return self._ask_plainly_here(prompt, max_tokens, json_mode, timeout)
         self._maybe_home()
         try:
             answer = self._ask_plainly_here(prompt, max_tokens, json_mode, timeout)
@@ -2686,18 +2911,19 @@ def own_turns(turns: list[dict], threshold: float) -> list[dict]:
 
     Заход первой (`first`) исключается: это собственная инициатива
     ассистента, из которой нельзя выводить факты о человеке.
+    Локальные действия (`local`) остаются только контекстом разговора.
     """
     kept: list[dict] = []
     skip_reply = False
     for turn in turns:
         if turn.get("role") == "user":
             score = turn.get("voice")
-            skip_reply = bool(turn.get("first")) or (
+            skip_reply = bool(turn.get("first") or turn.get("local")) or (
                 isinstance(score, (int, float)) and threshold > 0 and score < threshold
             )
             if not skip_reply:
                 kept.append(turn)
-        elif not skip_reply:
+        elif not skip_reply and not turn.get("local"):
             kept.append(turn)
     return kept
 
