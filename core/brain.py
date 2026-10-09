@@ -41,6 +41,11 @@ CONTINUE_ASK = ("Ты оборвалась на полуслове. Продол
 # Чем кончаем, когда и третьего куска не хватило. Сказать честно лучше,
 # чем замолчать на середине.
 CONTINUE_LAST = "Дальше не влезло — скажи «продолжай», договорю."
+# Весь потолок ушёл на размышления, и сказать нечего. Тогда тот же круг
+# переспрашиваем без размышлений и с таким потолком; не помогло — честная
+# фраза, а не тишина, которую не отличить от «не услышала».
+ROOMY_TOKENS = 1500
+EMPTY_LAST = "Задумалась и не уложилась — спроси ещё раз, покороче."
 # Общий срок поиска меняется в настройках через `config.WEB_SEARCH_BUDGET`.
 # После общего срока модель отвечает по уже найденным результатам.
 TOOL_BUDGET = 12.0
@@ -1667,6 +1672,29 @@ class Brain:
             if (state.get("finish") == "length" and not calls
                     and (said or state.get("tail"))):
                 yield from self._continue(messages, said, state, usage)
+            elif state.get("finish") == "length" and not calls and not said:
+                # Весь потолок ушёл на размышления: ни слова, ни вызова.
+                # Тот же круг ещё раз — без размышлений и с запасом потолка.
+                self._tell("empty_retry", {
+                    "limit": int(getattr(config, "MAX_TOKENS", 0) or 0),
+                    "thought": len("".join(reasoning))})
+                self._check_reply_cancelled()
+                stream, tools = self._open_stream(
+                    messages, tools, last=round_no == TOOL_ROUNDS or late,
+                    think=False, roomy=True)
+                stream = wrap_reply_stream(stream, getattr(self, "_reply_cancel", None))
+                reasoning, state = [], {}
+                try:
+                    yield from self._sentences(stream, calls, said, reasoning, usage,
+                                               mark, state)
+                finally:
+                    _close_stream(stream)
+                if (state.get("finish") == "length" and not calls
+                        and (said or state.get("tail"))):
+                    yield from self._continue(messages, said, state, usage)
+                elif not calls and not said:
+                    said.append(EMPTY_LAST)
+                    yield EMPTY_LAST
             self._check_reply_cancelled()
             text = " ".join(said).strip()
             if text:
@@ -2034,7 +2062,7 @@ class Brain:
         yield CONTINUE_LAST
 
     def _open_stream(self, messages: list[dict], tools: list[dict], last: bool,
-                     think: bool = True):
+                     think: bool = True, roomy: bool = False):
         """Поток ответа. Возвращает (поток, остались ли инструменты).
 
         Отказы разбираем по лесенке, чтобы интернет не ронял разговор:
@@ -2055,17 +2083,19 @@ class Brain:
             self._flatten_tool_rounds(messages)
             self._hedge_spare = None
 
-        hedge = self._hedge(messages, tools, last)
+        # Повтор с запасом потолка (`roomy`) — только у своего провайдера:
+        # страховка собрала бы тело со своим, обычным потолком.
+        hedge = None if roomy else self._hedge(messages, tools, last)
         if hedge is not None:
             return hedge, tools
 
         try:
-            return self._open_stream_here(messages, tools, last, think)
+            return self._open_stream_here(messages, tools, last, think, roomy)
         except (PermissionDeniedError, APIConnectionError) as exc:
             if not self._fall_back(exc):
                 raise
             self._flatten_tool_rounds(messages)
-            return self._open_stream_here(messages, tools, last, think)
+            return self._open_stream_here(messages, tools, last, think, roomy)
 
     def _hedge(self, messages: list[dict], tools: list[dict], last: bool):
         """Страховка от заминок облака. None — страховки нет.
@@ -2144,11 +2174,17 @@ class Brain:
             # Ход с кнопки поиска: первый круг обязан искать, а не болтать.
             if self._wants_tool_choice(messages):
                 body["tool_choice"] = "required"
-        for _ in range(4):
+        if spare == "deepseek" and not getattr(config, "REASONING", False):
+            # Размышления съели бы потолок ответа — как у основного.
+            body["extra_body"] = NO_THINKING
+        for _ in range(5):
             try:
                 return self._create_reply_stream(body, client=client)
             except BadRequestError as exc:
                 message = str(exc).lower()
+                if "extra_body" in body and "thinking" in message:
+                    body.pop("extra_body")
+                    continue
                 if "stream_options" in body and (
                     "stream_options" in message or "include_usage" in message
                 ):
@@ -2183,15 +2219,28 @@ class Brain:
         check(getattr(self, "_reply_cancel", None))
 
     def _open_stream_here(self, messages: list[dict], tools: list[dict], last: bool,
-                          think: bool = True):
+                          think: bool = True, roomy: bool = False):
+        """`roomy` — потолок с запасом: прошлый круг весь ушёл на размышления."""
         from openai import BadRequestError
 
+        limit = config.MAX_TOKENS
+        if roomy:
+            limit = max(int(limit) * 4, ROOMY_TOKENS)
         body = {
             "model": self._model,
             "messages": messages,
-            **completion_limits(self.provider, config.MAX_TOKENS, config.TEMPERATURE),
+            **completion_limits(self.provider, limit, config.TEMPERATURE),
             "stream": True,
         }
+        размышлять = think and bool(getattr(config, "REASONING", False))
+        if (self.provider == "deepseek" and not размышлять
+                and getattr(self, "_quiet", None) is not False):
+            # DeepSeek размышляет по умолчанию, а размышления тратят тот же
+            # потолок, что и ответ: на 220 токенах ответ приходил пустым, и
+            # она молчала. Включаются они галочкой «Размышления перед
+            # ответом». Не принял поле — лесенка ниже его уберёт и запомнит
+            # (`_quiet`).
+            body["extra_body"] = NO_THINKING
         if self._usage_ok is not False:
             # Без этого в потоке нет расхода: usage приходит отдельным куском
             # с пустым choices в самом конце.
@@ -2248,12 +2297,16 @@ class Brain:
             body["reasoning_effort"] = "none"
 
         # Попыток на столько отказов, сколько их бывает: stream_options,
-        # reasoning_effort, инструменты — плюс последняя, уже чистая.
-        for _ in range(4):
+        # размышления, reasoning_effort, инструменты — плюс последняя, чистая.
+        for _ in range(5):
             try:
                 return self._create_reply_stream(body), tools
             except BadRequestError as exc:
                 message = str(exc).lower()
+                if "extra_body" in body and "thinking" in message:
+                    body.pop("extra_body")
+                    self._quiet = False
+                    continue
                 if "stream_options" in body and (
                     "stream_options" in message or "include_usage" in message
                 ):

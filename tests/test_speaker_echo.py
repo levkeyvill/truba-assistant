@@ -4,6 +4,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from pathlib import Path
@@ -43,18 +44,41 @@ class _Audio:
 
 
 class _Stream:
-    def __init__(self):
+    """Петля как у PortAudio: закрыть её посреди `read` — падение процесса.
+
+    Здесь вместо падения такой случай записывается в `violations`.
+    `silent` — колонки молчат: данных нет, и `read` ждал бы вечно.
+    """
+
+    def __init__(self, silent=False):
         self.stop = threading.Event()
+        self.silent = silent
+        self.reading = 0
+        self.closed = 0
+        self.violations = []
+
+    def get_read_available(self):
+        return 0 if self.silent else 10_000
 
     def read(self, count, exception_on_overflow=False):
-        self.stop.wait(0.2)
-        return np.zeros(count * 2, dtype=np.int16).tobytes()
+        if self.silent:
+            self.violations.append("read в тишине ждал бы вечно")
+        self.reading += 1
+        try:
+            self.stop.wait(0.05)
+            return np.zeros(count * 2, dtype=np.int16).tobytes()
+        finally:
+            self.reading -= 1
 
     def stop_stream(self):
+        if self.reading:
+            self.violations.append("stop_stream посреди read")
         self.stop.set()
 
     def close(self):
-        pass
+        if self.reading:
+            self.violations.append("close посреди read")
+        self.closed += 1
 
 
 def _packages(device=None):
@@ -87,6 +111,50 @@ class SpeakerEchoTests(unittest.TestCase):
         np.testing.assert_array_equal(_Canceller.calls[1][1], 0)
         np.testing.assert_array_equal(_Canceller.calls[1][0][:40], 8192)
         np.testing.assert_array_equal(_Canceller.calls[1][0][40:], 16384)
+
+    def _started(self, silent=False):
+        потоки = []
+
+        class Audio(_Audio):
+            def open(self, **kwargs):
+                поток = _Stream(silent=silent)
+                потоки.append(поток)
+                return поток
+
+        packages = mock.patch.dict(sys.modules, {
+            "pyaudiowpatch": types.SimpleNamespace(PyAudio=Audio, paInt16=8),
+            "pywebrtc_audio": types.SimpleNamespace(EchoCanceller=_Canceller),
+        })
+        packages.start()
+        self.addCleanup(packages.stop)
+        echo = SpeakerEcho()
+        echo.start()
+        self.assertTrue(echo.active, echo.why_off)
+        return echo, потоки[0]
+
+    def test_stop_from_two_threads_never_closes_mid_read(self):
+        # «Выключить» останавливает слушатель из двух потоков сразу, а поток
+        # петли в этот миг читает: закрытие посреди чтения роняло процесс.
+        echo, поток = self._started()
+        time.sleep(0.2)
+        второй = threading.Thread(target=echo.stop)
+        второй.start()
+        echo.stop()
+        второй.join(3)
+        time.sleep(0.1)
+        self.assertEqual(поток.violations, [])
+        self.assertEqual(поток.closed, 1)
+
+    def test_stop_in_silence_is_quick(self):
+        # Колонки молчат: данных нет, и ждать в `read` нельзя — остановка
+        # иначе висела бы, а закрытие из другого потока роняло процесс.
+        echo, поток = self._started(silent=True)
+        time.sleep(0.2)
+        начало = time.monotonic()
+        echo.stop()
+        self.assertLess(time.monotonic() - начало, 1.0)
+        self.assertEqual(поток.violations, [])
+        self.assertEqual(поток.closed, 1)
 
     def test_start_uses_default_loopback(self):
         with _packages():

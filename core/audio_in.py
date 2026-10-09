@@ -22,6 +22,11 @@ import sounddevice as sd
 import config
 from core.speaker_echo import SpeakerEcho
 
+# Кто забирает поток микрофона при остановке: второй вызов `stop` его не
+# трогает. Один на модуль — слушатели не останавливаются так часто, чтобы
+# мешать друг другу.
+_STOP_LOCK = threading.Lock()
+
 # Шаг детектора речи при 16 кГц — он обучен именно на таких кусках.
 VAD_HOP = 512
 VAD_CONTEXT = 64
@@ -433,14 +438,17 @@ class Listener:
         self._stream.start()
 
     def stop(self) -> None:
+        """Закрыть микрофон. Зовут из двух потоков сразу (выключение голоса и
+        выход цикла слуха): поток записи закрывает только первый вызов."""
         self._stop.set()
         echo = getattr(self, "speaker_echo", None)
         if echo is not None:
             echo.stop()
-        if self._stream is not None:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        with _STOP_LOCK:
+            stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.stop()
+            stream.close()
 
     # --- Нарезка на фразы -------------------------------------------------
 

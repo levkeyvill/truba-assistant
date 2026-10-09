@@ -1153,7 +1153,9 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .логи-тип option { background: var(--панель-выше); }
 
 .логи-статус { flex: none; font-size: 12px; color: var(--тусклый); white-space: nowrap; }
-.логи-скачать { display: inline-flex; align-items: center; text-decoration: none; }
+.логи-файлы { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 0 2px 10px; }
+.логи-итог { font-size: 12px; color: var(--тусклый); }
+.логи-итог.плохо { color: var(--тревога); }
 
 .логи-лента {
   flex: 1;
@@ -1947,6 +1949,29 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .обн-текст { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--линия); }
 .обн-абзац { margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: var(--приглушён); }
 .обн-абзац:last-child { margin-bottom: 0; }
+
+/* ---------- Перезапуск ради установки ----------
+   Слой поверх всего окна, выше мастера: пока окно Трубы пропадает на
+   перезапуск, по нему ничего не нажимают. */
+.перезапуск {
+  position: fixed; inset: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px; background: rgba(0, 0, 0, .55);
+}
+.перезапуск[hidden] { display: none; }
+.перезапуск-карточка {
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  width: 100%; max-width: 460px; padding: 26px 28px; text-align: center;
+  background: var(--панель); border: 1px solid var(--линия); border-radius: 14px;
+}
+.перезапуск-заголовок { margin: 0; font-size: 18px; color: var(--текст); }
+.перезапуск-текст { margin: 0; font-size: 14px; line-height: 1.6; color: var(--приглушён); }
+.перезапуск-круг {
+  width: 34px; height: 34px; border-radius: 50%;
+  border: 3px solid var(--панель-выше); border-top-color: var(--акцент);
+  animation: перезапуск-круг 1s linear infinite;
+}
+@keyframes перезапуск-круг { to { transform: rotate(360deg); } }
 
 /* ---------- Мастер первого запуска ----------
    Слой поверх всего окна: пока идёт первый запуск, разделы под ним не нужны.

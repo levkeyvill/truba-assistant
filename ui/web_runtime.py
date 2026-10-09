@@ -704,6 +704,11 @@ class WebRuntime:
             return [f"ответ упёрся в потолок {int(data.get('limit', 0))} токенов — "
                     f"продолжаю ({int(data.get('step', 0))} из "
                     f"{int(data.get('of', 0))})"]
+        if kind == "empty_retry":
+            # Весь потолок ушёл на размышления — молчание было не «нечего
+            # сказать», а «не хватило места». Видно в журнале.
+            return [f"ответ ушёл в размышления (потолок {int(data.get('limit', 0))} "
+                    f"токенов) — переспрашиваю без них"]
         if kind == "action_check":
             # Хозяин должен видеть, что программа открывалась не сама: судил
             # отдельный короткий вопрос, и сколько он занял.
@@ -1088,9 +1093,10 @@ class WebRuntime:
     def voice_autostart(self) -> None:
         """Голос — сразу при запуске пульта, если так настроено.
 
-        «Выкл» в режиме слуха при этом превращается в «по имени», как у
-        кнопки на Панели: включённый голос, который ничего не слушает, —
-        ровно то «запустил, а она молчит», от чего уходим.
+        «Выкл» в режиме слуха при этом включается обратно тем режимом, что
+        был до него, как у кнопки на Панели: включённый голос, который
+        ничего не слушает, — ровно то «запустил, а она молчит», от чего
+        уходим.
         """
         import config
 
@@ -1098,7 +1104,7 @@ class WebRuntime:
             return
         try:
             if config.LISTEN_MODE == "off":
-                self.voice_mode("name")
+                self.voice_mode("on")
                 # Слух был выключен — значит, он занят (игра, созвон), и
                 # «На связи» из телефона там лишнее: включаемся молча.
                 self.voice.quiet_start = True
@@ -1212,8 +1218,17 @@ class WebRuntime:
         import config
         from core import settings
 
+        if value == "on":
+            # «Включить слух» — тем режимом, что был до «не слушает».
+            value = settings.listen_mode_on({
+                "listen_mode_on": getattr(config, "LISTEN_MODE_ON", None),
+                "listen_mode": config.LISTEN_MODE})
         if value in ("always", "name", "off"):
-            settings.save_settings({"listen_mode": value})
+            сохранить = {"listen_mode": value}
+            if value in settings.LISTEN_ON_MODES:
+                сохранить["listen_mode_on"] = value
+                config.LISTEN_MODE_ON = value
+            settings.save_settings(сохранить)
             config.LISTEN_MODE = value
             if value == "off":
                 try:
@@ -1280,7 +1295,7 @@ class WebRuntime:
             self._moment()
         elif kind == "mode":
             value = (payload or {}).get("value") if isinstance(payload, dict) else None
-            if value in ("always", "name", "off"):
+            if value in ("always", "name", "off", "on"):
                 self.voice_mode(value)
         elif kind == "listen_now":
             self._listen_now()
@@ -3503,7 +3518,8 @@ class WebRuntime:
         for key in ("require_name_when_noisy", "voice_app_guard", "speaker_aec", "owner_only",
                     "barge_instant", "web_search", "search_sound", "replay_guard",
                     "voice_autostart", "higgs_gentle", "proactive_look", "hedge",
-                    "update_check", "first_run_done", "offer_analysis_note"):
+                    "reasoning", "update_check", "first_run_done",
+                    "offer_analysis_note"):
             if key in payload:
                 if not isinstance(payload[key], bool):
                     errors.append(f"{key}: нужно true/false")
@@ -3637,6 +3653,9 @@ class WebRuntime:
         if provider is not None and provider != old_provider:
             settings.set_provider(provider)
         if changed_settings:
+            if changed_settings.get("listen_mode") in settings.LISTEN_ON_MODES:
+                # Выбранный режим — и тот, которым слух включится из «не слушает».
+                changed_settings["listen_mode_on"] = changed_settings["listen_mode"]
             settings.save_settings(changed_settings)
             settings.apply_to_config()
             if "listen_mode" in changed_settings:
@@ -4189,6 +4208,32 @@ class WebRuntime:
                 return [line.rstrip("\r\n") for line in deque(file, maxlen=limit)]
         except OSError:
             return []
+
+    # --- Журнал и отчёт о проблеме: копии в «Загрузки» --------------------
+    # Окно пульта (WebView2) не скачивает файлы по ссылке, поэтому копию
+    # кладёт сам пульт и показывает её в проводнике.
+
+    def logs_save(self) -> dict:
+        from core import error_report
+
+        путь = error_report.save_journal()
+        error_report.reveal(путь)
+        return {"ok": True, "path": str(путь), "name": путь.name}
+
+    def logs_report(self) -> dict:
+        from core import error_report
+
+        путь = error_report.build_report()
+        error_report.reveal(путь)
+        return {"ok": True, "path": str(путь), "name": путь.name,
+                "telegram": error_report.TELEGRAM}
+
+    def logs_open(self) -> dict:
+        from core import error_report
+
+        error_report.reveal(self._log_path if self._log_path.is_file()
+                            else self._log_path.parent)
+        return {"ok": True}
 
     def logs_from(self, after: int, limit: int = 500) -> dict:
         """Новые строки после очистки экрана; файл журнала не меняем."""

@@ -172,7 +172,7 @@
         return;
       }
       if (kind === 'timer') { this.dialog.returnValue = ''; this.dialog.showModal(); return; }
-      if (kind === 'mute') return this.run('mode', { value: this.voice?.mode === 'off' ? 'name' : 'off' });
+      if (kind === 'mute') return this.run('mode', { value: this.voice?.mode === 'off' ? 'on' : 'off' });
       return this.run(kind);
     }
     async search(research) {

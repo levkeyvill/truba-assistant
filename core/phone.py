@@ -916,9 +916,10 @@ class PhoneServer:
                     {"ok": False, "error": "нужен JSON с полем value"},
                     status_code=400)
             value = body.get("value", "") if isinstance(body, dict) else ""
-            if value not in ("always", "name", "off"):
+            # `on` — включить слух тем режимом, что был до «не слушает».
+            if value not in ("always", "name", "off", "on"):
                 return JSONResponse(
-                    {"ok": False, "error": "режим бывает always/name/off"},
+                    {"ok": False, "error": "режим бывает always/name/off/on"},
                     status_code=400)
             try:
                 state = await asyncio.to_thread(rt.voice_mode, value)
@@ -955,6 +956,29 @@ class PhoneServer:
                 filename=f"truba-log-{time.strftime('%Y-%m-%d')}.txt",
                 headers=NO_CACHE,
             )
+
+        # Окно пульта не скачивает по ссылке: копию журнала, архив ошибок и
+        # папку журнала открывает сам пульт, показывая файл в проводнике.
+        def logs_action(имя: str):
+            async def api_logs_action(request: Request):
+                if not _local(request):
+                    return _deny()
+                rt = getattr(self, "runtime", None)
+                if rt is None:
+                    return _no_runtime()
+                try:
+                    result = await asyncio.to_thread(getattr(rt, имя))
+                except FileNotFoundError as exc:
+                    return _fail(exc, 404)
+                except Exception as exc:
+                    return _fail(exc)
+                return JSONResponse(result)
+            return api_logs_action
+
+        for адрес, имя in (("/api/logs/save", "logs_save"),
+                           ("/api/logs/report", "logs_report"),
+                           ("/api/logs/open", "logs_open")):
+            app.post(адрес)(logs_action(имя))
 
         @app.get("/api/usage")
         async def api_usage(request: Request):

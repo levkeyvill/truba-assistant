@@ -473,6 +473,7 @@ class ПускОкнаTests(unittest.TestCase):
                                return_value=среда), \
              mock.patch.object(sysinfo, "Monitor", return_value=наблюдатель), \
              mock.patch.object(settings, "apply_to_config"), \
+             mock.patch("core.error_report.install"), \
              mock.patch.object(power, "disable_live_runtime"):
             трей.return_value.bind.return_value = False
             window_mod.запустить()

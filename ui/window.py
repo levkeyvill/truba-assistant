@@ -396,6 +396,12 @@ def запустить(в_трей: bool = False) -> None:
     if решение != "стартовать":
         raise SystemExit(текст_отказа())
 
+    # Окна консоли нет: падения и необработанные ошибки — в data\errors.log
+    # и data\crash.log, иначе причину закрытия пульта не узнать.
+    from core import error_report
+
+    error_report.install()
+
     from core import instance
     from core.phone import PhoneServer
 

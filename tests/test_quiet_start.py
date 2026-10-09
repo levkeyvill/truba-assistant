@@ -23,7 +23,8 @@ class ТихийСтартTests(unittest.TestCase):
         with mock.patch.object(config, "VOICE_AUTOSTART", True), \
                 mock.patch.object(config, "LISTEN_MODE", "off"):
             среда.voice_autostart()
-        среда.voice_mode.assert_called_once_with("name")
+        # `on` — тот режим слуха, что был до «не слушает».
+        среда.voice_mode.assert_called_once_with("on")
         среда.voice_toggle.assert_called_once()
         self.assertTrue(среда.voice.quiet_start)
 

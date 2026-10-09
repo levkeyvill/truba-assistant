@@ -3591,7 +3591,8 @@ orb.addEventListener('pointerdown', () => {
   holdTimer = setTimeout(() => {
     held = true;
     if (currentMode === 'off') {
-      send({ type: 'mode', value: lastOnMode });
+      // Пульт включит тот режим, что был до «не слушает», и пришлёт его.
+      send({ type: 'mode', value: 'on' });
       markMode(lastOnMode);
     }
     send({ type: 'listen_now' });

@@ -94,6 +94,7 @@ DEFAULTS = {
     # Страховка от заминок облака. Выключена по умолчанию: при заминке
     # платим за оба запроса.
     "hedge": config.HEDGE,
+    "reasoning": config.REASONING,
     "replay_guard": config.REPLAY_GUARD,
     "voice_autostart": config.VOICE_AUTOSTART,
     "update_check": config.UPDATE_CHECK,
@@ -136,6 +137,9 @@ DEFAULTS = {
     "mic_name": config.MIC_NAME,
     "mic_channel": config.MIC_CHANNEL,
     "listen_mode": config.LISTEN_MODE,
+    # `listen_mode_on` (режим, которым слух включается обратно из «не
+    # слушает») здесь нет намеренно: пока его не выбирали, это текущий
+    # режим, см. `listen_mode_on()`.
     # Сколько она слушает без имени после последней реплики.
     "follow_up_window": config.FOLLOW_UP_WINDOW,
     # Заговаривать первой: никогда / редко / иногда / часто (core/proactive.py).
@@ -451,6 +455,22 @@ def validate_mic_channel(value) -> int:
     return number if number in (0, 1) else config.MIC_CHANNEL
 
 
+LISTEN_ON_MODES = ("always", "name")
+
+
+def listen_mode_on(values: dict) -> str:
+    """Режим, которым слух включается из «не слушает».
+
+    Сохранённый `listen_mode_on`; без него — текущий режим, если слух
+    включён; иначе «по имени».
+    """
+    сохранён = values.get("listen_mode_on")
+    if сохранён in LISTEN_ON_MODES:
+        return сохранён
+    сейчас = values.get("listen_mode")
+    return сейчас if сейчас in LISTEN_ON_MODES else "name"
+
+
 def validate_weather_city(value) -> str:
     """Название города для подписи. Пусто — погоды нет."""
     return validate_device_name(value) if isinstance(value, str) else ""
@@ -572,6 +592,7 @@ def apply_to_config() -> dict:
     config.WEB_SEARCH_MODE = values["web_search_mode"]
     config.WEB_SEARCH_BUDGET = float(values["web_search_budget"])
     config.HEDGE = bool(values["hedge"])
+    config.REASONING = bool(values.get("reasoning", False))
     config.REPLAY_GUARD = bool(values["replay_guard"])
     config.VOICE_AUTOSTART = bool(values["voice_autostart"])
     config.UPDATE_CHECK = bool(values["update_check"])
@@ -605,6 +626,7 @@ def apply_to_config() -> dict:
     config.MIC_NAME = validate_device_name(values.get("mic_name"))
     config.MIC_CHANNEL = validate_mic_channel(values.get("mic_channel"))
     config.LISTEN_MODE = values["listen_mode"]
+    config.LISTEN_MODE_ON = listen_mode_on(values)
     config.FOLLOW_UP_WINDOW = float(values["follow_up_window"])
     # Частота захода первой: значение проверяется при сохранении, а здесь
     # подстраховка на случай правки settings.json руками.
@@ -673,6 +695,12 @@ def load_settings() -> dict:
             сохранённые = None
         if isinstance(сохранённые, dict):
             data.update(сохранённые)
+            # Прежний потолок по умолчанию поднимается при обновлении один
+            # раз; выбранный руками после этого остаётся как есть.
+            if (сохранённые.get("max_tokens") == config.OLD_MAX_TOKENS
+                    and not сохранённые.get("max_tokens_raised")):
+                data["max_tokens"] = config.MAX_TOKENS
+    data["max_tokens_raised"] = True
     # Ключа в файле нет — значит, файл писала версия без мастера, и человек
     # не новичок: показывать ему мастер незачем. Файла нет вовсе — свежая
     # установка, мастер нужен.
