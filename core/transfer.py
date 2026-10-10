@@ -101,6 +101,8 @@ def файлы_части(имя: str) -> list[str]:
         свои += _значки()
     elif имя == "voices":
         свои += _голоса()
+    elif имя == "persona":
+        свои += _стили()
     return свои
 
 
@@ -118,6 +120,15 @@ def _значки() -> list[str]:
     except OSError:
         pass
     return свои
+
+
+def _стили() -> list[str]:
+    """Свои варианты стилей характера: `prompts/personas/<стиль>.md`."""
+    from core import personas
+
+    папка = config.ROOT / "prompts" / "personas"
+    return [f"prompts/personas/{стиль}.md" for стиль in personas.PRESETS
+            if (папка / f"{стиль}.md").is_file()]
 
 
 def _голоса() -> list[str]:
@@ -159,6 +170,12 @@ def _часть_файла(имя: str) -> str:
     if len(куски) == 2 and куски[0] == VOICE_DIR \
             and куски[1].endswith((".wav", ".txt")):
         return "voices"
+    if len(куски) == 3 and куски[:2] == ["prompts", "personas"] \
+            and куски[2].endswith(".md"):
+        from core import personas
+
+        if куски[2][:-3] in personas.PRESETS:
+            return "persona"
     return ""
 
 

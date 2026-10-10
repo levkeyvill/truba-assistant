@@ -60,13 +60,18 @@ class ПресетыTests(unittest.TestCase):
                            for phrase in personas.SAY_NEUTRAL["launch"]})
 
     def test_four_presets_in_order_and_the_default(self):
+        # Четыре готовых и «Свой» последним.
         self.assertEqual(list(personas.PRESETS),
-                         ["pizdabol", "calm", "friendly", "business"])
+                         ["pizdabol", "calm", "friendly", "business", "custom"])
         self.assertEqual(personas.DEFAULT, "pizdabol")
         self.assertEqual(personas.PRESETS["pizdabol"]["title"], "Пиздабол Edition")
 
     def test_every_text_keeps_what_she_breaks_without(self):
+        # У «Своего» готового текста нет: его пишет человек.
+        self.assertEqual(personas.text(personas.CUSTOM), "")
         for ключ in personas.PRESETS:
+            if ключ == personas.CUSTOM:
+                continue
             with self.subTest(ключ=ключ):
                 текст = personas.text(ключ)
                 self.assertIn("Тебя зовут Труба", текст)
@@ -77,7 +82,7 @@ class ПресетыTests(unittest.TestCase):
                 self.assertIn("просит помолчать", текст)
 
     def test_the_calm_ones_have_no_swearing_and_no_nicknames(self):
-        for ключ in ("calm", "friendly", "business"):
+        for ключ in ("calm", "friendly", "business", "custom"):
             with self.subTest(ключ=ключ):
                 текст = personas.text(ключ).lower()
                 for слово in МАТ:
@@ -112,7 +117,7 @@ class ПресетыTests(unittest.TestCase):
                              personas.PRESETS["pizdabol"]["wait"]["find"][0])
             self.assertEqual(personas.wait_phrase("find", None),
                              personas.WAIT_NEUTRAL["find"][0])
-            self.assertEqual(personas.wait_phrase("find", "custom"),
+            self.assertEqual(personas.wait_phrase("find", "нет_такого"),
                              personas.WAIT_NEUTRAL["find"][0])
             self.assertEqual(personas.wait_phrase("unknown", "calm"),
                              personas.WAIT_NEUTRAL["find"][0])
@@ -202,6 +207,75 @@ class НастройкаTests(unittest.TestCase):
         self.assertEqual(сохранено["persona_preset"], "pizdabol")
 
 
+class СвоиСтилиTests(unittest.TestCase):
+    """Правка одного стиля не теряется при выборе другого."""
+
+    def setUp(self):
+        папка = Path(tempfile.mkdtemp(prefix="truba-personas-own-"))
+        self.addCleanup(shutil.rmtree, папка, True)
+        подмена = mock.patch.multiple(
+            settings, SETTINGS_PATH=папка / "settings.json", ENV_PATH=папка / ".env",
+            PERSONA_PATH=папка / "persona.md", PERSONAS_DIR=папка / "personas")
+        подмена.start()
+        self.addCleanup(подмена.stop)
+        self.addCleanup(setattr, config, "PERSONA_PRESET", config.PERSONA_PRESET)
+
+    def test_свой_текст_стиля_хранится_отдельно(self):
+        self.assertIsNone(settings.persona_own("pizdabol"))
+        settings.save_persona_own("pizdabol", "Мой пиздабол (выдумано для теста).")
+        settings.save_persona_own("custom", "Совсем свой характер (выдумано для теста).")
+        self.assertEqual(settings.persona_own("pizdabol"), "Мой пиздабол (выдумано для теста).")
+        self.assertEqual(settings.persona_own("custom"), "Совсем свой характер (выдумано для теста).")
+        self.assertIsNone(settings.persona_own("calm"))
+
+    def test_текст_как_у_готового_не_хранится(self):
+        settings.save_persona_own("calm", "правка")
+        settings.save_persona_own("calm", personas.text("calm"))
+        self.assertIsNone(settings.persona_own("calm"))
+
+    def test_чужой_стиль_не_пишется(self):
+        settings.save_persona_own("../злой", "x")
+        self.assertIsNone(settings.persona_own("../злой"))
+        self.assertFalse(settings.PERSONAS_DIR.exists())
+
+    def _среда(self):
+        runtime = object.__new__(WebRuntime)
+        runtime._provider_test_lock = threading.Lock()
+        runtime._lock = threading.Lock()
+        runtime.server = mock.Mock()
+        runtime.brain = None
+        runtime.voice = NS(_brain=None, _close_conversation=lambda: None, running=False)
+        runtime._enroll = None
+        runtime._jobs = {}
+        runtime._audio_stale = False
+        runtime._remember = lambda kind, payload: None
+        return runtime
+
+    def test_пульт_сохраняет_выбранный_и_черновики(self):
+        ответ = self._среда().save_settings({
+            "persona": "Деловая, но своя (выдумано для теста).",
+            "persona_preset": "business",
+            "persona_drafts": {"pizdabol": "Мой пиздабол (выдумано для теста)."},
+        })
+        self.assertTrue(ответ.get("ok"), ответ)
+        self.assertEqual(settings.persona_own("business"), "Деловая, но своя (выдумано для теста).")
+        self.assertEqual(settings.persona_own("pizdabol"), "Мой пиздабол (выдумано для теста).")
+        self.assertEqual(settings.load_persona(), "Деловая, но своя (выдумано для теста).")
+
+    def test_перенос_настроек_берёт_свои_стили(self):
+        from core import transfer
+
+        self.assertEqual(transfer._часть_файла("prompts/personas/custom.md"), "persona")
+        self.assertEqual(transfer._часть_файла("prompts/personas/pizdabol.md"), "persona")
+        self.assertEqual(transfer._часть_файла("prompts/personas/злой.md"), "")
+        self.assertEqual(transfer._часть_файла("prompts/personas/../settings.md"), "")
+
+    def test_мусор_в_черновиках_отклоняется(self):
+        ответ = self._среда().save_settings({"persona_drafts": {"злой": "x"}})
+        self.assertFalse(ответ.get("ok"))
+        self.assertIsNone(settings.persona_own("злой"))
+
+
 def _порт() -> int:
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
@@ -222,7 +296,9 @@ class ApiTests(unittest.TestCase):
         тело = TestClient(self.server._app).get("/api/personas").json()
         self.assertTrue(тело["ok"])
         self.assertEqual([п["id"] for п in тело["presets"]], list(personas.PRESETS))
-        self.assertTrue(all(п["text"] for п in тело["presets"]))
+        self.assertTrue(all(п["text"] for п in тело["presets"] if п["id"] != "custom"))
+        # Свой вариант каждого стиля приходит рядом с готовым (или null).
+        self.assertTrue(all("own" in п for п in тело["presets"]))
         self.assertEqual(тело["default"], "pizdabol")
 
 
@@ -231,14 +307,29 @@ class ПультTests(unittest.TestCase):
     def setUpClass(cls):
         cls.js = PULT_JS.read_text(encoding="utf-8")
 
+    def test_no_two_functions_share_a_name(self):
+        # Вторая функция с тем же именем молча заменяет первую: так в пульте
+        # жила копия «железа» под именем «характерВыбрать».
+        import re
+        from collections import Counter
+
+        имена = Counter(re.findall(r"^(?:async )?function ([^\s(]+)\(", self.js, re.M))
+        self.assertEqual([имя for имя, раз in имена.items() if раз > 1], [])
+
     def test_cards_load_and_the_choice_is_saved(self):
         self.assertIn("/api/personas", self.js)
         self.assertIn("persona_preset: характерВыбранный", self.js)
         self.assertIn("характерЗагрузить(", self.js)
 
     def test_own_edits_are_not_overwritten_silently(self):
-        блок = self.js[self.js.index("function характерВыбрать("):]
-        self.assertIn("confirm(", блок)
+        # Смена стиля ничего не теряет и не спрашивает: текст ушедшего стиля
+        # остаётся за ним, у выбранного — свой.
+        блок = self.js[self.js.index("function характерВыбрать("):
+                       self.js.index("function характерИсходный(")]
+        self.assertNotIn("confirm(", блок)
+        self.assertIn("характерыЧерновики[характерВыбранный] = поле.value", блок)
+        self.assertIn("характерТекст(готовый.id)", блок)
+        self.assertIn("persona_drafts:", self.js)
         self.assertIn("textContent", self.js[self.js.index("async function характерЗагрузить("):
                                             self.js.index("function характерОтметить(")])
 

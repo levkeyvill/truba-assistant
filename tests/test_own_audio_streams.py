@@ -4,8 +4,9 @@
 вызов из другого потока обрывает предыдущий посреди работы. Прослушивание
 и замер полоски должны открывать независимые потоки, чтобы работать вместе.
 
-Общими функциями пользуется только голос (`core/audio_out.py::Speaker`):
-он один, и его `sd.stop()` обрывает ровно его же речь.
+Голос (`core/audio_out.py::Speaker`) тоже играет своим потоком: `sd.stop()`
+из потока перебивания рядом с `sd.wait()` потока проигрывания закрывали
+один звук дважды и роняли процесс (0xc0000374).
 """
 
 import re
@@ -15,7 +16,7 @@ from pathlib import Path
 import config
 
 ROOT = Path(config.ROOT)
-ОБЩИЕ = re.compile(r"\bsd\.(play|rec|wait|playrec)\(")
+ОБЩИЕ = re.compile(r"\bsd\.(play|rec|wait|playrec|stop)\(")
 
 
 def _код_без_комментариев(текст: str) -> str:
@@ -28,8 +29,6 @@ class OwnStreamsTests(unittest.TestCase):
         нарушители = []
         for папка in ("core", "ui"):
             for путь in (ROOT / папка).rglob("*.py"):
-                if путь.name == "audio_out.py":
-                    continue
                 код = _код_без_комментариев(путь.read_text(encoding="utf-8"))
                 if ОБЩИЕ.search(код):
                     нарушители.append(str(путь.relative_to(ROOT)))

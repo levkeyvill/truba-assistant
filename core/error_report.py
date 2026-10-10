@@ -34,6 +34,14 @@ INSTALL_LOGS = (config.DATA_DIR / "install.log",
 MAX_BYTES = 1_000_000
 # Из журнала работы в архив — не больше стольких строк про сбои.
 MAX_SESSION_LINES = 1000
+# `faulthandler` на Windows пишет и те исключения, которые потом обработали
+# сами Windows и .NET окна. Падение — только последняя запись перед новым
+# «запуск» без продолжения работы; подсказка — в начале crash.log архива.
+CRASH_NOTE = (
+    "Как читать: «Windows fatal exception» с кодом 0x8001010d или 0xe0434352 —\n"
+    "исключение, которое окно обработало само, пульт после него работает.\n"
+    "Настоящее падение — запись, после которой пульт закрылся: обычно\n"
+    "0xc0000005 (access violation) или 0xc0000374.\n\n")
 TELEGRAM = "https://t.me/levkeyvill"
 
 # Строки журнала с речью человека или с его данными: в архив не идут, даже
@@ -241,5 +249,7 @@ def build_report() -> Path:
         for путь in (ERRORS_LOG, CRASH_LOG, *INSTALL_LOGS):
             if путь.is_file():
                 текст = путь.read_text(encoding="utf-8", errors="replace")
+                if путь == CRASH_LOG:
+                    текст = CRASH_NOTE + текст
                 архив.writestr(путь.name, _скрыть_личное(текст[-MAX_BYTES:]))
     return цель

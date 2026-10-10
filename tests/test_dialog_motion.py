@@ -228,8 +228,7 @@ class SoundAndVisual(unittest.TestCase):
         cancel = threading.Event()
         cancel.set()
         with mock.patch('core.audio_out.wasapi_extra', return_value=None), \
-             mock.patch('core.audio_out.sd.play') as play, \
-             mock.patch('core.audio_out.sd.stop'):
+             mock.patch('core.audio_out.sd.OutputStream') as play:
             speaker = Speaker()
             try:
                 speaker.say(np.ones(100), 1000, cancel=cancel)
@@ -254,30 +253,47 @@ class SoundAndVisual(unittest.TestCase):
         self.assertEqual(meter.level, 0)
 
     def test_local_speaker_can_play_a_new_answer_after_interrupt(self):
-        playing, stopped, new_play = threading.Event(), threading.Event(), threading.Event()
-        played = []
-        def play(wave, *a, **kw):
-            played.append(float(wave[0]))
-            if wave[0] == 1:
-                playing.set()
-            else:
-                new_play.set()
-        def wait():
-            if len(played) == 1:
-                stopped.wait(2)
+        playing, interrupted, new_play = threading.Event(), threading.Event(), threading.Event()
+        played, aborted = [], []
+
+        class Stream:
+            # Поток колонок, которым владеет только поток проигрывания:
+            # перебивание он обрывает сам (`abort`), чужой поток его не трогает.
+            def __init__(self, **kw):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def write(self, data):
+                value = float(data[0][0])
+                if not played or played[-1] != value:
+                    played.append(value)
+                if value == 1:
+                    playing.set()
+                    interrupted.wait(2)
+                else:
+                    new_play.set()
+
+            def abort(self):
+                aborted.append(True)
+
         with mock.patch('core.audio_out.wasapi_extra', return_value=None), \
-             mock.patch('core.audio_out.sd.play', side_effect=play), \
-             mock.patch('core.audio_out.sd.wait', side_effect=wait), \
-             mock.patch('core.audio_out.sd.stop', side_effect=stopped.set):
+             mock.patch('core.audio_out.sd.OutputStream', Stream):
             speaker = Speaker()
             try:
                 speaker.say(np.ones(100), 1000)
                 self.assertTrue(playing.wait(1))
                 speaker.interrupt()
+                interrupted.set()
                 speaker.say(np.full(100, 2), 1000)
                 self.assertTrue(new_play.wait(1), 'динамик отбрасывает следующую речь')
                 self.assertTrue(speaker.wait(1))
                 self.assertEqual(played, [1, 2])
+                self.assertEqual(aborted, [True])
             finally:
                 speaker.close()
                 speaker._thread.join(1)

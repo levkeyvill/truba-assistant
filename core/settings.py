@@ -895,3 +895,38 @@ def load_persona() -> str:
 
 def save_persona(text: str) -> None:
     safe_files.write_text(PERSONA_PATH, text)
+
+
+# Свой вариант каждого стиля: правка одного стиля не теряется при выборе
+# другого. Совпадающий с готовым текст не хранится — файл удаляется.
+PERSONAS_DIR = PERSONA_PATH.parent / "personas"
+
+
+def persona_own(preset_id: str) -> str | None:
+    """Свой текст стиля или None, если его не правили."""
+    from core import personas
+
+    if preset_id not in personas.PRESETS:
+        return None
+    путь = PERSONAS_DIR / f"{preset_id}.md"
+    try:
+        return путь.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+
+def save_persona_own(preset_id: str, text: str) -> None:
+    """Запомнить свой текст стиля; равный готовому — забыть."""
+    from core import personas
+
+    if preset_id not in personas.PRESETS:
+        return
+    путь = PERSONAS_DIR / f"{preset_id}.md"
+    if not str(text).strip() or text == personas.text(preset_id):
+        try:
+            путь.unlink()
+        except OSError:
+            pass
+        return
+    PERSONAS_DIR.mkdir(parents=True, exist_ok=True)
+    safe_files.write_text(путь, text)

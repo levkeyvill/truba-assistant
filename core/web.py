@@ -36,11 +36,26 @@ from urllib.parse import urljoin, urlparse
 
 import config
 
-BACKENDS = ("yahoo", "brave", "duckduckgo", "yandex", "bing")
+BACKENDS = ("yahoo", "brave", "duckduckgo")
 SEARCH_TIMEOUT = 6
 # Без блокировки первый ответ приходит за секунду, и предел не играет.
-# Под блокировкой yandex и bing могут отвечать за 4–9 с.
+# Под блокировкой поисковики могут отвечать за 4–9 с.
 SEARCH_DEADLINE = 10.0
+
+
+def backends() -> tuple:
+    """Поисковики из `BACKENDS`, которые знает установленная ddgs.
+
+    Незнакомое имя ddgs молча меняет на свой «auto», и в журнале стояла бы
+    чужая подпись. Узнать не вышло — весь список как есть.
+    """
+    try:
+        from ddgs.engines import ENGINES
+
+        known = set(ENGINES.get("text", {}))
+    except Exception:
+        return BACKENDS
+    return tuple(name for name in BACKENDS if name in known) or BACKENDS
 MODES = ("free", "paid", "auto")
 # Платный поиск. Модель «Луна» — у OpenAI поиск стоит $10 за тысячу
 # вызовов плюс прочитанное по цене модели, а у неё это $0.10 за миллион.
@@ -191,9 +206,10 @@ def search_free(query: str, max_results: int = RESULTS) -> tuple[list[dict], str
 
     deadline = min(SEARCH_DEADLINE, max(3.0, float(getattr(config, "WEB_SEARCH_BUDGET", 12)) - 1))
     failures = []
-    pool = ThreadPoolExecutor(max_workers=len(BACKENDS))
+    names = backends()
+    pool = ThreadPoolExecutor(max_workers=len(names))
     try:
-        jobs = {pool.submit(_ask, name, query, max_results): name for name in BACKENDS}
+        jobs = {pool.submit(_ask, name, query, max_results): name for name in names}
         try:
             for job in as_completed(jobs, timeout=deadline):
                 try:

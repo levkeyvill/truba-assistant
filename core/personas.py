@@ -335,6 +335,19 @@ for _preset, _overrides in (("pizdabol", SAY_PIZDABOL), ("calm", SAY_CALM),
                              ("friendly", SAY_FRIENDLY), ("business", SAY_BUSINESS)):
     PRESETS[_preset]["say"] = {**SAY_NEUTRAL, **_overrides}
 
+# «Свой» — характер, который пишет сам человек; готовые от него не меняются.
+# Готового текста нет: пульт начинает его с копии выбранного стиля. Быстрые
+# фразы — спокойные: без мата они подходят к любому тексту.
+CUSTOM = "custom"
+PRESETS[CUSTOM] = {
+    "title": "Свой",
+    "hint": "Твой характер: начинается с копии выбранного, готовые не меняются",
+    "bye": PRESETS["calm"]["bye"],
+    "ready": PRESETS["calm"]["ready"],
+    "wait": PRESETS["calm"]["wait"],
+    "say": PRESETS["calm"]["say"],
+}
+
 _say_last: dict[tuple[str | None, str], str] = {}
 _say_lock = threading.Lock()
 

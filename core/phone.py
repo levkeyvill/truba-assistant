@@ -2020,9 +2020,12 @@ class PhoneServer:
         async def api_personas(request: Request):
             if not _local(request):
                 return _deny()
-            from core import personas
+            from core import personas, settings
             try:
                 список = await asyncio.to_thread(personas.catalog, True)
+                # Свой вариант каждого стиля — чтобы выбор стиля его не терял.
+                for стиль in список:
+                    стиль["own"] = settings.persona_own(стиль["id"])
             except Exception as exc:
                 return _fail(exc)
             return JSONResponse({"ok": True, "presets": список,

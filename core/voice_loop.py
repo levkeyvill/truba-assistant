@@ -1979,6 +1979,13 @@ class VoiceLoop:
         said = [w for w in _plain(self._speaking_text).split() if len(w) > 3][-хвост:]
         if not said or not heard:
             return False
+        if len(heard) < 2:
+            # Одного значимого слова мало: «Тогда да» на её «Что тогда?» —
+            # его ответ. Эхом короткая фраза считается, только если и её
+            # короткие слова — из её речи.
+            её = set(_plain(self._speaking_text).split()[-2 * хвост:])
+            if any(слово not in её for слово in _plain(text).split()):
+                return False
         if _по_порядку(heard, said) / len(heard) < 0.6:
             return False
         начала = {w[:6] for w in said}

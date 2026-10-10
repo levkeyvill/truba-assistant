@@ -25,13 +25,33 @@ def _устройство(api: str):
                               return_value={"name": api}))
 
 
+class _Поток:
+    """Подменённый поток колонок: запоминает параметры, звука нет."""
+
+    вызовы: list = []
+
+    def __init__(self, **kw):
+        _Поток.вызовы.append(kw)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def write(self, data):
+        pass
+
+    def abort(self):
+        pass
+
+
 class КолонкиWasapiTests(unittest.TestCase):
     def _сыграть(self, api: str, play=None):
-        вызовы = []
-        play = play or (lambda *a, **kw: вызовы.append(kw))
+        _Поток.вызовы = []
+        вызовы = _Поток.вызовы
         а, б = _устройство(api)
-        with а, б, mock.patch.object(audio_out.sd, "play", play), \
-                mock.patch.object(audio_out.sd, "wait", lambda: None):
+        with а, б, mock.patch.object(audio_out.sd, "OutputStream", play or _Поток):
             колонки = audio_out.Speaker(device=27)
             try:
                 колонки.say(np.zeros(240, dtype=np.float32), 24000, gap=False)

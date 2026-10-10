@@ -3612,6 +3612,15 @@ class WebRuntime:
                 not isinstance(payload[key], str) or len(payload[key]) > 20000
             ):
                 errors.append(f"{key}: текст до 20000")
+        # Свои варианты стилей характера: {id стиля: текст}.
+        черновики = payload.get("persona_drafts")
+        if черновики is not None:
+            from core import personas
+
+            if not isinstance(черновики, dict) or any(
+                    стиль not in personas.PRESETS or not isinstance(текст, str)
+                    or len(текст) > 20000 for стиль, текст in черновики.items()):
+                errors.append("persona_drafts: {стиль: текст до 20000}")
         if "clear_history" in payload and not isinstance(payload["clear_history"], bool):
             errors.append("clear_history: нужно true/false")
         # Автозапуск в settings.json не пишется: у него своё место — ярлык в
@@ -3690,6 +3699,13 @@ class WebRuntime:
                 self._bg(self._обновить_погоду)
         if persona_changed:
             settings.save_persona(payload["persona"])
+        # Правка одного стиля не теряется при выборе другого: каждый
+        # хранится отдельно, выбранный — вместе с активным текстом.
+        for стиль, текст in (payload.get("persona_drafts") or {}).items():
+            settings.save_persona_own(стиль, текст)
+        if "persona" in payload and "persona_preset" in payload:
+            settings.save_persona_own(to_save.get("persona_preset", ""),
+                                      payload["persona"])
         if "memory" in payload:
             # `memory_base` — какой память была, когда страницу открыли: факты,
             # дописанные разбором разговора после этого, правка не сотрёт.
