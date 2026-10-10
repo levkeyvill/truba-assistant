@@ -179,6 +179,19 @@ CLOUD_DOWN_WORDS = (
 # Через сколько после неудачи всё же попробовать снова. Молчать нужно, но и
 # молчать навсегда нельзя: иначе о вернувшейся связи никто не узнает.
 CLOUD_RETRY = 60.0
+
+# Сбой видеокарты посреди работы (сброс драйвера, «CUDA error: unknown
+# error»): CUDA в этом процессе больше не оживёт, и каждый синтез Higgs или
+# ESpeech падает. До перезапуска Трубы говорим запасным голосом Silero на
+# процессоре и один раз объясняем почему — иначе она просто замолкает.
+GPU_FAILURE = ("cuda", "cudnn", "acceleratorerror", "device-side assert")
+SPARE_VOICE_WORDS = "Видеокарта сбросилась, пока говорю запасным голосом."
+
+
+def gpu_failed(exc: BaseException) -> bool:
+    """Похожа ли ошибка синтеза на сбой видеокарты."""
+    текст = f"{type(exc).__name__}: {exc}".lower()
+    return any(метка in текст for метка in GPU_FAILURE)
 # Сколько ждать свободного хода, прежде чем сказать своё (`announce`).
 # Хватает самому длинному ответу с облаком; не дождались — лучше промолчать,
 # чем перебить человека на полуслове.
@@ -3327,21 +3340,52 @@ class VoiceLoop:
         # Длинный разбор не должен упираться в длину кеша синтезатора.
         chunks = speech_chunks(sentence)
 
+        def one(chunk):
+            if streamed and getattr(self._voice, "stream", None) is not None:
+                parts = stream(chunk, self._ref, speed=config.TTS_SPEED)
+                try:
+                    yield from parts
+                finally:
+                    close = getattr(parts, "close", None)
+                    if close is not None:
+                        close()
+            else:
+                yield self._voice.say(
+                    chunk, self._ref, nfe_step=config.TTS_NFE, speed=config.TTS_SPEED)
+
         def sounds():
             for chunk in chunks:
-                if streamed:
-                    parts = stream(chunk, self._ref, speed=config.TTS_SPEED)
-                    try:
-                        yield from parts
-                    finally:
-                        close = getattr(parts, "close", None)
-                        if close is not None:
-                            close()
-                else:
-                    yield self._voice.say(
-                        chunk, self._ref, nfe_step=config.TTS_NFE, speed=config.TTS_SPEED)
+                try:
+                    yield from one(chunk)
+                except Exception as exc:
+                    if not self._to_spare_voice(exc):
+                        raise
+                    # Объяснение — один раз за сбой, дальше просто говорит.
+                    yield self._voice.say(SPARE_VOICE_WORDS, None, speed=config.TTS_SPEED)
+                    yield self._voice.say(chunk, None, speed=config.TTS_SPEED)
 
         return _приглушить(sounds(), voice_gain()), bool(streamed)
+
+    def _to_spare_voice(self, exc: BaseException) -> bool:
+        """Синтез на видеокарте упал — перейти на Silero до перезапуска.
+
+        True — перешли, фразу можно сказать заново. Ошибка не про видеокарту
+        или запасной голос уже стоит — False, ошибка идёт дальше как была.
+        """
+        if getattr(self, "_spare_voice", False) or not gpu_failed(exc):
+            return False
+        from core.silero_voice import SileroVoice
+
+        try:
+            запасной = SileroVoice()
+            запасной.load()
+        except Exception as load_exc:
+            self._emit("error", f"запасной голос не поднялся: {load_exc}")
+            return False
+        self._voice = запасной
+        self._spare_voice = True
+        self._emit("voice_spare", str(exc).splitlines()[0][:200])
+        return True
 
     # --- Облако -----------------------------------------------------------
 

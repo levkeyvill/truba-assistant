@@ -129,7 +129,7 @@ check('louder audio makes the actual wave taller, pauses return it to rest', () 
     wave.audioPhase = 0;
     const band=wave.bands[9], g=wave.geometry(0,1920,1080);
     // Вычитаем плоскость овала: проверяем движение ленты, а не размер фигуры.
-    return Math.max(...band.points.map(p => Math.abs(wave.point(p,band,g)[1]-g.cy-p.s*g.radius*(.80+band.v*.21)*.64)));
+    return Math.max(...band.points.map(p => Math.abs(wave.point(p,band,g)[1]-g.cy-p.s*g.radius*(.80+band.v*.21)*g.ry)));
   };
   assert(height(.08)>height(.01)*1.3);
   assert(height(.01)>height(0)*1.3);
@@ -165,7 +165,133 @@ check('volumetric ribbons keep bounded oval proportions and clear the title', ()
     }
     const width=Math.max(...positions.map(p=>p[0]))-Math.min(...positions.map(p=>p[0]));
     const height=Math.max(...positions.map(p=>p[1]))-Math.min(...positions.map(p=>p[1]));
-    assert(width>height*1.4, 'shape has lost its broad oval silhouette');
+    // При круглости по умолчанию (70%) кольцо всё ещё заметно шире своей высоты.
+    assert(width>height*1.15, 'shape has lost its broad oval silhouette');
   }
+});
+check('look comes from settings and stays in range', () => {
+  const look = Wave.look({shape: 'cube', roundness: 70, reaction: 80, brightness: 300, shimmer: false});
+  assert.deepEqual(look, {shape: 'cube', roundness: .7, reaction: .8, brightness: 1.6, shimmer: false,
+    spin: .7, jumps: .6, color: 'blue', gradient: false, backdrop: true});
+  assert.equal(Wave.look({color: 'green'}).color, 'blue', 'зелёной палитры нет');
+  assert.deepEqual(Wave.look({spin: 20, jumps: 0}).spin, .2);
+  assert.equal(Wave.look({jumps: 0}).jumps, 0);
+  assert.deepEqual(Wave.look(null), Wave.LOOK);
+  assert.equal(Wave.look({shape: 'пирамида'}).shape, 'ring');
+});
+check('reaction setting scales how strongly the voice moves the shape', () => {
+  const drive = reaction => {
+    const wave = new Wave(color, {reaction});
+    for (let i = 0; i < 120; i++) wave.advance(1 / 60, voice('speaking', true, .02), color);
+    return wave.drive;
+  };
+  assert(drive(150) > drive(80) && drive(80) > drive(20));
+});
+check('rounder ring is taller but still clears the title', () => {
+  for (const roundness of [52, 70, 100]) {
+    const wave = new Wave(color, {roundness});
+    wave.maxHalfHeight = 160;
+    for (let i = 0; i < 120; i++) wave.advance(1 / 60, voice('speaking'), color);
+    const g = wave.geometry(10, 1920, 1080);
+    for (const band of wave.bands) for (const p of band.points) {
+      assert(Math.abs(wave.point(p, band, g)[1] - g.cy) < wave.maxHalfHeight);
+    }
+  }
+});
+function fakeContext() {
+  const calls = {fill: 0, arc: 0};
+  return {calls, clearRect() {}, fillRect() {}, beginPath() {}, moveTo() {},
+    arc() { calls.arc++; }, fill() { calls.fill++; },
+    createRadialGradient: () => ({addColorStop() {}}),
+    createLinearGradient: () => { calls.linear = (calls.linear || 0) + 1; return {addColorStop() {}}; },
+    set fillStyle(v) {}};
+}
+check('ring and cube draw in batches, not one fill per dot', () => {
+  for (const look of [{shape: 'ring'}, {shape: 'ring', shimmer: false}, {shape: 'cube'},
+    {shape: 'ring', gradient: true}, {shape: 'cube', backdrop: false}]) {
+    const wave = new Wave(color, look), ctx = fakeContext();
+    wave.maxHalfHeight = 300;
+    wave.paint(ctx, 12, 1280, 820);
+    assert(ctx.calls.arc > 600, `${look.shape}: dots are drawn`);
+    assert(ctx.calls.fill < 200, `${look.shape}: ${ctx.calls.fill} fills per frame`);
+  }
+});
+check('cube stays inside its frame while rotating and breathing', () => {
+  const wave = new Wave(color, {shape: 'cube'});
+  wave.maxHalfHeight = 200;
+  for (let i = 0; i < 120; i++) wave.advance(1 / 60, voice('speaking'), color);
+  for (const t of [0, 3, 30, 3600]) {
+    const points = [];
+    const ctx = fakeContext();
+    ctx.arc = (x, y) => points.push([x, y]);
+    wave.paint(ctx, t, 1280, 820);
+    const g = wave.geometry(t, 1280, 820);
+    // Порядок: пыль живого фона, точки куба, лёгкие искры вокруг.
+    const from = wave.look.backdrop ? wave.dust.length : 0;
+    const cube = points.slice(from, from + wave.cube.length);
+    assert.equal(cube.length, wave.cube.length);
+    assert(Math.max(...cube.map(([, y]) => Math.abs(y - g.cy))) < wave.maxHalfHeight);
+  }
+});
+check('spin setting slows the motion of the shape', () => {
+  const travel = spin => {
+    const wave = new Wave(color, {spin});
+    const band = wave.bands[9], a = wave.geometry(100, 1920, 1080), b = wave.geometry(101, 1920, 1080);
+    return Math.max(...band.points.map(p => {
+      const [x, y] = wave.point(p, band, a), [xx, yy] = wave.point(p, band, b);
+      return Math.hypot(xx - x, yy - y);
+    }));
+  };
+  assert(travel(20) < travel(70) && travel(70) < travel(150));
+});
+check('dots jump with the voice, stay calm in silence and when jumps are off', () => {
+  const spread = (jumps, level) => {
+    const wave = new Wave(color, {jumps});
+    for (let i = 0; i < 60; i++) wave.advance(1 / 60, voice('speaking', true, level), color);
+    wave.drive = 0; wave.audioPhase = 0;
+    const band = wave.bands[9], g = wave.geometry(5, 1920, 1080);
+    const calm = {...g, jump: 0};
+    return Math.max(...band.points.map(p => {
+      const [x, y] = wave.point(p, band, g), [xx, yy] = wave.point(p, band, calm);
+      return Math.hypot(xx - x, yy - y);
+    }));
+  };
+  assert(spread(100, 1) > 8, 'loud speech makes dots jump visibly');
+  assert.equal(spread(100, 0), 0);
+  assert.equal(spread(0, 1), 0);
+});
+check('palettes give their own listening and speaking colors, no green', () => {
+  for (const [name, palette] of Object.entries(Wave.PALETTES)) {
+    for (const light of [false, true]) {
+      const colors = Wave.colors({color: name}, light);
+      for (const rgb of [colors.listening, colors.speaking]) {
+        assert.equal(rgb.length, 3);
+        assert(!(rgb[1] > rgb[0] * 1.25 && rgb[1] > rgb[2] * 1.25), `${name}: зелёный оттенок`);
+      }
+    }
+    assert(palette.second && palette.light.second);
+  }
+  assert.notDeepEqual(Wave.colors({color: 'pink'}).listening, Wave.colors({color: 'blue'}).listening);
+});
+check('gradient fill only when switched on; background dust only with backdrop', () => {
+  const draw = look => {
+    const wave = new Wave(color, look), ctx = fakeContext();
+    wave.maxHalfHeight = 300;
+    wave.paint(ctx, 12, 1280, 820);
+    return ctx.calls;
+  };
+  assert(!draw({gradient: false}).linear);
+  assert.equal(draw({gradient: true}).linear, 1);
+  assert(draw({backdrop: true}).arc - draw({backdrop: false}).arc >= 80);
+});
+check('dust drifts slowly and stays inside the window', () => {
+  const wave = new Wave(color, {backdrop: true});
+  const at = t => {
+    const points = [], ctx = fakeContext();
+    ctx.arc = (x, y) => points.push([x, y]);
+    wave.paint(ctx, t, 1280, 820);
+    return points.slice(0, wave.dust.length);
+  };
+  for (const [x, y] of at(3600)) assert(x >= 0 && x <= 1280 && y >= 0 && y <= 820);
 });
 console.log(JSON.stringify({passed}));

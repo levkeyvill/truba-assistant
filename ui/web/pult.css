@@ -215,6 +215,21 @@ body {
 }
 .обн-плашка-скрыть:hover { color: var(--текст); }
 
+/* Тревожная плашка: что-то сломалось, и человеку надо знать, что делать.
+   Сверху по центру — её не пропустить, но и работать она не мешает. */
+.тревога-плашка {
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 45;
+  display: flex; align-items: center; gap: 12px;
+  width: max-content; max-width: min(640px, calc(100vw - 32px));
+  padding: 12px 14px; border: 1px solid var(--тревога); border-radius: 12px;
+  background: var(--панель-выше); color: var(--текст); font-size: 14px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, .45);
+}
+.тревога-плашка-текст { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.тревога-плашка-текст b { color: var(--тревога); font-size: 14px; }
+.тревога-плашка-текст span { color: var(--приглушён); font-size: 13px; line-height: 1.45; }
+.тревога-плашка .голос-кнопка { flex: none; }
+
 .низ { margin-top: auto; padding: 10px 6px 0; border-top: 1px solid var(--линия); }
 
 /* Пункты меню листаются в своей полосе, а шапка «Труба» и «Поддержать» стоят
@@ -1949,6 +1964,14 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .обн-текст { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--линия); }
 .обн-абзац { margin: 0 0 10px; font-size: 13px; line-height: 1.6; color: var(--приглушён); }
 .обн-абзац:last-child { margin-bottom: 0; }
+
+/* Живой образец вида главной в «Настройках → Главная». Фон — как у самой
+   главной, чтобы точки выглядели так же. */
+.главная-образец {
+  height: 220px; margin: 6px 0 4px; border-radius: 12px; overflow: hidden;
+  background: var(--фон); border: 1px solid var(--линия);
+}
+.главная-образец canvas { display: block; width: 100%; height: 100%; }
 
 /* ---------- Перезапуск ради установки ----------
    Слой поверх всего окна, выше мастера: пока окно Трубы пропадает на

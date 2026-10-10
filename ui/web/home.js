@@ -19,7 +19,19 @@
     if (text) el.textContent = text;
     return el;
   };
-  const session = { time: 0, color: null, wave: null };
+  const session = { time: 0, color: null, wave: null, pinned: null };
+  // Скрепка переживает и уход на другие разделы (главная пересоздаётся), и
+  // перезапуск пульта. Хранилище браузера может быть недоступно — тогда
+  // она живёт до закрытия окна.
+  const PIN_KEY = 'трубаГлавнаяЗакреплена';
+  const pinSaved = () => {
+    if (session.pinned !== null) return session.pinned;
+    try { return localStorage.getItem(PIN_KEY) === '1'; } catch (error) { return false; }
+  };
+  const pinSave = (value) => {
+    session.pinned = value;
+    try { localStorage.setItem(PIN_KEY, value ? '1' : '0'); } catch (error) { /* только на сеанс */ }
+  };
   const chrome = { wanted: false, applied: null, busy: false, timer: null, refresh: false };
   async function windowQuiet(quiet, refresh = false) {
     chrome.wanted = quiet;
@@ -49,7 +61,7 @@
       this.actions = actions;
       this.voice = null;
       this.phase = 'off';
-      this.pinned = false;
+      this.pinned = pinSaved();
       this.pointerInside = false;
       this.pointerPosition = null;
       this.disposed = false;
@@ -97,6 +109,7 @@
         </div></div>
         <p class="home-message" role="status" aria-live="polite"></p>
         <dialog class="home-timer"><form method="dialog"><h2>Новый таймер</h2><label>Через сколько минут<input type="number" min="0.02" max="1440" step="any" value="5" required></label><div><button value="cancel">Отмена</button><button type="submit" value="start" class="home-answer">Поставить</button></div></form></dialog>`;
+      this.showPin();
       this.canvas = root.querySelector('canvas');
       this.context = this.canvas.getContext('2d');
       this.volume = root.querySelector('[type=range]');
@@ -147,6 +160,12 @@
       this.animate();
       this.pollVisual();
     }
+    showPin() {
+      const button = this.root.querySelector('[data-home=pin]');
+      if (!button) return;
+      button.setAttribute('aria-pressed', String(this.pinned));
+      button.title = this.pinned ? 'Скрывать управление автоматически' : 'Закрепить управление';
+    }
     volumeLabel() {
       this.root.querySelector('output').textContent = `${this.volume.value} / 10`;
     }
@@ -155,9 +174,8 @@
       if (kind === 'answer') return this.search(true);
       if (kind === 'pin') {
         this.pinned = !this.pinned;
-        const button = this.root.querySelector('[data-home=pin]');
-        button.setAttribute('aria-pressed', String(this.pinned));
-        button.title = this.pinned ? 'Скрывать управление автоматически' : 'Закрепить управление';
+        pinSave(this.pinned);
+        this.showPin();
         this.reveal(); return;
       }
       if (kind === 'full') {
@@ -315,8 +333,12 @@
           // Сохраняем срок следующего кадра: округление rAF не снижает частоту до 20.
           next = next === null || stamp - next > interval ? stamp + interval : next + interval;
           if (!this.reduced.matches) this.time += dt;
-          const palette = document.documentElement.dataset.theme === 'light' ? this.lightColors : this.phaseColors;
-          this.wave.advance(dt, this.voice, palette[this.phase] || palette.listening);
+          const light = document.documentElement.dataset.theme === 'light';
+          const palette = light ? this.lightColors : this.phaseColors;
+          // Слушает и говорит — цветом выбранной палитры; «думаю», «загружаюсь»
+          // и «выключена» — общими цветами состояний.
+          const own = TrubaWave.colors(this.wave.look, light);
+          this.wave.advance(dt, this.voice, own[this.phase] || palette[this.phase] || palette.listening);
           this.draw(this.time);
         }
         this.frame = requestAnimationFrame(step);

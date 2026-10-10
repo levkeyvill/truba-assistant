@@ -598,7 +598,23 @@ function нарисоватьГлавную() {
     });
     спроситьНапоминания(true);
   }
+  if (видГлавной) главная.wave.setLook(видГлавной);
   главная.update(голосГолос, последние, голосСобытия, напоминанияКэш || []);
+}
+
+/* Вид главной из настроек (`home_*`): фигура, круглость, отклик на голос,
+   яркость, мерцание. Хранится здесь, чтобы главная, созданная позже, сразу
+   была нужной; живой образец в «Настройках → Главная» берёт его же. */
+let видГлавной = null;
+function главнаяВид(s) {
+  if (!s || !window.TrubaWave) return;
+  видГлавной = window.TrubaWave.look({
+    shape: s.home_shape, roundness: s.home_roundness, reaction: s.home_reaction,
+    brightness: s.home_brightness, shimmer: s.home_shimmer,
+    spin: s.home_spin, jumps: s.home_jumps,
+    color: s.home_color, gradient: s.home_gradient, backdrop: s.home_backdrop,
+  });
+  if (главная && главная.wave) главная.wave.setLook(видГлавной);
 }
 
 function нарисоватьПанель() {
@@ -1111,6 +1127,7 @@ function времяСобытия(значение) {
 function применитьГолос(состояние) {
   if (!состояние) return;
   голосГолос = состояние;
+  if (состояние.spare_voice) запаснойГолосПлашка();
   if (текущий === 'панель' && главная) главная.update(состояние);
   обновитьПанельГолос();
   // Уровень могли сменить голосом или с телефона, пока форма открыта:
@@ -1836,6 +1853,7 @@ const НАСТР_РАЗДЕЛЫ = [
   ['распознавание', 'Распознавание', 'Как Труба разбирает твою речь'],
   ['звук', 'Звук', 'Откуда Труба слышит и куда говорит'],
   ['телефон', 'Телефон', 'Куда передавать звук и как подключиться'],
+  ['главная', 'Главная', 'Как выглядит фигура из точек на главной'],
   ['система', 'Система', 'Запуск Трубы вместе с Windows'],
 ];
 
@@ -1844,7 +1862,7 @@ const НАСТР_РАЗДЕЛЫ = [
    «Настройках». Все секции при этом остаются в форме (скрытыми), поэтому
    сохранение отправляет полный набор. */
 const НАСТР_СТРАНИЦЫ = {
-  настройки: ['ответы', 'поиск', 'первой', 'характер', 'память', 'телефон', 'система'],
+  настройки: ['ответы', 'поиск', 'первой', 'характер', 'память', 'телефон', 'главная', 'система'],
   голос: ['голос', 'слух', 'распознавание', 'звук'],
 };
 let настрСтраница = 'настройки';
@@ -1901,6 +1919,16 @@ const НАСТР_НАЗВАНИЯ = {
   weather_city: ['Город', 'Город для погоды на телефоне'],
   autostart: ['Запускать Трубу вместе с Windows', 'При входе в Windows пульт стартует свёрнутым в трей, голос — если включено «Включать при запуске»'],
   theme: ['Тема', 'Тёмная или светлая. Перекрашивает пульт и экран телефона сразу, записывается кнопкой «Сохранить»'],
+  home_shape: ['Фигура', 'Из чего собрана анимация на главной'],
+  home_roundness: ['Круглость кольца, %', 'Меньше — кольцо лежит наклонно, 100 — ровный круг'],
+  home_reaction: ['Отклик на голос, %', 'Насколько сильно фигура движется, когда Труба говорит или слышит тебя'],
+  home_brightness: ['Яркость точек, %', '100 — как задумано; больше — заметнее, меньше — спокойнее'],
+  home_spin: ['Скорость вращения, %', 'Как быстро кружится фигура. Если от куба кружится голова — убавь'],
+  home_jumps: ['Прыжки точек, %', 'Когда Труба говорит, точки подпрыгивают в такт голосу; 0 — только плавная волна'],
+  home_color: ['Цвет', 'Каким цветом фигура слушает и говорит. «Думаю» и «выключена» остаются своими цветами'],
+  home_gradient: ['Перелив', 'Фигура плавно переливается из основного цвета во второй'],
+  home_backdrop: ['Живой фон', 'Еле заметная дымка цвета фигуры и редкая пыль, медленно плывущая по окну'],
+  home_shimmer: ['Мерцание точек', 'Точки еле заметно дышат яркостью, ближний край чуть крупнее — фигура выглядит объёмнее'],
   phone_address: ['Адрес для телефона', 'Открой в браузере телефона в той же сети Wi-Fi'],
   local_url: ['Адрес локального сервера', 'Куда ходить за ответом. Кнопки под полем вписывают готовый адрес'],
   update_check: ['Проверять обновления при запуске', 'Один поход в интернет при открытии пульта. Вышла новая — появится точка у «Настроек»'],
@@ -2011,6 +2039,56 @@ function настрГалочка(включено) {
   ввод.checked = !!включено;
   return ввод;
 }
+/* Живой образец вида главной в «Настройках → Главная». Голос имитируется
+   спокойной волной: видно и покой, и отклик. Останавливается сам, когда
+   раздел убрали со страницы. */
+function главнаяОбразецСоздать(секция, поля) {
+  if (!window.TrubaWave) return null;
+  const рамка = document.createElement('div');
+  рамка.className = 'главная-образец';
+  const холст = document.createElement('canvas');
+  холст.setAttribute('aria-label', 'Образец вида главной');
+  рамка.appendChild(холст);
+  секция.appendChild(рамка);
+  const волна = new window.TrubaWave([107, 138, 253]);
+  const вид = () => window.TrubaWave.look({
+    shape: поля.home_shape.value, roundness: поля.home_roundness.value,
+    reaction: поля.home_reaction.value, brightness: поля.home_brightness.value,
+    shimmer: поля.home_shimmer.checked,
+    spin: поля.home_spin.value, jumps: поля.home_jumps.value,
+    color: поля.home_color.value, gradient: поля.home_gradient.checked,
+    backdrop: поля.home_backdrop.checked,
+  });
+  const обновить = () => волна.setLook(вид());
+  for (const поле of Object.values(поля)) {
+    поле.addEventListener('input', обновить);
+    поле.addEventListener('change', обновить);
+  }
+  рамка.addEventListener('input', обновить);
+  let прошлое = null, время = 0;
+  const кадр = (миг) => {
+    if (!холст.isConnected) return;
+    const dt = прошлое === null ? 0 : Math.min(.1, (миг - прошлое) / 1000);
+    прошлое = миг; время += dt;
+    const уровень = Math.max(0, Math.sin(время * .7)) * .06;
+    const фаза = уровень > .005 ? 'speaking' : 'listening';
+    const светлая = document.documentElement.dataset.theme === 'light';
+    волна.advance(dt, { running: true, ready: true, activity: фаза, in_conversation: true,
+      output_level: уровень }, window.TrubaWave.colors(волна.look, светлая)[фаза]);
+    const r = холст.getBoundingClientRect(), dpr = Math.min(devicePixelRatio || 1, 1.5);
+    const w = Math.round(r.width * dpr), h = Math.round(r.height * dpr);
+    const ctx = холст.getContext('2d');
+    if (холст.width !== w || холст.height !== h) { холст.width = w; холст.height = h; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    волна.maxHalfHeight = r.height * .46;
+    волна.centerY = r.height / 2;
+    волна.paint(ctx, время, r.width, r.height, false, document.documentElement.dataset.theme === 'light');
+    requestAnimationFrame(кадр);
+  };
+  requestAnimationFrame(кадр);
+  return { обновить };
+}
+
 function настрСекция(корень, код, заголовок) {
   const секция = document.createElement('section');
   секция.className = 'настр-секция';
@@ -2384,6 +2462,21 @@ function заполнитьНастройки(данные) {
   эл.autostart.checked = !!данные.autostart;
   /* Тема — сохранённая, а не выбранная в форме: ушёл без «Сохранить» —
      пульт вернулся к тому, что записано. Так и обещано в подписи поля. */
+  эл.home_shape.value = s.home_shape === 'cube' ? 'cube' : 'ring';
+  эл.home_roundness.value = s.home_roundness ?? 70;
+  эл.home_reaction.value = s.home_reaction ?? 80;
+  эл.home_brightness.value = s.home_brightness ?? 100;
+  эл.home_shimmer.checked = s.home_shimmer !== false;
+  эл.home_spin.value = s.home_spin ?? 70;
+  эл.home_jumps.value = s.home_jumps ?? 60;
+  эл.home_color.value = s.home_color || 'blue';
+  if (эл.home_color.selectedIndex < 0) эл.home_color.value = 'blue';
+  эл.home_gradient.checked = !!s.home_gradient;
+  эл.home_backdrop.checked = s.home_backdrop !== false;
+  for (const поле of [эл.home_roundness, эл.home_reaction, эл.home_brightness,
+    эл.home_spin, эл.home_jumps]) поле.синхПолзунок?.();
+  главнаяВид(s);
+  эл.главнаяОбразец?.обновить();
   эл.theme.value = s.theme === 'light' ? 'light' : 'dark';
   if (эл.theme.selectedIndex < 0) эл.theme.selectedIndex = 0;
   темуПоставить(эл.theme.value);
@@ -2583,6 +2676,16 @@ async function сохранитьНастройки() {
     speaker_name: звукСписки ? эл.speaker_name.value : undefined,
     autostart: эл.autostart.checked,
     theme: эл.theme.value,
+    home_shape: эл.home_shape.value,
+    home_roundness: настрЧислоИли(эл.home_roundness, 'home_roundness', true, ошибки),
+    home_reaction: настрЧислоИли(эл.home_reaction, 'home_reaction', true, ошибки),
+    home_brightness: настрЧислоИли(эл.home_brightness, 'home_brightness', true, ошибки),
+    home_shimmer: эл.home_shimmer.checked,
+    home_spin: настрЧислоИли(эл.home_spin, 'home_spin', true, ошибки),
+    home_jumps: настрЧислоИли(эл.home_jumps, 'home_jumps', true, ошибки),
+    home_color: эл.home_color.value,
+    home_gradient: эл.home_gradient.checked,
+    home_backdrop: эл.home_backdrop.checked,
   };
   /* Город погоды уходит, только если хозяин его правда поменял: иначе
      сохранение ради другой настройки обнулило бы погоду на телефоне. */
@@ -4776,6 +4879,69 @@ function обнПоказатьПлашку(последняя) {
   обнПлашкаУзел = плашка;
 }
 
+/* Видеокарта сбросилась (сброс драйвера посреди работы) — голос до
+   перезапуска запасной. Плашка заметная: сверху по центру, с тревожной
+   рамкой, с объяснением и кнопкой, которая сама перезапускает Трубу.
+   Закрыли крестиком — до перезапуска не появится. */
+let запаснойГолосУзел = null;
+let запаснойГолосСкрыт = false;
+function запаснойГолосПлашка() {
+  if (запаснойГолосУзел || запаснойГолосСкрыт) return;
+  const плашка = document.createElement('div');
+  плашка.className = 'тревога-плашка';
+  плашка.setAttribute('role', 'alert');
+  const текст = document.createElement('div');
+  текст.className = 'тревога-плашка-текст';
+  const заголовок = document.createElement('b');
+  заголовок.textContent = 'Видеокарта сбросилась';
+  const пояснение = document.createElement('span');
+  пояснение.textContent = 'Труба говорит запасным голосом. Чтобы вернуть качественный, '
+    + 'перезапусти Трубу — это займёт секунд двадцать.';
+  текст.append(заголовок, пояснение);
+  const кнопка = document.createElement('button');
+  кнопка.type = 'button';
+  кнопка.className = 'голос-кнопка главная';
+  кнопка.textContent = 'Перезапустить Трубу';
+  кнопка.addEventListener('click', async () => {
+    кнопка.disabled = true;
+    try {
+      const ответ = await fetch('/api/update/restart', { method: 'POST' });
+      const данные = await ответ.json().catch(() => ({}));
+      if (!ответ.ok || !данные.ok) throw new Error(данные.error || ('сервер ответил ' + ответ.status));
+      показатьПерезапуск('Труба перезапускается',
+        'Окно закроется и через 10–20 секунд откроется само, уже с качественным голосом. '
+        + 'Ничего не нажимай — просто подожди.');
+    } catch (e) {
+      кнопка.disabled = false;
+      пояснение.textContent = 'Перезапустить не вышло: ' + (e && e.message ? e.message : e)
+        + '. Закрой Трубу крестиком и открой ярлыком.';
+    }
+  });
+  const закрыть = document.createElement('button');
+  закрыть.type = 'button';
+  закрыть.className = 'обн-плашка-скрыть';
+  закрыть.title = 'Скрыть до перезапуска';
+  закрыть.textContent = '×';
+  закрыть.addEventListener('click', () => {
+    запаснойГолосСкрыт = true;
+    плашка.remove();
+    запаснойГолосУзел = null;
+  });
+  плашка.append(текст, кнопка, закрыть);
+  document.body.appendChild(плашка);
+  запаснойГолосУзел = плашка;
+}
+// Опрос рантайма идёт не на каждой странице, а плашка нужна везде: раз в
+// 8 секунд — лёгкий запрос состояния голоса.
+setInterval(async () => {
+  if (запаснойГолосУзел || запаснойГолосСкрыт || document.hidden) return;
+  try {
+    const ответ = await fetch('/api/voice/visual', { cache: 'no-store' });
+    const данные = await ответ.json();
+    if (данные && данные.voice && данные.voice.spare_voice) запаснойГолосПлашка();
+  } catch (e) { /* нет связи — общий опрос сам скажет */ }
+}, 8000);
+
 /* Плашка живёт один раз: закрыли крестиком, нажали кнопку или открыли
    «О программе» сами — второй раз она не появляется. */
 function обнСкрытьПлашку() {
@@ -5989,6 +6155,39 @@ function построитьНастройки(куда, страница) {
   погСтатус.className = 'настр-статус';
   погСтатус.textContent = '';
   телефон.appendChild(погСтатус);
+  /* Главная: вид фигуры из точек. Образец рядом меняется сразу, пока
+     двигаешь ползунки; на самой главной — после «Сохранить». */
+  const главнаяСекция = настрСекция(содержимое, 'главная', 'Главная');
+  const home_shape = настрВыбор([['ring', 'Кольцо'], ['cube', 'Куб']], 'ring');
+  настрПоле(главнаяСекция, 'home_shape', home_shape);
+  const home_color = настрВыбор([['blue', 'Синий'], ['violet', 'Фиолетовый'], ['sky', 'Голубой'],
+    ['pink', 'Розовый'], ['silver', 'Серебряный']], 'blue');
+  настрПоле(главнаяСекция, 'home_color', home_color);
+  const home_gradient = настрГалочка(false);
+  настрПоле(главнаяСекция, 'home_gradient', home_gradient);
+  const home_backdrop = настрГалочка(true);
+  настрПоле(главнаяСекция, 'home_backdrop', home_backdrop);
+  const home_roundness = настрЧислоПоле('');
+  настрПоле(главнаяСекция, 'home_roundness', home_roundness);
+  настрПолзунок(home_roundness, 52, 100, 1);
+  const home_reaction = настрЧислоПоле('');
+  настрПоле(главнаяСекция, 'home_reaction', home_reaction);
+  настрПолзунок(home_reaction, 20, 150, 5);
+  const home_brightness = настрЧислоПоле('');
+  настрПоле(главнаяСекция, 'home_brightness', home_brightness);
+  настрПолзунок(home_brightness, 60, 160, 5);
+  const home_spin = настрЧислоПоле('');
+  настрПоле(главнаяСекция, 'home_spin', home_spin);
+  настрПолзунок(home_spin, 20, 150, 5);
+  const home_jumps = настрЧислоПоле('');
+  настрПоле(главнаяСекция, 'home_jumps', home_jumps);
+  настрПолзунок(home_jumps, 0, 100, 5);
+  const home_shimmer = настрГалочка(true);
+  настрПоле(главнаяСекция, 'home_shimmer', home_shimmer);
+  const главнаяОбразец = главнаяОбразецСоздать(главнаяСекция,
+    { home_shape, home_roundness, home_reaction, home_brightness, home_shimmer, home_spin, home_jumps,
+      home_color, home_gradient, home_backdrop });
+
   const система = настрСекция(содержимое, 'система', 'Система');
   // Состояние — не в settings.json, а по факту наличия ярлыка в папке
   // автозагрузки Windows, поэтому и приходит отдельным полем снимка.
@@ -6040,7 +6239,7 @@ function построитьНастройки(куда, страница) {
   статус.textContent = '…';
   низ.appendChild(статус);
   корень.appendChild(низ);
-  настрЭлементы = { раздел, пояснение, секции: [мозг, поиск, первая, характер, память, голосСекция, слух, расп, звук, телефон, система], provider, локальноеПредупреждение, local_url, local_urlРяд, рядКлюча, model, списокМоделей, обновитьМодели, моделиСтатус, номерЗагрузкиМоделей: 0, провайдеры: {}, моделиВПравке: {}, ключиВПравке: {}, сохранённыеКлючи: {}, ключНамёк, ключПоказать, api_key, temperature, max_tokens, history_turns, web_search, search_sound, web_search_mode, web_search_budget, hedge, reasoning, проверитьПоиск: проверитьПоискКнопка, проверитьСвязь: проверитьСвязьКнопка, proactive, proactive_look, persona, ready_phrases, memory, отменитьХарактер, отменитьПамять, забыть, показатьИсторию, очистить, историяСписок, tts_engine, silero_speaker, silero_model, образецБлок, voice_name, образецОписание, образецИграть, образецУдалить, образецФайл, образецФайлИнфо, образецРучной, образецНачало, образецДлина, образецКусок, образецДобавить, образецШаг, tts_speed, tts_nfe, tts_gap, voice_volume, higgs_gentle, duck_level, barge_in_level, barge_instant, послушатьПробу: послушатьПробуКнопка, плеерПроба, follow_up_window, require_name_when_noisy, voice_app_guard, speaker_aec, owner_only, voice_autostart, owner_threshold, владелец, хозяинЗаписать, хозяинЗакончить, хозяинСтатус, хозяинТекст, хозяинИтог, stt_model, stt_quantization, распПояснение, распПроверить, распСтатус, распИтог, output, mic_name, mic_channel, mic_channelРяд, уровень, уровеньFill, уровеньПодпись, speaker_name, звукПроверить, звукПрослушать, звукЗапись, звукСтатус, железоБлок, железоГолоса, железоГолосаСтатус, железоКарточка, железоКнопка, железоХод, железоТело, железоИтог, железоСтрелка, железоДанные: null, голосаБлок, голосаРяды, голосаПолоса: голосаПолосаМесто, голосаБибПолоса: голосаБибПолосаМесто, погГород, погГородСохранено: '', погШирота: null, погДолгота: null, погЧерновик: null, погВвод, погНайти, погСписок, погБез, погСтатус, autostart, theme, адреса, телАдрес, телКопировать, телСтатус, телКод, неГаситьОбновить, сохранить, статус };
+  настрЭлементы = { раздел, пояснение, секции: [мозг, поиск, первая, характер, память, голосСекция, слух, расп, звук, телефон, главнаяСекция, система], provider, локальноеПредупреждение, local_url, local_urlРяд, рядКлюча, model, списокМоделей, обновитьМодели, моделиСтатус, номерЗагрузкиМоделей: 0, провайдеры: {}, моделиВПравке: {}, ключиВПравке: {}, сохранённыеКлючи: {}, ключНамёк, ключПоказать, api_key, temperature, max_tokens, history_turns, web_search, search_sound, web_search_mode, web_search_budget, hedge, reasoning, проверитьПоиск: проверитьПоискКнопка, проверитьСвязь: проверитьСвязьКнопка, proactive, proactive_look, persona, ready_phrases, memory, отменитьХарактер, отменитьПамять, забыть, показатьИсторию, очистить, историяСписок, tts_engine, silero_speaker, silero_model, образецБлок, voice_name, образецОписание, образецИграть, образецУдалить, образецФайл, образецФайлИнфо, образецРучной, образецНачало, образецДлина, образецКусок, образецДобавить, образецШаг, tts_speed, tts_nfe, tts_gap, voice_volume, higgs_gentle, duck_level, barge_in_level, barge_instant, послушатьПробу: послушатьПробуКнопка, плеерПроба, follow_up_window, require_name_when_noisy, voice_app_guard, speaker_aec, owner_only, voice_autostart, owner_threshold, владелец, хозяинЗаписать, хозяинЗакончить, хозяинСтатус, хозяинТекст, хозяинИтог, stt_model, stt_quantization, распПояснение, распПроверить, распСтатус, распИтог, output, mic_name, mic_channel, mic_channelРяд, уровень, уровеньFill, уровеньПодпись, speaker_name, звукПроверить, звукПрослушать, звукЗапись, звукСтатус, железоБлок, железоГолоса, железоГолосаСтатус, железоКарточка, железоКнопка, железоХод, железоТело, железоИтог, железоСтрелка, железоДанные: null, голосаБлок, голосаРяды, голосаПолоса: голосаПолосаМесто, голосаБибПолоса: голосаБибПолосаМесто, погГород, погГородСохранено: '', погШирота: null, погДолгота: null, погЧерновик: null, погВвод, погНайти, погСписок, погБез, погСтатус, autostart, theme, home_shape, home_roundness, home_reaction, home_brightness, home_shimmer, home_spin, home_jumps, home_color, home_gradient, home_backdrop, главнаяОбразец, адреса, телАдрес, телКопировать, телСтатус, телКод, неГаситьОбновить, сохранить, статус };
   // Форма новая — прошлые списки устройств, таймер уровня и отметка о железе
   // не про неё. Сбрасываем до первого показа раздела: иначе только что
   // пришедшие списки микрофонов тут же сбрасывались бы.
@@ -11901,6 +12100,8 @@ async function спроситьПервыйЗапуск() {
     const данные = await ответ.json();
     if (!ответ.ok || !данные || !данные.ok) return;
     const s = (данные && данные.settings) || {};
+    // Вид главной — сразу при загрузке пульта, а не после открытия настроек.
+    главнаяВид(s);
     /* Открываемся на том шаге, на котором человек остановился в прошлый раз
        (после QR это пятый), а не с первого. `first_run_done: true` — мастер
        больше не открывается: «заново» запускается только из «О программе». */

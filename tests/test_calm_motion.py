@@ -20,7 +20,7 @@ class CalmMotion(unittest.TestCase):
         result = subprocess.run([node, str(root / 'tests/home_wave_checks.cjs')],
                                 capture_output=True, text=True, timeout=10, cwd=root)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn('"passed":14', result.stdout)
+        self.assertIn('"passed":24', result.stdout)
 
     def test_unaddressed_voice_does_not_activate_visual_hearing(self):
         rt = object.__new__(WebRuntime)

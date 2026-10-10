@@ -698,6 +698,9 @@ class WebRuntime:
                     f"{data.get('to', '?')} отменён — он уже оплачен"]
         if kind == "web_start":
             return [f"решила искать в интернете через {float(data.get('after', 0)):.1f} с"]
+        if kind == "voice_spare":
+            return [f"видеокарта сбросилась ({payload}) — говорю запасным голосом "
+                    "Silero; качественный вернётся после перезапуска Трубы"]
         if kind == "continue":
             # Ответ упёрся в потолок токенов. Хозяин должен видеть, что молчание
             # было не пустотой, а обрезанным ответом, который мы договариваем.
@@ -1034,7 +1037,10 @@ class WebRuntime:
                 "running": running, "ready": ready, "mode": config.LISTEN_MODE,
                 "in_conversation": in_conv,
                 "volume": int(getattr(config, "VOICE_VOLUME", 10)),
-                "loading_text": loading, "stopping": stopping}
+                "loading_text": loading, "stopping": stopping,
+                # Видеокарта сбросилась, и голос до перезапуска запасной:
+                # пульт показывает об этом плашку с кнопкой перезапуска.
+                "spare_voice": bool(getattr(self.voice, "_spare_voice", False))}
 
     def home_action(self, body: dict) -> dict:
         """Кнопки главной страницы выполняются локально по явному нажатию."""
@@ -3446,7 +3452,10 @@ class WebRuntime:
                 ("owner_threshold", 0.0, 1.0, False),
                 ("voice_volume", config.VOICE_VOLUME_MIN, config.VOICE_VOLUME_MAX, True),
                 ("follow_up_window", 0.0, 3600.0, False),
-                ("web_search_budget", 4.0, 60.0, False)]
+                ("web_search_budget", 4.0, 60.0, False),
+                ("home_roundness", 52, 100, True), ("home_reaction", 20, 150, True),
+                ("home_brightness", 60, 160, True), ("home_spin", 20, 150, True),
+                ("home_jumps", 0, 100, True)]
         for key, low, high, integer in nums:
             if key not in payload:
                 continue
@@ -3481,7 +3490,9 @@ class WebRuntime:
                    "listen_mode": ("always", "name", "off"),
                    "web_search_mode": ("free", "paid", "auto"),
                    "proactive": tuple(proactive.FREQUENCIES),
-                   "output": ("speakers", "phone")}
+                   "output": ("speakers", "phone"),
+                   "home_shape": ("ring", "cube"),
+                   "home_color": ("blue", "violet", "sky", "pink", "silver")}
         for key, variants in choices.items():
             if key in payload:
                 if payload[key] not in variants:
@@ -3518,7 +3529,8 @@ class WebRuntime:
         for key in ("require_name_when_noisy", "voice_app_guard", "speaker_aec", "owner_only",
                     "barge_instant", "web_search", "search_sound", "replay_guard",
                     "voice_autostart", "higgs_gentle", "proactive_look", "hedge",
-                    "reasoning", "update_check", "first_run_done",
+                    "reasoning", "update_check", "first_run_done", "home_shimmer",
+                    "home_gradient", "home_backdrop",
                     "offer_analysis_note"):
             if key in payload:
                 if not isinstance(payload[key], bool):
