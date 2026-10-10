@@ -240,6 +240,29 @@ class ListenerTests(unittest.TestCase):
         echo.clean.assert_not_called()
         np.testing.assert_array_equal(listener._vad.chunks[0], 1)
 
+    def test_start_after_stop_listens_again(self):
+        # Слушатель один на всё время работы голоса. После «Выключить» флаг
+        # остановки стоит; без сброса «Включить» говорил «Слушаю» и тут же
+        # выключался: нарезка фраз кончалась сразу.
+        listener = object.__new__(Listener)
+        listener._stop = threading.Event()
+        listener._queue = queue.Queue()
+        listener.speaker_echo = mock.Mock()
+        listener.device, listener.rate, listener.channels = None, 16000, 1
+        listener.decim = 1
+        listener._stream = None
+        with mock.patch("core.audio_in.sd.InputStream") as поток, \
+                mock.patch.object(config, "SPEAKER_AEC", False):
+            listener.start()
+            listener._queue.put(np.ones(VAD_HOP, dtype=np.float32))
+            listener.stop()
+            self.assertTrue(listener._stop.is_set())
+            listener.start()
+        self.assertFalse(listener._stop.is_set())
+        # Звук, застрявший с прошлого раза, не становится новой фразой.
+        self.assertTrue(listener._queue.empty())
+        self.assertEqual(поток.call_count, 2)
+
 
 class GuardAndSettingsTests(unittest.TestCase):
     def test_journal_has_one_status_line(self):

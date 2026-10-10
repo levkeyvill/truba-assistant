@@ -423,6 +423,15 @@ class Listener:
         )
 
     def start(self) -> None:
+        # Слушатель один на всё время работы голоса: после «Выключить» флаг
+        # остановки стоит, и без сброса нарезка фраз кончалась бы сразу, а
+        # с ней и голос — сказав «Слушаю». Старый звук из очереди — тоже вон.
+        self._stop.clear()
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
         if config.SPEAKER_AEC:
             self.speaker_echo.start()
         blocksize = VAD_HOP * self.decim
