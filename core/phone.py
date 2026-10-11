@@ -977,8 +977,10 @@ class PhoneServer:
 
         for адрес, имя in (("/api/logs/save", "logs_save"),
                            ("/api/logs/report", "logs_report"),
-                           ("/api/logs/open", "logs_open")):
+                           ("/api/logs/open", "logs_open"),
+                           ("/api/logs/traces/clean", "crash_traces_clean")):
             app.post(адрес)(logs_action(имя))
+        app.get("/api/logs/traces")(logs_action("crash_traces"))
 
         @app.get("/api/usage")
         async def api_usage(request: Request):

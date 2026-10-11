@@ -1705,6 +1705,75 @@ function нарисоватьЛоги() {
     }
   });
 
+  /* Следы прежних падений: снимки памяти, которые Windows оставляет после
+     каждого падения (около 800 МБ), и режим совместимости, который она
+     навсегда включает Python после нескольких падений подряд. Строка видна,
+     только когда следы есть. */
+  const следы = document.createElement('div');
+  следы.className = 'логи-файлы';
+  следы.hidden = true;
+  const следыТекст = document.createElement('span');
+  следыТекст.className = 'логи-итог';
+  const убратьСледы = document.createElement('button');
+  убратьСледы.type = 'button';
+  убратьСледы.className = 'голос-кнопка';
+  убратьСледы.textContent = 'Убрать следы';
+  убратьСледы.title = 'Удалит снимки памяти после прежних падений Трубы и снимет '
+    + 'с её Python режим совместимости Windows — Windows спросит разрешение';
+  следы.append(следыТекст, убратьСледы);
+  логи.appendChild(следы);
+
+  const гигабайты = (байты) => (Number(байты || 0) / 1e9)
+    .toLocaleString('ru-RU', { maximumFractionDigits: 1 }) + ' ГБ';
+  const снимков = (число) => число + ' ' + заметкиСлово(число, 'снимок', 'снимка', 'снимков');
+  const естьСледы = (д) => !!(д && (д.dumps || (д.fth && д.fth.length)));
+  const словаСледов = (д) => {
+    const части = [];
+    if (д.dumps) части.push(снимков(д.dumps) + ' памяти (' + гигабайты(д.bytes) + ')');
+    if (д.fth && д.fth.length) части.push('режим совместимости Windows у Python');
+    return 'После прежних падений остались ' + части.join(' и ') + '.';
+  };
+  fetch('/api/logs/traces')
+    .then((ответ) => ответ.json())
+    .then((д) => {
+      if (!д || !д.ok || !естьСледы(д) || !логи.isConnected) return;
+      следыТекст.textContent = словаСледов(д);
+      следы.hidden = false;
+    })
+    .catch(() => { /* нет следов — нет и строки */ });
+  убратьСледы.addEventListener('click', async () => {
+    убратьСледы.disabled = true;
+    следыТекст.classList.remove('плохо');
+    следыТекст.textContent = 'Убираю… Windows может спросить разрешение.';
+    try {
+      const ответ = await fetch('/api/logs/traces/clean', { method: 'POST' });
+      const д = await ответ.json().catch(() => ({}));
+      if (!ответ.ok || !д.ok) throw new Error(д.error || ('сервер ответил ' + ответ.status));
+      const сделано = [];
+      if (д.removed) сделано.push('удалила ' + снимков(д.removed) + ', освободилось ' + гигабайты(д.freed));
+      if (д.fth_cleared === true) сделано.push('режим совместимости сняла');
+      if (естьСледы(д.left)) {
+        const осталось = [];
+        if (д.left.dumps) осталось.push('не удалось удалить ' + снимков(д.left.dumps) + ' — может, '
+          + заметкиСлово(д.left.dumps, 'его', 'их', 'их') + ' держит другая программа');
+        if (д.left.fth && д.left.fth.length) осталось.push('режим совместимости остался — Windows не дала разрешения');
+        следыТекст.classList.add('плохо');
+        const текст = (сделано.length ? 'Готово не всё: ' + сделано.join(', ') + '; ' : '')
+          + осталось.join('; ');
+        следыТекст.textContent = текст[0].toUpperCase() + текст.slice(1) + '.';
+        убратьСледы.disabled = false;
+      } else {
+        const текст = сделано.join(', ') || 'следов больше нет';
+        следыТекст.textContent = текст[0].toUpperCase() + текст.slice(1) + '.';
+        убратьСледы.hidden = true;
+      }
+    } catch (e) {
+      следыТекст.classList.add('плохо');
+      следыТекст.textContent = 'Не вышло: ' + (e && e.message ? e.message : e);
+      убратьСледы.disabled = false;
+    }
+  });
+
   const лента = document.createElement('div');
   лента.className = 'логи-лента';
   логи.appendChild(лента);

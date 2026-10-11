@@ -4263,6 +4263,17 @@ class WebRuntime:
                             else self._log_path.parent)
         return {"ok": True}
 
+    # Следы прежних падений: снимки памяти Windows и режим FTH у python.
+    def crash_traces(self) -> dict:
+        from core import crash_traces
+
+        return {"ok": True, **crash_traces.find()}
+
+    def crash_traces_clean(self) -> dict:
+        from core import crash_traces
+
+        return {"ok": True, **crash_traces.clean()}
+
     def logs_from(self, after: int, limit: int = 500) -> dict:
         """Новые строки после очистки экрана; файл журнала не меняем."""
         try:
