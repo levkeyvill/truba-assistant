@@ -3,7 +3,7 @@
 Подходит любой сервис с OpenAI-совместимым `POST {адрес}/audio/speech`:
 OpenRouter, OpenAI или свой адрес. Звук просим сырым (`pcm`, 16 бит, моно):
 его не надо распаковывать, и он приходит потоком. Сервис, который pcm не
-отдаёт, просим `wav`.
+отдаёт, просим `wav`, а последним — `mp3`.
 
 Интернет и чужой сервер ненадёжны, поэтому рядом всегда Silero на
 процессоре: сервис не ответил — фразу говорит Silero, а облако какое-то
@@ -33,7 +33,11 @@ STREAM_SECONDS = 0.4
 COOLDOWN_NET = 60.0       # нет связи, тайм-аут, сбой сервера
 COOLDOWN_LIMIT = 600.0    # кончились деньги или дневной лимит
 COOLDOWN_SETUP = 1800.0   # ключ не тот, модели нет, не тот формат звука
-FORMATS = ("pcm", "wav")
+# Сырой pcm приходит потоком; wav и mp3 — целиком. mp3 последним: его
+# распаковка (soundfile) медленнее, а отдают его только сервисы, которые
+# по-другому не умеют (MiniMax).
+FORMATS = ("pcm", "wav", "mp3")
+СЖАТЫЕ = ("mpeg", "mp3", "ogg", "opus", "flac")
 # Каталог голосовых моделей OpenRouter открыт без ключа.
 OPENROUTER_CATALOG = "https://openrouter.ai/api/v1/models?output_modalities=speech"
 OPENAI_MODELS = ("gpt-4o-mini-tts", "tts-1", "tts-1-hd")
@@ -87,6 +91,17 @@ def _wav(data: bytes) -> tuple:
             return звук.astype(np.float32), файл.getframerate()
     except (wave.Error, EOFError) as exc:
         raise CloudVoiceError(f"сервис отдал битый wav: {exc}", COOLDOWN_SETUP) from exc
+
+
+def _decoded(data: bytes) -> tuple:
+    """Сжатый звук (mp3, ogg, flac) в (сигнал, частота) через soundfile."""
+    import soundfile
+
+    try:
+        звук, частота = soundfile.read(io.BytesIO(data), dtype="float32", always_2d=True)
+    except Exception as exc:
+        raise CloudVoiceError(f"не распаковала звук сервиса: {exc}", COOLDOWN_SETUP) from exc
+    return звук.mean(axis=1).astype(np.float32), int(частота)
 
 
 def _minutes(seconds: float) -> str:
@@ -237,8 +252,9 @@ class CloudVoice:
         """Звук сервиса кусками (сигнал, частота). Отказ — `CloudVoiceError`."""
         if self._client is None:
             self.load()
-        форматы = (self._format,) if self._format else FORMATS
-        for номер, формат in enumerate(форматы):
+        очередь = [self._format] if self._format else list(FORMATS)
+        while очередь:
+            формат = очередь.pop(0)
             тело = {"model": self.model, "input": text, "response_format": формат}
             if self.voice:
                 тело["voice"] = self.voice
@@ -247,10 +263,11 @@ class CloudVoice:
                                          json=тело, headers=self._headers()) as ответ:
                     if ответ.status_code >= 400:
                         подробно = ответ.read().decode("utf-8", "replace")
-                        последний = номер == len(форматы) - 1
-                        # Не тот формат — пробуем следующий, а не сдаёмся.
-                        if (ответ.status_code in (400, 415, 422) and not последний
+                        # Не тот формат — пробуем следующий, а не сдаёмся. Назвал
+                        # сервис, какой ему нужен («only supports mp3»), — его первым.
+                        if (ответ.status_code in (400, 415, 422) and очередь
                                 and "format" in подробно.lower()):
+                            очередь.sort(key=lambda ф: ф not in подробно.lower())
                             continue
                         raise _http_error(ответ.status_code, подробно)
                     self._format = формат
@@ -258,9 +275,11 @@ class CloudVoice:
                     if формат == "wav" or "wav" in вид:
                         yield _wav(ответ.read())
                         return
-                    if any(слово in вид for слово in ("mpeg", "mp3", "ogg", "opus", "aac")):
-                        raise CloudVoiceError(f"сервис отдал сжатый звук ({вид}), "
-                                              "а нужен pcm или wav", COOLDOWN_SETUP)
+                    if формат == "mp3" or any(слово in вид for слово in СЖАТЫЕ):
+                        # Сжатый звук приходит целиком: распаковать кусок
+                        # посреди кадра mp3 нельзя.
+                        yield _decoded(ответ.read())
+                        return
                     частота = _rate_from(вид) or self.default_rate
                     шаг = max(2, int(частота * STREAM_SECONDS) * 2)
                     запас = b""
@@ -277,7 +296,7 @@ class CloudVoice:
             except httpx.HTTPError as exc:
                 raise CloudVoiceError(f"нет связи с сервисом ({type(exc).__name__})",
                                       COOLDOWN_NET) from exc
-        raise CloudVoiceError("сервис не принял ни pcm, ни wav", COOLDOWN_SETUP)
+        raise CloudVoiceError("сервис не принял ни pcm, ни wav, ни mp3", COOLDOWN_SETUP)
 
     @staticmethod
     def _tempo(звук: np.ndarray, частота: int, speed: float) -> np.ndarray:
@@ -336,6 +355,11 @@ class CloudVoice:
 # --- Каталог для пульта -------------------------------------------------------
 
 
+def _русские_вперёд(голоса: list) -> list:
+    """Русские голоса (`ru-RU-…`) — в начало списка, остальные как были."""
+    return sorted(голоса, key=lambda г: not г.lower().startswith("ru-"))
+
+
 def catalog(service: str, url: str = "", key: str = "") -> dict:
     """Модели и голоса сервиса для подсказок в пульте.
 
@@ -353,13 +377,23 @@ def catalog(service: str, url: str = "", key: str = "") -> dict:
         модели = []
         for модель in ответ.json().get("data", []):
             цена = модель.get("pricing") or {}
+            try:
+                за_знак = float(цена.get("prompt") or 0)
+            except (TypeError, ValueError):
+                за_знак = 0.0
             модели.append({
                 "id": str(модель.get("id", "")),
                 "name": str(модель.get("name", "")),
                 "free": str(модель.get("id", "")).endswith(":free")
                 or (str(цена.get("prompt")) in ("0", "0.0")
                     and str(цена.get("completion")) in ("0", "0.0")),
-                "voices": [str(г) for г in (модель.get("supported_voices") or [])],
+                # Цена голосовых моделей — за знак текста; в пульте её
+                # показывают за миллион знаков.
+                "price": за_знак,
+                # Модель берёт любой голос своего сервиса, не только из списка.
+                "any_voice": "arbitrary" in str(модель.get("description") or "").lower(),
+                "voices": _русские_вперёд(
+                    [str(г) for г in (модель.get("supported_voices") or [])]),
             })
         модели.sort(key=lambda м: (not м["free"], м["id"]))
         голоса = sorted({г for м in модели for г in м["voices"]})

@@ -1344,6 +1344,7 @@ header p { margin: 0 0 20px; color: var(--приглушён); font-size: 13px; 
 .настр-выбор option { background: var(--панель-выше); color: var(--текст); }
 .настр-галочка { width: 17px; height: 17px; accent-color: var(--акцент); }
 .настр-намёк { flex: none; max-width: 260px; font-size: 11px; color: var(--тусклый); }
+.настр-намёк.плохо { color: var(--тревога); }
 .настр-описание { margin: 0 0 9px; font-size: 12px; color: var(--тусклый); line-height: 1.45; }
 .настр-текст { width: 100%; min-height: 110px; resize: vertical; padding: 9px 12px; border: 1px solid var(--линия); border-radius: 10px; background: var(--панель-выше); color: var(--текст); font: inherit; font-size: 13px; line-height: 1.5; }
 .настр-текст.настр-текст-высокий { height: 430px; }

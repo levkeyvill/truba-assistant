@@ -116,11 +116,35 @@ class СинтезTests(unittest.TestCase):
         голос.say("Ещё раз")
         self.assertEqual([з["response_format"] for з in self.запросы], ["pcm", "wav", "wav"])
 
-    def test_сжатый_звук_не_принимаем(self):
+    def test_битый_сжатый_звук_silero(self):
         голос = _голос(self._ответ(тело=b"ID3....", вид="audio/mpeg"))
         звук, частота = голос.say("Привет")
         self.assertEqual(частота, 48000)  # сказал Silero
         self.assertEqual(голос._spare.фразы, ["Привет"])
+
+    def test_только_mp3_сразу_к_нему_и_запоминаем(self):
+        import soundfile
+
+        буфер = io.BytesIO()
+        soundfile.write(буфер, (np.sin(np.linspace(0, 300, 32000)) * 0.3).astype("float32"),
+                        32000, format="MP3")
+        mp3 = буфер.getvalue()
+
+        def обработчик(запрос):
+            тело = json.loads(запрос.content)
+            self.запросы.append(тело)
+            if тело["response_format"] != "mp3":
+                return httpx.Response(400, json={"error": {"message":
+                    'MiniMax TTS only supports response_format="mp3" for streaming'}})
+            return httpx.Response(200, content=mp3, headers={"content-type": "audio/mpeg"})
+        голос = _голос(обработчик, model="minimax/speech-2.8-turbo", voice="Russian_BrightHeroine")
+        звук, частота = голос.say("Привет")
+        self.assertEqual(частота, 32000)
+        self.assertGreater(len(звук), 30000)
+        # pcm отвергнут, wav пропущен — сервис сам назвал mp3.
+        self.assertEqual([з["response_format"] for з in self.запросы], ["pcm", "mp3"])
+        голос.say("Ещё")
+        self.assertEqual(self.запросы[-1]["response_format"], "mp3")
 
     def test_отказ_silero_и_пауза_без_облака(self):
         заметки = []
@@ -241,6 +265,19 @@ class КаталогTests(unittest.TestCase):
         self.assertEqual([м["id"] for м in найдено["models"]], ["free/voice:free", "paid/voice"])
         self.assertTrue(найдено["models"][0]["free"])
         self.assertEqual(найдено["voices"], ["a", "b", "c"])
+        self.assertEqual(найдено["models"][1]["price"], 0.000004)
+        self.assertFalse(найдено["models"][1]["any_voice"])
+        self.assertEqual(найдено["models"][0]["price"], 0.0)
+
+    def test_русские_голоса_вперёд(self):
+        данные = {"data": [{"id": "ms/mai", "name": "MAI", "pricing": {"prompt": "0.000015"},
+                            "supported_voices": ["en-US-Harper:x", "ru-RU-Masha:x", "de-DE-Mia:x",
+                                                 "ru-RU-Lev:x"]}]}
+        ответ = httpx.Response(200, json=данные, request=httpx.Request("GET", "https://x"))
+        with mock.patch.object(httpx, "get", return_value=ответ):
+            найдено = cloud_voice.catalog("openrouter")
+        self.assertEqual(найдено["models"][0]["voices"],
+                         ["ru-RU-Masha:x", "ru-RU-Lev:x", "en-US-Harper:x", "de-DE-Mia:x"])
 
 
 class НастройкиTests(unittest.TestCase):
@@ -326,6 +363,18 @@ class ПультTests(unittest.TestCase):
         for поле in ("cloud_voice_service", "cloud_voice_url", "cloud_voice_key",
                      "cloud_voice_model", "cloud_voice_voice"):
             self.assertIn(f"{поле}: эл.{поле}.value", пульт)
+
+    def test_голоса_только_выбранной_модели_и_цена(self):
+        пульт = PULT_JS.read_text(encoding="utf-8")
+        self.assertIn("const голоса = (модель && модель.voices) || [];", пульт)
+        self.assertIn("У этой модели нет списка голосов", пульт)
+        self.assertIn("' · платная, $' + облакоЦена(модель.price)", пульт)
+
+    def test_голос_проверяется_перед_сохранением(self):
+        пульт = PULT_JS.read_text(encoding="utf-8")
+        self.assertIn("const голосМимо = облакоГолосНеПодходит(эл);", пульт)
+        self.assertIn("надо выбрать голос из списка", пульт)
+        self.assertIn("!голоса.includes(голос) && !модель.any_voice", пульт)
 
 
 if __name__ == "__main__":
