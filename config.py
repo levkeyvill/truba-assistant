@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore", message=".*Couldn't find ffprobe.*")
 
 # Версия Трубы. Поднимаем при каждом выпуске, формат X.Y.Z; выпуск на GitHub
 # помечается тегом `vX.Y.Z` — по нему и находится «последняя версия».
-VERSION = "1.0.5"
+VERSION = "1.0.6"
 # Репозиторий на GitHub в виде «владелец/репозиторий»: отсюда обновление
 # спрашивает о новой версии и отсюда же качает выпуск.
 UPDATE_REPO = "levkeyvill/truba-assistant"
@@ -173,11 +173,46 @@ PRICES = {
 #   "silero"  — быстрый, сам ставит ударения, работает на процессоре,
 #               голос выбирается из пяти готовых;
 #   "espeech" — медленнее и занимает видеокарту, зато копирует любой голос
-#               по образцу.
+#               по образцу;
+#   "higgs"   — тоже по образцу и на видеокарте, звучит живее всех;
+#   "cloud"   — облачный голос: синтез на сервере сервиса, комп не грузит.
 TTS_ENGINE = "silero"
 
 SILERO_MODEL = "v5_5_ru"
 SILERO_SPEAKER = "kseniya"
+
+# Облачный голос — любой сервис с OpenAI-совместимым `POST /audio/speech`.
+# У OpenRouter и OpenAI ключ общий с мозгом (`key_provider`), у своего
+# адреса — свой (`key_env`). `model` и `voice` — что подставить, пока
+# человек ничего не выбрал; `rate` — частота сырого звука (pcm), если сервис
+# не назвал её в заголовке ответа.
+CLOUD_VOICE_SERVICES = {
+    "openrouter": {
+        "base_url": "https://openrouter.ai/api/v1",
+        "key_provider": "openrouter",
+        "model": "heygen/heygen-voice-1-turbo:free",
+        "voice": "noelle",
+        "rate": 44100,
+    },
+    "openai": {
+        "base_url": "https://api.openai.com/v1",
+        "key_provider": "openai",
+        "model": "gpt-4o-mini-tts",
+        "voice": "nova",
+        "rate": 24000,
+    },
+    "custom": {
+        "base_url": "",
+        "key_env": "CLOUD_VOICE_API_KEY",
+        "model": "",
+        "voice": "",
+        "rate": 24000,
+    },
+}
+CLOUD_VOICE_SERVICE = "openrouter"
+CLOUD_VOICE_MODEL = ""
+CLOUD_VOICE_VOICE = ""
+CLOUD_VOICE_URL = ""
 
 # Для ESpeech и Higgs: имя образца из папки voice\ (нужны <имя>.wav и <имя>.txt).
 # Пусто, пока пользователь не добавит свой образец через «Голос →

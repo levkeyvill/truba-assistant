@@ -48,6 +48,11 @@ def make_voice():
 
         return higgs_voice.shared()
 
+    if config.TTS_ENGINE == "cloud":
+        from core.cloud_voice import CloudVoice
+
+        return CloudVoice()
+
     from core.silero_voice import SileroVoice
 
     return SileroVoice()
@@ -813,6 +818,10 @@ class VoiceLoop:
         self._loading("синтез речи")
         self._check_model()
         self._voice = make_voice()
+        # Облачный голос сам переходит на Silero и обратно — пусть пишет об
+        # этом в журнал.
+        if hasattr(self._voice, "on_note"):
+            self._voice.on_note = lambda text: self._emit("cloud_voice", text)
         self._voice.load()
         self._check_stop()
         # Первый синтез всегда медленный — прогреваем заранее, чтобы

@@ -1954,6 +1954,11 @@ const НАСТР_НАЗВАНИЯ = {
   reasoning: ['Размышления перед ответом', 'Модель сначала думает, потом отвечает: обдуманнее, но дольше и дороже. Работает у DeepSeek; у OpenAI при включённых действиях не включается'],
   hedge: ['Страховка от заминок облака', 'если основная модель молчит дольше 2.5 с, тот же вопрос уходит запасной; отвечает первая. Стоит копейки, но при заминке платишь за оба'],
   tts_engine: ['Способ озвучивания', 'Чем озвучивает ответы. Сколько качать и сколько займёт на видеокарте — в «Качественных голосах» выше'],
+  cloud_voice_service: ['Сервис голоса', 'Где синтезируется речь. Нужен интернет, зато компьютер и видеокарта свободны. Если сервис не ответит, фразу скажет Silero'],
+  cloud_voice_url: ['Адрес сервиса', 'Сервис с OpenAI-совместимым синтезом речи, адрес вида https://example.com/v1'],
+  cloud_voice_key: ['Ключ сервиса', ''],
+  cloud_voice_model: ['Модель голоса', ''],
+  cloud_voice_voice: ['Голос', ''],
   silero_speaker: ['Диктор Silero', 'Чьим голосом говорит'],
   silero_model: ['Файл голоса Silero', 'Имя файла модели диктора'],
   /* Образец голоса — это файл записи .wav или .mp3, а не «пресет модели»:
@@ -2236,11 +2241,112 @@ function настрПоляОзвучивания() {
   const эл = настрЭлементы;
   const espeech = эл.tts_engine.value === 'espeech';
   const образец = espeech || эл.tts_engine.value === 'higgs';
+  const облако = эл.tts_engine.value === 'cloud';
   эл.образецБлок.hidden = !образец;
+  эл.облакоБлок.hidden = !облако;
   for (const поле of [эл.silero_speaker, эл.silero_model]) {
-    поле.closest('.настр-ряд').hidden = образец;
+    поле.closest('.настр-ряд').hidden = образец || облако;
   }
   эл.tts_nfe.closest('.настр-ряд').hidden = !espeech;
+  облакоПоля(эл);
+  if (облако && !эл.облако.каталог) облакоКаталог(эл);
+}
+
+/* --- Облачный голос: «Голос → Озвучивание» ---------------------------------
+   Сервис, адрес (только у своего), ключ, модель и голос. Пустые модель и
+   голос — то, что у сервиса стоит по умолчанию: это видно в подсказке поля. */
+
+const ОБЛАКО_ИМЕНА = { openrouter: 'OpenRouter', openai: 'OpenAI', custom: 'свой адрес' };
+
+function облакоПоля(эл) {
+  if (!эл || !эл.cloud_voice_service) return;
+  const сервис = эл.cloud_voice_service.value;
+  const умолч = эл.облако.сервисы[сервис] || {};
+  эл.cloud_voice_url.closest('.настр-ряд').hidden = сервис !== 'custom';
+  /* Значение по умолчанию — в пояснении справа: длинный ID в узком поле
+     обрезался бы. В самом поле — коротко. */
+  эл.cloud_voice_model.placeholder = умолч.model ? 'по умолчанию' : 'ID модели';
+  эл.cloud_voice_voice.placeholder = умолч.voice ? 'по умолчанию' : 'имя голоса';
+  эл.облакоМодельНамёк.textContent = 'Выбери из списка или впиши ID'
+    + (умолч.model ? '. Пусто — ' + умолч.model : '');
+  эл.облакоГолосНамёк.textContent = 'Имя голоса у выбранной модели'
+    + (умолч.voice ? '. Пусто — ' + умолч.voice + ' (у модели по умолчанию)' : '');
+  const естьКлюч = !!эл.облако.ключи[сервис];
+  эл.cloud_voice_key.placeholder = естьКлюч ? 'ключ сохранён' : 'впиши ключ';
+  if (умолч.shared_key) {
+    эл.облакоКлючНамёк.textContent = 'Тот же ключ, что у мозга с ' + ОБЛАКО_ИМЕНА[сервис]
+      + (естьКлюч ? ': он уже есть. Впиши, чтобы заменить' : ': его ещё нет');
+  } else {
+    эл.облакоКлючНамёк.textContent = 'Свой ключ сервиса. Локальному серверу ключ не нужен';
+  }
+}
+
+function облакоСменаСервиса(эл) {
+  if (!эл) return;
+  /* Модель и голос одного сервиса другому не подходят: при смене сервиса
+     поля пустеют, и действует его модель по умолчанию. */
+  эл.cloud_voice_model.value = '';
+  эл.cloud_voice_voice.value = '';
+  эл.облако.каталог = null;
+  облакоПоля(эл);
+  облакоКаталог(эл);
+}
+
+function облакоГолосаМодели(эл) {
+  if (!эл) return;
+  const каталог = эл.облако.каталог;
+  const id = эл.cloud_voice_model.value.trim()
+    || (эл.облако.сервисы[эл.cloud_voice_service.value] || {}).model || '';
+  const модель = каталог && (каталог.models || []).find((м) => м.id === id);
+  const голоса = модель && модель.voices && модель.voices.length
+    ? модель.voices : ((каталог && каталог.voices) || []);
+  эл.облакоГолоса.replaceChildren();
+  for (const имя of голоса) {
+    const пункт = document.createElement('option');
+    пункт.value = имя;
+    эл.облакоГолоса.appendChild(пункт);
+  }
+}
+
+async function облакоКаталог(эл) {
+  if (!эл || !эл.cloud_voice_service) return;
+  const сервис = эл.cloud_voice_service.value;
+  const номер = ++эл.облако.номер;
+  эл.облакоСтатус.textContent = 'Обновляю список моделей…';
+  эл.облакоОбновить.disabled = true;
+  try {
+    const адрес = '/api/cloud-voice/catalog?service=' + encodeURIComponent(сервис)
+      + '&url=' + encodeURIComponent(эл.cloud_voice_url.value.trim());
+    const ответ = await fetch(адрес, { cache: 'no-store' });
+    const данные = await ответ.json().catch(() => ({}));
+    if (настрЭлементы !== эл || номер !== эл.облако.номер) return;
+    if (!ответ.ok || !данные.ok) throw new Error(данные.error || ('HTTP ' + ответ.status));
+    эл.облако.каталог = данные;
+    эл.облакоМодели.replaceChildren();
+    for (const модель of данные.models || []) {
+      const пункт = document.createElement('option');
+      пункт.value = модель.id;
+      const название = модель.name || модель.id;
+      пункт.label = название + (модель.free && !/free/i.test(название) ? ' · бесплатно' : '');
+      эл.облакоМодели.appendChild(пункт);
+    }
+    облакоГолосаМодели(эл);
+    const всего = (данные.models || []).length;
+    const бесплатных = (данные.models || []).filter((м) => м.free).length;
+    эл.облакоСтатус.textContent = всего
+      ? 'Моделей: ' + всего + (бесплатных ? ', бесплатных: ' + бесплатных : '')
+        + ' · можно вписать любой ID'
+      : (сервис === 'custom' && !эл.cloud_voice_url.value.trim()
+        ? 'Впиши адрес сервиса — список моделей придёт с него'
+        : 'Список пуст · впиши ID модели вручную');
+  } catch (e) {
+    if (настрЭлементы === эл && номер === эл.облако.номер) {
+      эл.облакоСтатус.textContent = сервис === 'custom' && !эл.cloud_voice_url.value.trim()
+        ? 'Впиши адрес сервиса' : 'Список недоступен · впиши ID модели вручную';
+    }
+  } finally {
+    if (настрЭлементы === эл && номер === эл.облако.номер) эл.облакоОбновить.disabled = false;
+  }
 }
 async function загрузитьНастройки() {
   if (!настрЭлементы || настрТянем) return;
@@ -2468,6 +2574,14 @@ function заполнитьНастройки(данные) {
   настрОбновитьОтмену();
   эл.tts_engine.value = s.tts_engine ?? 'silero';
   if (эл.tts_engine.selectedIndex < 0) эл.tts_engine.selectedIndex = 0;
+  эл.облако.ключи = данные.cloud_voice_keys || {};
+  эл.облако.сервисы = данные.cloud_voice_services || {};
+  эл.cloud_voice_service.value = s.cloud_voice_service || 'openrouter';
+  if (эл.cloud_voice_service.selectedIndex < 0) эл.cloud_voice_service.selectedIndex = 0;
+  эл.cloud_voice_url.value = s.cloud_voice_url || '';
+  эл.cloud_voice_model.value = s.cloud_voice_model || '';
+  эл.cloud_voice_voice.value = s.cloud_voice_voice || '';
+  эл.cloud_voice_key.value = '';
   настрПоляОзвучивания();
   эл.silero_speaker.value = s.silero_speaker ?? '';
   эл.silero_model.value = s.silero_model ?? '';
@@ -2714,6 +2828,11 @@ async function сохранитьНастройки() {
     silero_speaker: эл.silero_speaker.value.trim(),
     silero_model: эл.silero_model.value.trim(),
     voice_name: эл.voice_name.value,
+    cloud_voice_service: эл.cloud_voice_service.value,
+    cloud_voice_url: эл.cloud_voice_url.value.trim(),
+    cloud_voice_model: эл.cloud_voice_model.value.trim(),
+    cloud_voice_voice: эл.cloud_voice_voice.value.trim(),
+    cloud_voice_key: эл.cloud_voice_key.value.trim() || undefined,
     tts_speed: настрЧислоИли(эл.tts_speed, 'tts_speed', false, ошибки),
     tts_nfe: эл.tts_engine.value === 'espeech'
       ? настрЧислоИли(эл.tts_nfe, 'tts_nfe', true, ошибки) : undefined,
@@ -2784,6 +2903,26 @@ async function сохранитьНастройки() {
     настрСтатус('Укажи диктора и файл голоса Silero', true);
     настрПоказатьПоле(поле);
     return;
+  }
+  if (тело.tts_engine === 'cloud') {
+    const сервис = тело.cloud_voice_service;
+    if (сервис === 'custom' && !тело.cloud_voice_url) {
+      настрСтатус('Впиши адрес сервиса облачного голоса', true);
+      настрПоказатьПоле(эл.cloud_voice_url);
+      return;
+    }
+    if (сервис === 'custom' && !тело.cloud_voice_model) {
+      настрСтатус('Впиши модель облачного голоса', true);
+      настрПоказатьПоле(эл.cloud_voice_model);
+      return;
+    }
+    // Ключ общий с мозгом: вписанный у мозга в этой же форме тоже годится.
+    const ключМозга = эл.provider.value === сервис && эл.api_key.value.trim();
+    if (сервис !== 'custom' && !тело.cloud_voice_key && !эл.облако.ключи[сервис] && !ключМозга) {
+      настрСтатус('Впиши ключ ' + ОБЛАКО_ИМЕНА[сервис] + ' для облачного голоса', true);
+      настрПоказатьПоле(эл.cloud_voice_key);
+      return;
+    }
   }
   /* Образца нет — это не причина отменять сохранение. Выбор Higgs или ESpeech
      без готового образца пишется, иначе после перезапуска пульт снова
@@ -4525,7 +4664,13 @@ async function послушатьПробу() {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tts_engine: эл.tts_engine.value, silero_speaker: эл.silero_speaker.value.trim(),
         silero_model: эл.silero_model.value.trim(), voice_name: эл.voice_name.value,
-        tts_speed: скорость, tts_nfe: качество }),
+        tts_speed: скорость, tts_nfe: качество,
+        cloud_voice_service: эл.cloud_voice_service.value,
+        cloud_voice_url: эл.cloud_voice_url.value.trim(),
+        cloud_voice_model: эл.cloud_voice_model.value.trim(),
+        cloud_voice_voice: эл.cloud_voice_voice.value.trim(),
+        cloud_voice_key: эл.cloud_voice_key.value.trim()
+          || (эл.provider.value === эл.cloud_voice_service.value ? эл.api_key.value.trim() : '') }),
     });
     if (!ответ.ok) {
       const данные = await ответ.json().catch(() => ({}));
@@ -5804,12 +5949,66 @@ function построитьНастройки(куда, страница) {
     ['silero', 'Silero · без видеокарты'],
     ['espeech', 'ESpeech · по образцу'],
     ['higgs', 'Higgs · по образцу'],
+    ['cloud', 'Облачный голос · через интернет'],
   ], 'silero');
   настрПоле(голосСекция, 'tts_engine', tts_engine);
   const silero_speaker = настрВвод('');
   настрПоле(голосСекция, 'silero_speaker', silero_speaker);
   const silero_model = настрВвод('');
   настрПоле(голосСекция, 'silero_model', silero_model);
+  /* Облачный голос: любой сервис с OpenAI-совместимым синтезом речи. Модель и
+     голос — свободным вводом с подсказками из каталога сервиса. */
+  const облакоБлок = document.createElement('div');
+  облакоБлок.hidden = true;
+  голосСекция.appendChild(облакоБлок);
+  const cloud_voice_service = настрВыбор([
+    ['openrouter', 'OpenRouter'],
+    ['openai', 'OpenAI'],
+    ['custom', 'Свой адрес'],
+  ], 'openrouter');
+  настрПоле(облакоБлок, 'cloud_voice_service', cloud_voice_service);
+  const cloud_voice_url = настрВвод('');
+  cloud_voice_url.placeholder = 'https://example.com/v1';
+  cloud_voice_url.autocomplete = 'off';
+  настрПоле(облакоБлок, 'cloud_voice_url', cloud_voice_url);
+  const cloud_voice_key = document.createElement('input');
+  cloud_voice_key.type = 'password';
+  cloud_voice_key.className = 'настр-ввод';
+  cloud_voice_key.autocomplete = 'new-password';
+  cloud_voice_key.setAttribute('aria-label', 'Ключ сервиса голоса');
+  // Намёк у ключа свой на каждый сервис: общий ли он с мозгом и сохранён ли.
+  настрПоле(облакоБлок, 'cloud_voice_key', cloud_voice_key, ' ');
+  const облакоКлючНамёк = cloud_voice_key.closest('.настр-ряд').querySelector('.настр-намёк');
+  const cloud_voice_model = настрВвод('');
+  cloud_voice_model.autocomplete = 'off';
+  const облакоМодели = document.createElement('datalist');
+  облакоМодели.id = 'настр-облако-модели';
+  cloud_voice_model.setAttribute('list', облакоМодели.id);
+  const облакоМодельПоле = document.createElement('div');
+  облакоМодельПоле.className = 'настр-модель-поле';
+  const облакоОбновить = document.createElement('button');
+  облакоОбновить.type = 'button';
+  облакоОбновить.className = 'настр-иконка';
+  облакоОбновить.textContent = '↻';
+  облакоОбновить.title = 'Обновить список моделей и голосов';
+  облакоОбновить.setAttribute('aria-label', 'Обновить список моделей и голосов');
+  облакоМодельПоле.append(cloud_voice_model, облакоМодели, облакоОбновить);
+  настрПоле(облакоБлок, 'cloud_voice_model', облакоМодельПоле, ' ');
+  const облакоМодельНамёк = облакоМодельПоле.closest('.настр-ряд').querySelector('.настр-намёк');
+  const cloud_voice_voice = настрВвод('');
+  cloud_voice_voice.autocomplete = 'off';
+  const облакоГолоса = document.createElement('datalist');
+  облакоГолоса.id = 'настр-облако-голоса';
+  cloud_voice_voice.setAttribute('list', облакоГолоса.id);
+  const облакоГолосПоле = document.createElement('div');
+  облакоГолосПоле.className = 'настр-модель-поле';
+  облакоГолосПоле.append(cloud_voice_voice, облакоГолоса);
+  настрПоле(облакоБлок, 'cloud_voice_voice', облакоГолосПоле, ' ');
+  const облакоГолосНамёк = облакоГолосПоле.closest('.настр-ряд').querySelector('.настр-намёк');
+  const облакоСтатус = document.createElement('div');
+  облакоСтатус.className = 'настр-модели-статус';
+  облакоСтатус.setAttribute('aria-live', 'polite');
+  облакоБлок.appendChild(облакоСтатус);
   const образецБлок = document.createElement('div');
   образецБлок.hidden = true;
   голосСекция.appendChild(образецБлок);
@@ -6308,7 +6507,7 @@ function построитьНастройки(куда, страница) {
   статус.textContent = '…';
   низ.appendChild(статус);
   корень.appendChild(низ);
-  настрЭлементы = { раздел, пояснение, секции: [мозг, поиск, первая, характер, память, голосСекция, слух, расп, звук, телефон, главнаяСекция, система], provider, локальноеПредупреждение, local_url, local_urlРяд, рядКлюча, model, списокМоделей, обновитьМодели, моделиСтатус, номерЗагрузкиМоделей: 0, провайдеры: {}, моделиВПравке: {}, ключиВПравке: {}, сохранённыеКлючи: {}, ключНамёк, ключПоказать, api_key, temperature, max_tokens, history_turns, web_search, search_sound, web_search_mode, web_search_budget, hedge, reasoning, проверитьПоиск: проверитьПоискКнопка, проверитьСвязь: проверитьСвязьКнопка, proactive, proactive_look, persona, ready_phrases, memory, отменитьХарактер, отменитьПамять, забыть, показатьИсторию, очистить, историяСписок, tts_engine, silero_speaker, silero_model, образецБлок, voice_name, образецОписание, образецИграть, образецУдалить, образецФайл, образецФайлИнфо, образецРучной, образецНачало, образецДлина, образецКусок, образецДобавить, образецШаг, tts_speed, tts_nfe, tts_gap, voice_volume, higgs_gentle, duck_level, barge_in_level, barge_instant, послушатьПробу: послушатьПробуКнопка, плеерПроба, follow_up_window, require_name_when_noisy, voice_app_guard, speaker_aec, owner_only, voice_autostart, owner_threshold, владелец, хозяинЗаписать, хозяинЗакончить, хозяинСтатус, хозяинТекст, хозяинИтог, stt_model, stt_quantization, распПояснение, распПроверить, распСтатус, распИтог, output, mic_name, mic_channel, mic_channelРяд, уровень, уровеньFill, уровеньПодпись, speaker_name, звукПроверить, звукПрослушать, звукЗапись, звукСтатус, железоБлок, железоГолоса, железоГолосаСтатус, железоКарточка, железоКнопка, железоХод, железоТело, железоИтог, железоСтрелка, железоДанные: null, голосаБлок, голосаРяды, голосаПолоса: голосаПолосаМесто, голосаБибПолоса: голосаБибПолосаМесто, погГород, погГородСохранено: '', погШирота: null, погДолгота: null, погЧерновик: null, погВвод, погНайти, погСписок, погБез, погСтатус, autostart, theme, home_shape, home_roundness, home_reaction, home_brightness, home_shimmer, home_spin, home_jumps, home_color, home_gradient, home_backdrop, главнаяОбразец, адреса, телАдрес, телКопировать, телСтатус, телКод, неГаситьОбновить, сохранить, статус };
+  настрЭлементы = { раздел, пояснение, секции: [мозг, поиск, первая, характер, память, голосСекция, слух, расп, звук, телефон, главнаяСекция, система], provider, локальноеПредупреждение, local_url, local_urlРяд, рядКлюча, model, списокМоделей, обновитьМодели, моделиСтатус, номерЗагрузкиМоделей: 0, провайдеры: {}, моделиВПравке: {}, ключиВПравке: {}, сохранённыеКлючи: {}, ключНамёк, ключПоказать, api_key, temperature, max_tokens, history_turns, web_search, search_sound, web_search_mode, web_search_budget, hedge, reasoning, проверитьПоиск: проверитьПоискКнопка, проверитьСвязь: проверитьСвязьКнопка, proactive, proactive_look, persona, ready_phrases, memory, отменитьХарактер, отменитьПамять, забыть, показатьИсторию, очистить, историяСписок, tts_engine, silero_speaker, silero_model, облакоБлок, cloud_voice_service, cloud_voice_url, cloud_voice_key, облакоКлючНамёк, cloud_voice_model, облакоМодели, облакоОбновить, облакоМодельНамёк, cloud_voice_voice, облакоГолоса, облакоГолосНамёк, облакоСтатус, облако: { ключи: {}, сервисы: {}, каталог: null, номер: 0 }, образецБлок, voice_name, образецОписание, образецИграть, образецУдалить, образецФайл, образецФайлИнфо, образецРучной, образецНачало, образецДлина, образецКусок, образецДобавить, образецШаг, tts_speed, tts_nfe, tts_gap, voice_volume, higgs_gentle, duck_level, barge_in_level, barge_instant, послушатьПробу: послушатьПробуКнопка, плеерПроба, follow_up_window, require_name_when_noisy, voice_app_guard, speaker_aec, owner_only, voice_autostart, owner_threshold, владелец, хозяинЗаписать, хозяинЗакончить, хозяинСтатус, хозяинТекст, хозяинИтог, stt_model, stt_quantization, распПояснение, распПроверить, распСтатус, распИтог, output, mic_name, mic_channel, mic_channelРяд, уровень, уровеньFill, уровеньПодпись, speaker_name, звукПроверить, звукПрослушать, звукЗапись, звукСтатус, железоБлок, железоГолоса, железоГолосаСтатус, железоКарточка, железоКнопка, железоХод, железоТело, железоИтог, железоСтрелка, железоДанные: null, голосаБлок, голосаРяды, голосаПолоса: голосаПолосаМесто, голосаБибПолоса: голосаБибПолосаМесто, погГород, погГородСохранено: '', погШирота: null, погДолгота: null, погЧерновик: null, погВвод, погНайти, погСписок, погБез, погСтатус, autostart, theme, home_shape, home_roundness, home_reaction, home_brightness, home_shimmer, home_spin, home_jumps, home_color, home_gradient, home_backdrop, главнаяОбразец, адреса, телАдрес, телКопировать, телСтатус, телКод, неГаситьОбновить, сохранить, статус };
   // Форма новая — прошлые списки устройств, таймер уровня и отметка о железе
   // не про неё. Сбрасываем до первого показа раздела: иначе только что
   // пришедшие списки микрофонов тут же сбрасывались бы.
@@ -6369,6 +6568,12 @@ function построитьНастройки(куда, страница) {
   образецКусок.addEventListener('click', прослушатьКусок);
   образецРучной.addEventListener('change', () => { образецНарезка.hidden = !образецРучной.checked; });
   tts_engine.addEventListener('change', настрПоляОзвучивания);
+  cloud_voice_service.addEventListener('change', () => облакоСменаСервиса(настрЭлементы));
+  cloud_voice_model.addEventListener('change', () => облакоГолосаМодели(настрЭлементы));
+  облакоОбновить.addEventListener('click', () => облакоКаталог(настрЭлементы));
+  cloud_voice_url.addEventListener('change', () => {
+    if (cloud_voice_service.value === 'custom') облакоКаталог(настрЭлементы);
+  });
   mic_name.addEventListener('change', () => звукПоказатьВход(настрЭлементы));
   звукПроверить.addEventListener('click', () => проверитьЗвук(настрЭлементы));
   звукПрослушать.addEventListener('click', () => прослушатьЗапись(настрЭлементы));

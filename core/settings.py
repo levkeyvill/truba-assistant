@@ -104,6 +104,13 @@ DEFAULTS = {
     # вписать LM Studio или llama.cpp (кнопки-подсказки в пульте).
     "local_url": config.PROVIDERS[config.LOCAL_PROVIDER]["base_url"],
     "tts_engine": config.TTS_ENGINE,
+    # Облачный голос: сервис, модель, голос и адрес своего сервиса.
+    # Пустые модель и голос — то, что у сервиса стоит по умолчанию
+    # (`config.CLOUD_VOICE_SERVICES`).
+    "cloud_voice_service": config.CLOUD_VOICE_SERVICE,
+    "cloud_voice_model": config.CLOUD_VOICE_MODEL,
+    "cloud_voice_voice": config.CLOUD_VOICE_VOICE,
+    "cloud_voice_url": config.CLOUD_VOICE_URL,
     # Готовый характер — от него быстрые фразы (core/personas.py).
     "persona_preset": config.PERSONA_PRESET,
     "silero_speaker": config.SILERO_SPEAKER,
@@ -613,6 +620,14 @@ def apply_to_config() -> dict:
     config.UPDATE_CHECK = bool(values["update_check"])
     config.HIGGS_GENTLE = bool(values["higgs_gentle"])
     config.TTS_ENGINE = values["tts_engine"]
+    config.CLOUD_VOICE_SERVICE = validate_cloud_voice_service(
+        values.get("cloud_voice_service"))
+    config.CLOUD_VOICE_MODEL = validate_cloud_voice_name(values.get("cloud_voice_model"))
+    config.CLOUD_VOICE_VOICE = validate_cloud_voice_name(values.get("cloud_voice_voice"))
+    try:
+        config.CLOUD_VOICE_URL = validate_local_url(values.get("cloud_voice_url"))
+    except ValueError:
+        config.CLOUD_VOICE_URL = ""
     config.SILERO_SPEAKER = values["silero_speaker"]
     config.SILERO_MODEL = values["silero_model"]
     # Модель распознавания и её сжатие. "none" — это None в config: полная
@@ -771,6 +786,12 @@ def _read_env() -> dict[str, str]:
     return values
 
 
+def _extra_key_envs() -> list[str]:
+    """Ключи не провайдеров мозга: свой адрес облачного голоса."""
+    return [spec["key_env"] for spec in config.CLOUD_VOICE_SERVICES.values()
+            if spec.get("key_env")]
+
+
 def _write_env(values: dict[str, str]) -> None:
     lines = [
         "# Ключи провайдеров. Этот файл не попадает в репозиторий.",
@@ -780,6 +801,8 @@ def _write_env(values: dict[str, str]) -> None:
     ]
     for name, spec in config.PROVIDERS.items():
         env_name = spec["key_env"]
+        lines.append(f"{env_name}={values.get(env_name, '')}")
+    for env_name in _extra_key_envs():
         lines.append(f"{env_name}={values.get(env_name, '')}")
     # Здесь ключи: оборванная запись оставила бы человека без ключа.
     safe_files.write_text(ENV_PATH, "\n".join(lines) + "\n")
@@ -892,6 +915,55 @@ def set_api_key(provider: str, key: str) -> None:
     values[env_name] = key.strip()
     _write_env(values)
     # Обновляем и текущий процесс, чтобы не требовать перезапуска.
+    os.environ[env_name] = key.strip()
+
+
+# --- Облачный голос --------------------------------------------------------
+
+CLOUD_VOICE_NAME_MAX = 120
+
+
+def validate_cloud_voice_service(value) -> str:
+    """Сервис облачного голоса; чужое значение — сервис по умолчанию."""
+    if isinstance(value, str) and value in config.CLOUD_VOICE_SERVICES:
+        return value
+    return config.CLOUD_VOICE_SERVICE
+
+
+def validate_cloud_voice_name(value) -> str:
+    """Модель или голос: строка без пробелов по краям, мусор — пусто.
+
+    Пусто — значит «как у сервиса по умолчанию», а не ошибка.
+    """
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if len(text) > CLOUD_VOICE_NAME_MAX or any(ch in text for ch in "\r\n\t"):
+        return ""
+    return text
+
+
+def cloud_voice_key(service: str) -> str:
+    """Ключ облачного голоса: у OpenRouter и OpenAI — тот же, что у мозга."""
+    spec = config.CLOUD_VOICE_SERVICES.get(service) or {}
+    if spec.get("key_provider"):
+        return key_for(spec["key_provider"])
+    env_name = spec.get("key_env")
+    if not env_name:
+        return ""
+    return (_read_env().get(env_name) or os.environ.get(env_name, "")).strip()
+
+
+def set_cloud_voice_key(service: str, key: str) -> None:
+    """Сохранить ключ облачного голоса туда, откуда его берёт `cloud_voice_key`."""
+    spec = config.CLOUD_VOICE_SERVICES[service]
+    if spec.get("key_provider"):
+        set_api_key(spec["key_provider"], key)
+        return
+    env_name = spec["key_env"]
+    values = _read_env()
+    values[env_name] = key.strip()
+    _write_env(values)
     os.environ[env_name] = key.strip()
 
 

@@ -225,6 +225,8 @@ def известные_ключи() -> set:
     стороннего сервиса — в перенос не идёт.
     """
     имена = {spec.get("key_env", "") for spec in config.PROVIDERS.values()}
+    # Ключ облачного голоса со своим адресом — тоже ключ Трубы.
+    имена |= {spec.get("key_env", "") for spec in config.CLOUD_VOICE_SERVICES.values()}
     try:
         строки = (config.ROOT / ".env.example").read_text(
             encoding="utf-8").splitlines()

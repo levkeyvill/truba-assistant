@@ -1173,6 +1173,23 @@ class PhoneServer:
                 return _fail(exc)
             return Response(wav, media_type="audio/wav", headers=NO_CACHE)
 
+        # Модели и голоса облачного сервиса — подсказки к полям в пульте.
+        @app.get("/api/cloud-voice/catalog")
+        async def api_cloud_voice_catalog(request: Request):
+            if not _local(request):
+                return _deny()
+            rt = getattr(self, "runtime", None)
+            if rt is None:
+                return _no_runtime()
+            try:
+                result = await asyncio.to_thread(
+                    rt.cloud_voice_catalog,
+                    request.query_params.get("service", ""),
+                    request.query_params.get("url", ""))
+            except Exception as exc:
+                return _fail(exc)
+            return JSONResponse(result, headers=NO_CACHE)
+
         @app.get("/api/voice-samples")
         async def api_voice_samples(request: Request):
             if not _local(request):

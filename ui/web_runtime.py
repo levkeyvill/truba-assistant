@@ -701,6 +701,8 @@ class WebRuntime:
         if kind == "voice_spare":
             return [f"видеокарта сбросилась ({payload}) — говорю запасным голосом "
                     "Silero; качественный вернётся после перезапуска Трубы"]
+        if kind == "cloud_voice":
+            return [f"облачный голос: {str(payload)[:240]}"]
         if kind == "continue":
             # Ответ упёрся в потолок токенов. Хозяин должен видеть, что молчание
             # было не пустотой, а обрезанным ответом, который мы договариваем.
@@ -2214,8 +2216,20 @@ class WebRuntime:
             ключ_телефона = phone_key()
         except Exception:
             ключ_телефона = ""
+        # Есть ли ключ у каждого сервиса облачного голоса — сам ключ не отдаём.
+        голос_ключи = {}
+        for имя in config.CLOUD_VOICE_SERVICES:
+            try:
+                голос_ключи[имя] = bool(settings.cloud_voice_key(имя))
+            except Exception:
+                голос_ключи[имя] = False
         return {
             "provider": provider, "providers": providers,
+            "cloud_voice_keys": голос_ключи,
+            "cloud_voice_services": {
+                имя: {"model": spec["model"], "voice": spec["voice"],
+                      "shared_key": spec.get("key_provider") or ""}
+                for имя, spec in config.CLOUD_VOICE_SERVICES.items()},
             "settings": values, "persona": persona, "phone_key": ключ_телефона,
             "memory": mem_text, "addresses": local_addresses(),
             # Порт этого пульта: у второй копии Трубы он свой, и адрес
@@ -3486,7 +3500,7 @@ class WebRuntime:
                 errors.append("wizard_step: целое число от 1 до 6")
             else:
                 to_save["wizard_step"] = значение
-        choices = {"tts_engine": ("silero", "espeech", "higgs"),
+        choices = {"tts_engine": ("silero", "espeech", "higgs", "cloud"),
                    "listen_mode": ("always", "name", "off"),
                    "web_search_mode": ("free", "paid", "auto"),
                    "proactive": tuple(proactive.FREQUENCIES),
@@ -3586,6 +3600,30 @@ class WebRuntime:
             to_save["weather_lat"] = settings.validate_lat(payload["weather_lat"])
         if "weather_lon" in payload:
             to_save["weather_lon"] = settings.validate_lon(payload["weather_lon"])
+        # Облачный голос. Сервис чужой — ошибка; модель и голос пустыми бывают
+        # законно (значит «как у сервиса по умолчанию»).
+        if "cloud_voice_service" in payload:
+            if payload["cloud_voice_service"] not in config.CLOUD_VOICE_SERVICES:
+                errors.append("cloud_voice_service: нет такого сервиса")
+            else:
+                to_save["cloud_voice_service"] = payload["cloud_voice_service"]
+        for key in ("cloud_voice_model", "cloud_voice_voice"):
+            if key in payload:
+                val = payload[key]
+                if not isinstance(val, str) or settings.validate_cloud_voice_name(val) != val.strip():
+                    errors.append(f"{key}: имя строкой до {settings.CLOUD_VOICE_NAME_MAX} знаков")
+                else:
+                    to_save[key] = val.strip()
+        if "cloud_voice_url" in payload:
+            try:
+                to_save["cloud_voice_url"] = settings.validate_local_url(
+                    payload["cloud_voice_url"])
+            except ValueError as exc:
+                errors.append(f"cloud_voice_url: {exc}")
+        cloud_key = payload.get("cloud_voice_key")
+        if cloud_key is not None and not isinstance(cloud_key, str):
+            errors.append("cloud_voice_key: строкой")
+            cloud_key = None
         provider = payload.get("provider", None)
         api_key = payload.get("api_key", None)
         if provider is not None:
@@ -3671,6 +3709,14 @@ class WebRuntime:
                 return {"ok": False, "errors": ["api_key: строкой"]}
             if api_key.strip():
                 settings.set_api_key(provider, api_key.strip())
+        # Ключ облачного голоса: у OpenRouter и OpenAI это ключ мозга.
+        cloud_key_provider = None
+        if cloud_key and cloud_key.strip():
+            cloud_service = to_save.get("cloud_voice_service") or \
+                settings.validate_cloud_voice_service(old_settings.get("cloud_voice_service"))
+            settings.set_cloud_voice_key(cloud_service, cloud_key.strip())
+            cloud_key_provider = config.CLOUD_VOICE_SERVICES[cloud_service].get(
+                "key_provider") or "cloud"
         if provider is not None and provider != old_provider:
             settings.set_provider(provider)
         if changed_settings:
@@ -3737,6 +3783,8 @@ class WebRuntime:
             # Адрес локального сервера — часть того, куда ходит мозг:
             # сменили адрес, значит нужен новый клиент со старым адресом.
             or "local_url" in changed_settings
+            # Ключ, вписанный у облачного голоса, — тот же ключ мозга.
+            or cloud_key_provider == settings.get_provider()
         )
         if rebuild_brain:
             try:
@@ -3759,12 +3807,19 @@ class WebRuntime:
                 ]}
         audio_keys = {"tts_engine", "silero_speaker", "silero_model",
                       "voice_name", "tts_speed", "tts_nfe", "tts_gap",
-                      "output", "mic_name", "mic_channel", "speaker_name"}
+                      "output", "mic_name", "mic_channel", "speaker_name",
+                      "cloud_voice_service", "cloud_voice_model",
+                      "cloud_voice_voice", "cloud_voice_url"}
+        # Облачный голос держит ключ у себя: новый ключ — новый голос.
+        changed_audio = set(changed_settings)
+        if cloud_key_provider is not None and config.TTS_ENGINE == "cloud":
+            changed_audio.add("cloud_voice_key")
+            audio_keys = audio_keys | {"cloud_voice_key"}
         # Скорость и качество синтез берёт из config на каждой фразе, образец
         # меняем на ходу. Остальное требует заново поднять звук.
-        heavy = (audio_keys - {"voice_name", "tts_speed", "tts_nfe"}) & set(changed_settings)
+        heavy = (audio_keys - {"voice_name", "tts_speed", "tts_nfe"}) & changed_audio
         note = ""
-        if audio_keys & set(changed_settings):
+        if audio_keys & changed_audio:
             if not self._voice_busy():
                 self._drop_audio()
             else:
@@ -4157,13 +4212,21 @@ class WebRuntime:
             raise ValueError("Проба голоса уже готовится")
         try:
             engine = payload.get("tts_engine")
-            if engine not in ("silero", "espeech", "higgs"):
+            if engine not in ("silero", "espeech", "higgs", "cloud"):
                 raise ValueError("Выбери движок голоса")
             speed = float(payload.get("tts_speed", 1.0))
             if not math.isfinite(speed) or not 0.5 <= speed <= 2.0:
                 raise ValueError("Скорость речи должна быть от 0.5 до 2")
             phrase = "Ну чё, как тебе такой голос? Нормально звучу или поменяем?"
-            if engine == "silero":
+            if engine == "cloud":
+                from core.cloud_voice import CloudVoice
+
+                # Проба — того, что в форме, ещё не сохранённого. Без запасного
+                # Silero: послушать надо именно облако или увидеть его отказ.
+                voice = CloudVoice(**self._cloud_voice_form(payload), spare=False)
+                voice.load()
+                wave, rate = voice.say(phrase, speed=speed)
+            elif engine == "silero":
                 from core.silero_voice import SileroVoice
 
                 speaker = payload.get("silero_speaker")
@@ -4223,6 +4286,45 @@ class WebRuntime:
             return to_wav(wave, rate)
         finally:
             self._preview_lock.release()
+
+    @staticmethod
+    def _cloud_voice_form(payload: dict) -> dict:
+        """Облачный голос из формы пульта: сервис, модель, голос, адрес, ключ.
+
+        Вписанный, но не сохранённый ключ годится для пробы; пустой — значит
+        сохранённый.
+        """
+        from core import settings
+
+        service = settings.validate_cloud_voice_service(payload.get("cloud_voice_service"))
+        try:
+            url = settings.validate_local_url(payload.get("cloud_voice_url"))
+        except ValueError as exc:
+            raise ValueError(f"Адрес сервиса: {exc}") from exc
+        key = payload.get("cloud_voice_key")
+        key = key.strip() if isinstance(key, str) and key.strip() else None
+        return {"service": service,
+                "model": settings.validate_cloud_voice_name(payload.get("cloud_voice_model")),
+                "voice": settings.validate_cloud_voice_name(payload.get("cloud_voice_voice")),
+                "url": url, "key": key}
+
+    def cloud_voice_catalog(self, service: str, url: str = "") -> dict:
+        import config
+        from core import cloud_voice, settings
+
+        service = settings.validate_cloud_voice_service(service)
+        try:
+            url = settings.validate_local_url(url)
+        except ValueError:
+            url = ""
+        try:
+            found = cloud_voice.catalog(service, url, settings.cloud_voice_key(service))
+        except Exception as exc:
+            return {"ok": False, "error": f"список не пришёл: {type(exc).__name__}",
+                    "models": [], "voices": []}
+        spec = config.CLOUD_VOICE_SERVICES[service]
+        return {"ok": True, "service": service, "default_model": spec["model"],
+                "default_voice": spec["voice"], **found}
 
     def logs(self, limit: int = 200) -> list:
         try:
